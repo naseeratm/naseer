@@ -1,0 +1,8 @@
+{
+  "name": "ANSYS Engineering WorkBench - منصة التحليل والمحاكاة الهندسية الشاملة",
+  "description": "منصة صناعية وأكاديمية متكاملة لمحاكاة وتحليل ميكانيكا الموائع والإنشاءات (CFD & FEA)، دعم كافة صيغ الملفات والصور، محرك فيزيائي رقمي حتمي دقيق، ومجمّع مفاتيح ذكي يضمن استمرارية العمل دون انقطاع.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

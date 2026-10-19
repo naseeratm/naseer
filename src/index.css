@@ -1,0 +1,36 @@
+@import "tailwindcss";
+
+@layer utilities {
+  /* Hide scrollbars for chrome, safari and opera */
+  .no-scrollbar::-webkit-scrollbar {
+    display: none;
+  }
+  /* Hide scrollbars for IE, Edge and Firefox */
+  .no-scrollbar {
+    -ms-overflow-style: none;
+    scrollbar-width: none;
+  }
+}
+
+@media print {
+  @page {
+    margin: 1.5cm;
+    size: A4 portrait;
+  }
+  body {
+    background: white !important;
+    color: #0f172a !important;
+    font-size: 11pt !important;
+  }
+  h1, h2, h3, h4 {
+    page-break-after: avoid;
+    break-after: avoid;
+  }
+  table, tr {
+    page-break-inside: avoid;
+    break-inside: avoid;
+  }
+  .print\:hidden {
+    display: none !important;
+  }
+}

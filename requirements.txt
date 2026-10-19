@@ -1,0 +1,46 @@
+# ==============================================================================
+# ANSYS Engineering WorkBench - High-Performance Python Backend Requirements
+# خادم المعالجة الهندسية والحسابية الحتمية المتقدمة (CFD / FEA / Thermal / CAD)
+# ==============================================================================
+# تعليمات التثبيت السريع:
+# 1. إنشاء البيئة الافتراضية:
+#    python -m venv venv
+# 2. تفعيل البيئة:
+#    - على أنظمة Windows:  .\venv\Scripts\activate
+#    - على أنظمة Linux/Mac: source venv/bin/activate
+# 3. ترقية مدير الحزم وتثبيت المكتبات:
+#    pip install --upgrade pip
+#    pip install -r requirements.txt
+# 4. تشغيل خادم FastAPI:
+#    uvicorn main:app --host 0.0.0.0 --port 8000 --reload
+# ==============================================================================
+
+# --- إطار عمل الويب والخادم غير المتزامن (API & Asynchronous Web Server) ---
+fastapi>=0.110.0
+uvicorn[standard]>=0.29.0
+pydantic>=2.7.0
+pydantic-settings>=2.2.0
+python-multipart>=0.0.9
+aiofiles>=23.2.1
+
+# --- الحسابات العلمية والمصفوفات الحتمية (Deterministic Scientific Computing & Numerics) ---
+numpy>=1.26.0
+scipy>=1.13.0
+pandas>=2.2.0
+
+# --- قراءة وهندسة ملفات الشبيكة والـ CAD (Mesh & CAD Geometry Parsers) ---
+meshio>=5.3.5
+trimesh>=4.3.0
+
+# --- التواصل المباشر مع محرك ANSYS APDL (ANSYS MAPDL Python Interface) ---
+# ملاحظة: إذا كان ANSYS مثبت على الجهاز، تتيح هذه المكتبة تشغيل MAPDL مباشرة في الخلفية
+ansys-mapdl-core>=0.68.0
+
+# --- معالجة البيانات الهندسية والمستندات (Document & Engineering Data Parsers) ---
+openpyxl>=3.1.2
+python-docx>=1.1.0
+matplotlib>=3.8.0
+
+# --- أدوات الشبكة والمساعدة (Networking & Utilities) ---
+requests>=2.31.0
+typing_extensions>=4.10.0
