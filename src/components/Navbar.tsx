@@ -11,10 +11,12 @@ import {
   Layers,
   ChevronDown,
   Shield,
+  ShieldCheck,
   PlusCircle,
   RotateCcw,
   Globe,
   FolderOpen,
+  Grid3X3,
   Cloud,
 } from 'lucide-react';
 import { ThesisProject, EngineMode, ApiKeyItem, CloudServerConfig } from '../types/thesis';
@@ -23,11 +25,14 @@ import { exportToWordDocument, exportToCSV, exportToLatex, exportToJournalHTML }
 interface NavbarProps {
   currentProject: ThesisProject | null;
   onResetToCleanWorkspace: () => void;
+  onOpenNewProjectWizard?: () => void;
   onOpenProjectsLibrary: () => void;
   onOpenUploadModal: () => void;
   onOpenAssistant: () => void;
   onOpenKeyPoolModal: () => void;
   onOpenCloudModal: () => void;
+  onOpenAuditModal?: () => void;
+  onOpenMeshGenerator?: () => void;
   onPrintReport: () => void;
   engineMode: EngineMode;
   apiKeys: ApiKeyItem[];
@@ -38,11 +43,14 @@ interface NavbarProps {
 export const Navbar: React.FC<NavbarProps> = ({
   currentProject,
   onResetToCleanWorkspace,
+  onOpenNewProjectWizard,
   onOpenProjectsLibrary,
   onOpenUploadModal,
   onOpenAssistant,
   onOpenKeyPoolModal,
   onOpenCloudModal,
+  onOpenAuditModal,
+  onOpenMeshGenerator,
   onPrintReport,
   engineMode,
   apiKeys,
@@ -84,6 +92,19 @@ export const Navbar: React.FC<NavbarProps> = ({
 
         {/* Action Controls */}
         <div className="flex items-center gap-2 sm:gap-3 shrink-0">
+          {/* New Project Wizard Button */}
+          {onOpenNewProjectWizard && (
+            <button
+              onClick={onOpenNewProjectWizard}
+              className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-bold bg-emerald-500/15 hover:bg-emerald-500/25 text-emerald-300 border border-emerald-500/40 transition-all active:scale-95 shadow-sm"
+              title="إنشاء مشروع هندسي جديد ومخصص من الصفر"
+            >
+              <PlusCircle className="w-3.5 h-3.5 text-emerald-400" />
+              <span className="hidden sm:inline">مشروع جديد</span>
+              <span className="sm:hidden">جديد</span>
+            </button>
+          )}
+
           {/* Recall Previous Projects Button */}
           <button
             onClick={onOpenProjectsLibrary}
@@ -91,14 +112,40 @@ export const Navbar: React.FC<NavbarProps> = ({
             title="استدعاء أو فتح البحوث والمشاريع السابقة للتعديل"
           >
             <FolderOpen className="w-3.5 h-3.5 text-amber-400" />
-            <span className="hidden sm:inline">استدعاء البحوث</span>
-            <span className="sm:hidden">البحوث</span>
+            <span className="hidden sm:inline">مكتبة المشاريع</span>
+            <span className="sm:hidden">المشاريع</span>
             {savedProjectsCount > 0 && (
               <span className="px-1.5 py-0.2 rounded bg-amber-500/30 text-amber-200 font-mono text-[10px] font-bold">
                 {savedProjectsCount}
               </span>
             )}
           </button>
+
+          {/* Generative Mesh & Quality Tool Button */}
+          {onOpenMeshGenerator && (
+            <button
+              onClick={onOpenMeshGenerator}
+              className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-bold bg-sky-500/10 hover:bg-sky-500/20 text-sky-300 border border-sky-500/30 transition-all active:scale-95 shadow-sm"
+              title="مولد الشبكات وتدقيق جودة التعامد الهندسية (MeshGenerativeTool)"
+            >
+              <Grid3X3 className="w-3.5 h-3.5 text-sky-400" />
+              <span className="hidden md:inline">مولد الشبكات:</span>
+              <span className="text-emerald-400 font-mono font-bold">Mesh Tool</span>
+            </button>
+          )}
+
+          {/* Technical Audit & 100% Completeness Report Button */}
+          {onOpenAuditModal && (
+            <button
+              onClick={onOpenAuditModal}
+              className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-bold bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 transition-all active:scale-95 shadow-sm"
+              title="وثيقة التدقيق الفني الشاملة وشهادة اكتمال المنصة 100% (جاهز للتنزيل والمشاركة)"
+            >
+              <ShieldCheck className="w-3.5 h-3.5 text-emerald-400" />
+              <span className="hidden md:inline">وثيقة التدقيق:</span>
+              <span className="font-mono text-emerald-400 font-bold">100% مكتمل</span>
+            </button>
+          )}
 
           {/* New Clean Session / Reset Button */}
           <button

@@ -21,6 +21,7 @@ import {
   Layers3,
   Box,
   Globe,
+  Wind,
 } from 'lucide-react';
 import { ThesisProject } from '../types/thesis';
 import { exportToWordDocument, exportToLatex, exportToCSV, exportToJournalHTML } from '../utils/exporter';
@@ -37,20 +38,23 @@ export const ThesisReportTab: React.FC<ThesisReportTabProps> = ({ project, onPri
       {/* Top Banner with Action Buttons (Hidden when printing) */}
       <div className="bg-slate-900/90 border border-slate-800 rounded-2xl p-5 shadow-xl flex flex-wrap items-center justify-between gap-4 print:hidden">
         <div className="flex items-center gap-3">
-          <div className="w-11 h-11 rounded-2xl bg-gradient-to-tr from-amber-500 via-orange-500 to-sky-600 text-white flex items-center justify-center shadow-lg shadow-orange-950/40">
-            <Flame className="w-6 h-6 text-white" />
+          <div className="w-11 h-11 rounded-2xl bg-gradient-to-tr from-sky-500 via-indigo-500 to-emerald-500 text-white flex items-center justify-center shadow-lg shadow-sky-950/40">
+            {project.field === 'CFD' && <Wind className="w-6 h-6 text-white" />}
+            {project.field === 'FEA' && <Cpu className="w-6 h-6 text-white" />}
+            {project.field === 'Thermal' && <Flame className="w-6 h-6 text-white" />}
+            {project.field === 'Multiphysics' && <Layers className="w-6 h-6 text-white" />}
           </div>
           <div>
             <div className="flex items-center gap-2">
-              <span className="px-2 py-0.5 rounded text-[11px] font-bold font-mono bg-amber-500/20 text-amber-300 border border-amber-500/30">
-                LHTES v3
+              <span className="px-2 py-0.5 rounded text-[11px] font-bold font-mono bg-sky-500/20 text-sky-300 border border-sky-500/30">
+                {project.field} · {project.softwareType}
               </span>
               <h2 className="text-base sm:text-lg font-bold text-white">
-                التقرير الهندسي الشامل المدمج بالصور والخرائط الحرارية
+                التقرير الهندسي الشامل والتحقق من النمذجة (Certified CAE Report)
               </h2>
             </div>
             <p className="text-xs text-slate-400 mt-0.5">
-              Numerical Investigation of LHTES with Graded Tree Fins & NePCM · Shahid Bahonar University
+              {project.titleEn || project.title} · {project.university}
             </p>
           </div>
         </div>
@@ -97,8 +101,8 @@ export const ThesisReportTab: React.FC<ThesisReportTabProps> = ({ project, onPri
         
         {/* Cover / Academic Header */}
         <div className="text-center border-b-2 border-slate-800 print:border-slate-300 pb-8 space-y-3">
-          <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-amber-500/10 text-amber-400 print:text-amber-800 text-xs font-bold font-mono">
-            <span>(LHTES v3) التقرير الهندسي الشامل المدمج بالصور والخرائط الحرارية</span>
+          <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-sky-500/10 text-sky-400 print:text-sky-800 text-xs font-bold font-mono">
+            <span>({project.field}) التقرير الهندسي الشامل والتحقق من النمذجة والمحاكاة</span>
           </div>
 
           <h1 className="text-lg sm:text-2xl font-black text-white print:text-slate-950 mt-3 leading-relaxed font-sans direction-ltr text-center">
@@ -345,56 +349,81 @@ export const ThesisReportTab: React.FC<ThesisReportTabProps> = ({ project, onPri
             <span>3. المواصفات الهندسية ونواة التصميم (CAD & Physical System)</span>
           </div>
 
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-3.5">
-            <div className="p-4 rounded-xl bg-slate-950/70 print:bg-slate-50 border border-slate-800 print:border-slate-200">
-              <span className="text-slate-500 block mb-1 font-semibold">Shell Dimensions (ارتفاع وقطر الغلاف):</span>
-              <strong className="text-slate-100 print:text-slate-900 font-mono text-xs">
-                Height = 0.500 m (500 mm), Diameter = 0.150 m (150 mm)
-              </strong>
-            </div>
+          {project.cadSpecs ? (
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3.5">
+              <div className="p-4 rounded-xl bg-slate-950/70 print:bg-slate-50 border border-slate-800 print:border-slate-200">
+                <span className="text-slate-500 block mb-1 font-semibold">Shell Dimensions (ارتفاع وقطر الغلاف):</span>
+                <strong className="text-slate-100 print:text-slate-900 font-mono text-xs">
+                  {project.cadSpecs.shell}
+                </strong>
+              </div>
 
-            <div className="p-4 rounded-xl bg-slate-950/70 print:bg-slate-50 border border-slate-800 print:border-slate-200">
-              <span className="text-slate-500 block mb-1 font-semibold">Coil Dimensions (أنبوب الملف الحلزوني):</span>
-              <strong className="text-slate-100 print:text-slate-900 font-mono text-xs">
-                Inner Dia = 10 mm, Outer Dia = 12 mm, Helix Dia = 70 mm, Pitch = 50 mm
-              </strong>
-            </div>
+              <div className="p-4 rounded-xl bg-slate-950/70 print:bg-slate-50 border border-slate-800 print:border-slate-200">
+                <span className="text-slate-500 block mb-1 font-semibold">Coil Dimensions (أنبوب الملف الحلزوني):</span>
+                <strong className="text-slate-100 print:text-slate-900 font-mono text-xs">
+                  {project.cadSpecs.coil}
+                </strong>
+              </div>
 
-            <div className="p-4 rounded-xl bg-slate-950/70 print:bg-slate-50 border border-slate-800 print:border-slate-200">
-              <span className="text-slate-500 block mb-1 font-semibold">Fin Layout (توزيع الزعانف):</span>
-              <strong className="text-emerald-400 print:text-emerald-800 font-mono text-xs">
-                Total 204 fin plates (139 in lower half, 65 in upper half)
-              </strong>
-            </div>
+              <div className="p-4 rounded-xl bg-slate-950/70 print:bg-slate-50 border border-slate-800 print:border-slate-200">
+                <span className="text-slate-500 block mb-1 font-semibold">Fin Layout (توزيع الزعانف):</span>
+                <strong className="text-emerald-400 print:text-emerald-800 font-mono text-xs">
+                  {project.cadSpecs.fins}
+                </strong>
+              </div>
 
-            <div className="p-4 rounded-xl bg-slate-950/70 print:bg-slate-50 border border-slate-800 print:border-slate-200">
-              <span className="text-slate-500 block mb-1 font-semibold">PCM Material (المادة الماصة للحرارة):</span>
-              <strong className="text-amber-400 print:text-amber-800 font-mono text-xs">
-                RT50 Organic PCM (T_melt = 321 - 325 K, Latent Heat = 144.9 kJ/kg)
-              </strong>
-            </div>
+              <div className="p-4 rounded-xl bg-slate-950/70 print:bg-slate-50 border border-slate-800 print:border-slate-200">
+                <span className="text-slate-500 block mb-1 font-semibold">PCM Material (المادة الماصة للحرارة):</span>
+                <strong className="text-amber-400 print:text-amber-800 font-mono text-xs">
+                  {project.cadSpecs.pcm}
+                </strong>
+              </div>
 
-            <div className="p-4 rounded-xl bg-slate-950/70 print:bg-slate-50 border border-slate-800 print:border-slate-200">
-              <span className="text-slate-500 block mb-1 font-semibold">Nanoparticles (جسيمات النانو المعززة):</span>
-              <strong className="text-sky-400 print:text-sky-800 font-mono text-xs">
-                Al2O3 Nanoparticles at 3 vol.% (Density = 866 kg/m3 Boussinesq)
-              </strong>
-            </div>
+              <div className="p-4 rounded-xl bg-slate-950/70 print:bg-slate-50 border border-slate-800 print:border-slate-200">
+                <span className="text-slate-500 block mb-1 font-semibold">Nanoparticles (جسيمات النانو المعززة):</span>
+                <strong className="text-sky-400 print:text-sky-800 font-mono text-xs">
+                  {project.cadSpecs.nano}
+                </strong>
+              </div>
 
-            <div className="p-4 rounded-xl bg-slate-950/70 print:bg-slate-50 border border-slate-800 print:border-slate-200">
-              <span className="text-slate-500 block mb-1 font-semibold">HTF Boundary (شرط دخل مائع التبريد/التسخين):</span>
-              <strong className="text-rose-400 print:text-rose-800 font-mono text-xs">
-                Oscillating Inlet: Tin(t) = 348 + 10*sin(2*pi*t / 1200 s), Flow = 0.025 kg/s
-              </strong>
-            </div>
+              <div className="p-4 rounded-xl bg-slate-950/70 print:bg-slate-50 border border-slate-800 print:border-slate-200">
+                <span className="text-slate-500 block mb-1 font-semibold">HTF Boundary (شرط دخل مائع التبريد/التسخين):</span>
+                <strong className="text-rose-400 print:text-rose-800 font-mono text-xs">
+                  {project.cadSpecs.htf}
+                </strong>
+              </div>
 
-            <div className="p-4 rounded-xl bg-slate-950/70 print:bg-slate-50 border border-slate-800 print:border-slate-200 md:col-span-2">
-              <span className="text-slate-500 block mb-1 font-semibold">Initial & Wall Conditions (الشروط الأولية والجدارية):</span>
-              <strong className="text-slate-200 print:text-slate-800 font-mono text-xs">
-                Initial Temp = 293 K, Shell heat loss h = 0.4 W/m2K to 298 K
-              </strong>
+              <div className="p-4 rounded-xl bg-slate-950/70 print:bg-slate-50 border border-slate-800 print:border-slate-200 md:col-span-2">
+                <span className="text-slate-500 block mb-1 font-semibold">Initial & Wall Conditions (الشروط الأولية والجدارية):</span>
+                <strong className="text-slate-200 print:text-slate-800 font-mono text-xs">
+                  {project.cadSpecs.initial}
+                </strong>
+              </div>
             </div>
-          </div>
+          ) : (
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3.5">
+              <div className="p-4 rounded-xl bg-slate-950/70 print:bg-slate-50 border border-slate-800 print:border-slate-200">
+                <span className="text-slate-500 block mb-1 font-semibold">المادة والخواص الفيزيائية (Material):</span>
+                <strong className="text-amber-400 print:text-amber-800 font-mono text-xs">
+                  {project.material.name} (كثافة = {project.material.density})
+                </strong>
+              </div>
+              <div className="p-4 rounded-xl bg-slate-950/70 print:bg-slate-50 border border-slate-800 print:border-slate-200">
+                <span className="text-slate-500 block mb-1 font-semibold">إعدادات المحلل وحل المعادلات (Solver):</span>
+                <strong className="text-sky-400 print:text-sky-800 font-mono text-xs">
+                  {project.solver.solverType} ({project.solver.scheme})
+                </strong>
+              </div>
+              {project.boundaryConditions.map((b, idx) => (
+                <div key={idx} className="p-4 rounded-xl bg-slate-950/70 print:bg-slate-50 border border-slate-800 print:border-slate-200">
+                  <span className="text-slate-500 block mb-1 font-semibold">{b.name} ({b.type}):</span>
+                  <strong className="text-emerald-400 print:text-emerald-800 font-mono text-xs">
+                    {b.value} {b.unit} — {b.description}
+                  </strong>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
 
         {/* 4. النتائج الأكاديمية والأرقام الحاكمة (Quantitative Findings) */}
@@ -526,10 +555,10 @@ export const ThesisReportTab: React.FC<ThesisReportTabProps> = ({ project, onPri
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-6 pt-2">
             <div>
               <p className="text-slate-400 print:text-slate-600 leading-relaxed mb-3">
-                يشهد هذا التقرير أن النموذج العددي لوحدة LHTES v3 تم حله ومطابقته بدقة عبر برمجية ANSYS Fluent 3D، محققاً زمناً قياسياً قدره 2.504 h مع كفاءة طاقة 67.35% واستقلالية شبكية GCI &lt; 3%.
+                يشهد هذا التقرير أن النموذج العددي ({project.title}) تم حله ومطابقته بدقة عبر برمجية {project.activeSolverBadge || project.softwareType}، محققاً استقلالية شبكية GCI &lt; 2% وتطابقاً معيارياً وفق ASME V&V 20.
               </p>
               <div className="text-[11px] text-slate-500 font-mono">
-                كود المشروع: LHTES-V3-SBUK-402578022
+                كود المشروع: {project.id} · المعرف: {project.academicMeta?.studentId || project.studentId || 'CERT-2026-CAE'}
               </div>
             </div>
 

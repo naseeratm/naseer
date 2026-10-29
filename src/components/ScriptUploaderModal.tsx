@@ -49,12 +49,15 @@ export function ScriptUploaderModal({
   const [processingStatus, setProcessingStatus] = useState<string>('');
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [selectedPreviewFile, setSelectedPreviewFile] = useState<IngestedFileItem | null>(null);
+  const [isPasteTextOpen, setIsPasteTextOpen] = useState(false);
+  const [pastedDocText, setPastedDocText] = useState('');
+  const [pastedDocTitle, setPastedDocTitle] = useState('thesis_specifications.docx');
 
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   if (!isOpen) return null;
 
-  const handleFilesSelected = async (files: FileList | null) => {
+  const handleFilesSelected = async (files: FileList | File[] | null) => {
     if (!files || files.length === 0) return;
 
     setIsParsingFiles(true);
@@ -102,6 +105,16 @@ export function ScriptUploaderModal({
     if (fileInputRef.current) {
       fileInputRef.current.value = '';
     }
+  };
+
+  const handleAddPastedDoc = async () => {
+    if (!pastedDocText.trim()) return;
+    const name = pastedDocTitle.trim() || 'thesis_specifications.docx';
+    const blob = new Blob([pastedDocText], { type: 'text/plain' });
+    const file = new File([blob], name, { type: 'text/plain' });
+    await handleFilesSelected([file]);
+    setPastedDocText('');
+    setIsPasteTextOpen(false);
   };
 
   const handleRemoveFile = (id: string) => {
@@ -310,6 +323,7 @@ export function ScriptUploaderModal({
               ref={fileInputRef}
               type="file"
               multiple
+              accept=".docx,.doc,.docm,.rtf,.pdf,.txt,.py,.jou,.mac,.inp,.cas,.dat,.cdb,.m,.xlsx,.xls,.csv,.png,.jpg,.jpeg,.svg,.webp,.zip,.wbpz"
               className="hidden"
               onChange={(e) => handleFilesSelected(e.target.files)}
             />
@@ -321,11 +335,77 @@ export function ScriptUploaderModal({
               )}
             </div>
             <h4 className="text-sm font-bold text-slate-200">
-              {isParsingFiles ? 'جاري فك ضغط الأرشيف وفحص السكربتات المرفقة...' : 'انقر لاختيار الملفات أو اسحب الأرشيف المضغوط (.zip / .wbpz) هنا'}
+              {isParsingFiles ? 'جاري فحص وقراءة محتويات المستند والملفات المرفقة...' : 'انقر لاختيار ملف وورد (.docx/.doc) أو السكربتات والأرشيف'}
             </h4>
             <p className="text-[11px] text-slate-400 mt-1">
-              يدعم فك واستخراج الأرشيفات المضغوطة (.zip, .wbpz)، بايثون (.py)، أنسيز (.jou, .mac, .inp)، إكسل، وورد، والصور
+              يدعم مستندات وورد Word (.docx / .doc)، PDF، بايثون (.py)، أنسيز (.jou, .mac, .inp)، إكسل، والأرشيف المضغوط (.zip, .wbpz)
             </p>
+          </div>
+
+          {/* Alternative: Direct Word / Document Text Paste */}
+          <div className="bg-slate-950/60 border border-slate-800 rounded-xl overflow-hidden">
+            <div className="p-3 flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <FileText className="w-4 h-4 text-sky-400" />
+                <span className="text-xs font-semibold text-slate-300">
+                  هل تفضل لصق نص مستند وورد / الأطروحة مباشرة؟
+                </span>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsPasteTextOpen(!isPasteTextOpen)}
+                className="text-xs text-sky-400 font-bold hover:underline"
+              >
+                {isPasteTextOpen ? 'إغلاق المحرر' : 'فتح محرر اللصق المباشر'}
+              </button>
+            </div>
+
+            {isPasteTextOpen && (
+              <div className="p-4 border-t border-slate-800 space-y-3 bg-slate-950">
+                <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
+                  <div className="flex items-center gap-2 flex-1 min-w-[200px]">
+                    <span className="text-slate-400">عنوان المستند:</span>
+                    <input
+                      type="text"
+                      value={pastedDocTitle}
+                      onChange={(e) => setPastedDocTitle(e.target.value)}
+                      className="px-2.5 py-1 rounded-lg bg-slate-900 border border-slate-700 text-xs font-mono text-sky-300 focus:outline-none"
+                      placeholder="thesis_specs.docx"
+                    />
+                  </div>
+                  <span className="text-[11px] text-slate-400">
+                    انسخ محتوى ملف الوورد (Ctrl+A ثم Ctrl+C) والصقه هنا مباشرة
+                  </span>
+                </div>
+
+                <textarea
+                  rows={5}
+                  value={pastedDocText}
+                  onChange={(e) => setPastedDocText(e.target.value)}
+                  placeholder="الصق نصوص ومواصفات الأطروحة أو الشروط الحدية هنا..."
+                  className="w-full p-3 rounded-xl bg-slate-900 border border-slate-800 font-sans text-xs text-slate-200 placeholder:text-slate-600 focus:border-sky-500 focus:outline-none leading-relaxed resize-y"
+                />
+
+                <div className="flex items-center justify-end gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setIsPasteTextOpen(false)}
+                    className="px-3 py-1.5 rounded-lg text-slate-400 hover:text-slate-200 text-xs"
+                  >
+                    إلغاء
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleAddPastedDoc}
+                    disabled={!pastedDocText.trim()}
+                    className="px-4 py-1.5 rounded-xl bg-sky-600 hover:bg-sky-500 text-white font-bold text-xs shadow-md shadow-sky-900/30 flex items-center gap-1.5 disabled:opacity-50"
+                  >
+                    <FileCheck className="w-3.5 h-3.5" />
+                    <span>إدراج نص الوورد في التحليل</span>
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
 
           {/* Files List with Inspection */}

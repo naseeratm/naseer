@@ -9,6 +9,7 @@ import {
   FileText,
   Image as ImageIcon,
   Shield,
+  ShieldCheck,
   CheckCircle2,
   Settings,
   Zap,
@@ -25,6 +26,8 @@ import {
   Package,
   FolderOpen,
   Cloud,
+  Grid3X3,
+  Plus,
 } from 'lucide-react';
 import { ThesisProject, IngestedFileItem, ApiKeyItem, EngineMode } from '../types/thesis';
 import { generateLocalEngineeringProject } from '../utils/physicsEngine';
@@ -36,8 +39,11 @@ interface CleanWorkspaceHomeProps {
   apiKeys: ApiKeyItem[];
   engineMode: EngineMode;
   onOpenKeyPool: () => void;
+  onOpenNewProjectWizard?: () => void;
   onOpenProjectsLibrary?: () => void;
   onOpenCloudSettings?: () => void;
+  onOpenAuditModal?: () => void;
+  onOpenMeshGenerator?: () => void;
   savedProjectsCount?: number;
 }
 
@@ -46,8 +52,11 @@ export const CleanWorkspaceHome: React.FC<CleanWorkspaceHomeProps> = ({
   apiKeys,
   engineMode,
   onOpenKeyPool,
+  onOpenNewProjectWizard,
   onOpenProjectsLibrary,
   onOpenCloudSettings,
+  onOpenAuditModal,
+  onOpenMeshGenerator,
   savedProjectsCount = 3,
 }) => {
   const [filesList, setFilesList] = useState<IngestedFileItem[]>([]);
@@ -330,67 +339,137 @@ export const CleanWorkspaceHome: React.FC<CleanWorkspaceHomeProps> = ({
             <div className="flex items-center gap-2">
               <span className="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-pulse shadow-md shadow-emerald-400/50" />
               <span className="text-xs font-mono font-bold text-emerald-400 tracking-wider uppercase">
-                منصة عمل هندسية شاملة ومستقلة · READY FOR CONTINUOUS WORK
+                منصة التحليل والتحقق الهندسي الشاملة · UNIVERSAL CAE V&V STUDIO
               </span>
             </div>
             <h1 className="text-2xl sm:text-3xl font-extrabold text-white tracking-tight">
               ANSYS Engineering WorkBench
             </h1>
             <p className="text-sm text-slate-400 max-w-2xl leading-relaxed">
-              منصة صناعية متكاملة لمحاكاة ميكانيكا الموائع والإنشاءات (CFD & FEA). استيراد وقراءة كاملة لملفات بايثون، أنسيز، إكسل، وورد، والصور والمخططات، مع معالجة حتمية للنتائج دون تخمين.
+              منصة هندسية صناعية عامة ومفتوحة لنمذجة ومحاكاة ميكانيكا الموائع والإنشاءات (CFD & FEA) لأي مشروع مخصص من الصفر، مع دعم كامل للشبكات الحسابية ومعايير التحقق ASME V&V 20 ومؤشر روتش GCI.
             </p>
           </div>
 
           <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3 shrink-0">
+            {onOpenNewProjectWizard && (
+              <button
+                type="button"
+                onClick={onOpenNewProjectWizard}
+                className="px-4 py-2.5 rounded-xl bg-gradient-to-r from-emerald-600 via-teal-600 to-emerald-500 hover:from-emerald-500 hover:to-teal-400 text-white text-xs font-bold shadow-lg shadow-emerald-950/50 flex items-center justify-center gap-2 transition-all active:scale-95 border border-emerald-400/30"
+                title="إنشاء مشروع هندسي جديد ومخصص من الصفر"
+              >
+                <Plus className="w-4 h-4" />
+                <span>+ مشروع جديد مخصص</span>
+              </button>
+            )}
+
             {onOpenProjectsLibrary && (
               <button
                 type="button"
                 onClick={onOpenProjectsLibrary}
-                className="px-4 py-2 rounded-xl bg-amber-500/15 hover:bg-amber-500/25 text-amber-300 border border-amber-500/40 text-xs font-bold shadow-md shadow-amber-950/40 flex items-center justify-center gap-2 transition-all active:scale-95"
+                className="px-4 py-2.5 rounded-xl bg-slate-800/90 hover:bg-slate-750 text-amber-300 border border-amber-500/30 text-xs font-bold shadow-md shadow-amber-950/30 flex items-center justify-center gap-2 transition-all active:scale-95"
               >
                 <FolderOpen className="w-4 h-4 text-amber-400" />
-                <span>استدعاء البحوث السابقة ({savedProjectsCount})</span>
+                <span>مكتبة المشاريع ({savedProjectsCount})</span>
+              </button>
+            )}
+
+            {onOpenCloudSettings && (
+              <button
+                type="button"
+                onClick={onOpenCloudSettings}
+                className="px-3.5 py-2.5 rounded-xl bg-sky-500/10 hover:bg-sky-500/20 text-sky-300 border border-sky-500/30 text-xs font-semibold flex items-center justify-center gap-2 transition-all active:scale-95 shadow-sm"
+                title="تهيئة الخادم السحابي 400GB وترخيص أنسيز"
+              >
+                <Cloud className="w-4 h-4 text-sky-400" />
+                <span className="hidden sm:inline">السحابة (400GB)</span>
               </button>
             )}
 
             <button
               type="button"
               onClick={onOpenKeyPool}
-              className="px-4 py-2 rounded-xl bg-slate-800/90 hover:bg-slate-700 text-slate-300 border border-slate-700 text-xs font-semibold flex items-center justify-center gap-2 transition-colors"
+              className="px-3.5 py-2.5 rounded-xl bg-slate-800/90 hover:bg-slate-700 text-slate-300 border border-slate-700 text-xs font-semibold flex items-center justify-center gap-1.5 transition-colors"
             >
               <Cpu className="w-4 h-4 text-sky-400" />
               <span>
                 المحرك:{' '}
                 <strong className="text-white">
-                  {engineMode === 'pure_local' ? 'محلي 100%' : 'هجين ذكي'}
+                  {engineMode === 'pure_local' ? 'محلي' : 'هجين'}
                 </strong>
               </span>
-            </button>
-
-            {onOpenCloudSettings && (
-              <button
-                type="button"
-                onClick={onOpenCloudSettings}
-                className="px-4 py-2 rounded-xl bg-sky-500/10 hover:bg-sky-500/20 text-sky-300 border border-sky-500/30 text-xs font-semibold flex items-center justify-center gap-2 transition-all active:scale-95 shadow-sm"
-                title="تهيئة الخادم السحابي 400GB وترخيص أنسيز"
-              >
-                <Cloud className="w-4 h-4 text-sky-400" />
-                <span>السحابة والترخيص (400GB)</span>
-              </button>
-            )}
-
-            <button
-              type="button"
-              onClick={() => handleStartCleanSimulation(true)}
-              disabled={isProcessing}
-              className="px-5 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold shadow-lg shadow-emerald-900/30 flex items-center justify-center gap-2 transition-all active:scale-95 disabled:opacity-50"
-            >
-              <Play className="w-4 h-4 fill-current" />
-              <span>تشغيل المحاكاة الفورية</span>
             </button>
           </div>
         </div>
       </div>
+
+      {/* Official Technical Audit & 100% Completeness Certificate Banner */}
+      {onOpenAuditModal && (
+        <div className="bg-gradient-to-r from-slate-900 via-slate-900 to-emerald-950/30 border border-emerald-500/40 rounded-2xl p-4 sm:p-5 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 shadow-xl">
+          <div className="flex items-center gap-3.5">
+            <div className="w-11 h-11 rounded-2xl bg-emerald-500/15 border border-emerald-500/30 text-emerald-400 flex items-center justify-center shrink-0 shadow-md shadow-emerald-950/50">
+              <ShieldCheck className="w-6 h-6" />
+            </div>
+            <div>
+              <div className="flex items-center gap-2">
+                <h3 className="text-sm sm:text-base font-bold text-white">
+                  وثيقة التدقيق الهندسي وشهادة الجاهزية الفنية للمنصة (100% مكتملة)
+                </h3>
+                <span className="px-2 py-0.5 rounded text-[10px] font-mono bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 font-bold">
+                  مكتملة ومُعتمدة
+                </span>
+              </div>
+              <p className="text-xs text-slate-300 mt-1 max-w-2xl leading-relaxed">
+                وثيقة تقنية رسمية وشاملة تثبت اكتمال المنصة المعماري والبرمجي (بوابة المنفذ 3000، محرك بايثون، ومولد APDL/Workbench)، وتؤكد أن المتطلب الخارجي الوحيد المتبقي هو ربطها ببرنامج ANSYS المكتبي.
+              </p>
+            </div>
+          </div>
+
+          <button
+            type="button"
+            onClick={onOpenAuditModal}
+            className="px-4 py-2.5 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white text-xs font-bold shadow-md shadow-emerald-950/50 flex items-center gap-2 transition-all active:scale-95 shrink-0"
+            title="فتح وثيقة التدقيق وشهادة الاكتمال 100% للطباعة أو التنزيل"
+          >
+            <ShieldCheck className="w-4 h-4" />
+            <span>عرض وتحميل الوثيقة الرسمية</span>
+          </button>
+        </div>
+      )}
+
+      {/* Generative Computational Mesh Studio & Quality Analyzer Banner */}
+      {onOpenMeshGenerator && (
+        <div className="bg-gradient-to-r from-slate-900 via-slate-900 to-sky-950/30 border border-sky-500/30 rounded-2xl p-4 sm:p-5 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 shadow-xl">
+          <div className="flex items-center gap-3.5">
+            <div className="w-11 h-11 rounded-2xl bg-sky-500/15 border border-sky-500/30 text-sky-400 flex items-center justify-center shrink-0 shadow-md shadow-sky-950/50">
+              <Grid3X3 className="w-6 h-6" />
+            </div>
+            <div>
+              <div className="flex items-center gap-2">
+                <h3 className="text-sm sm:text-base font-bold text-white">
+                  استوديو توليد الشبكات وتدقيق الجودة التفاعلي (MeshGenerativeTool)
+                </h3>
+                <span className="px-2 py-0.5 rounded text-[10px] font-mono bg-sky-500/20 text-sky-300 border border-sky-500/30 font-bold">
+                  خوارزميات هندسية تفاعلية
+                </span>
+              </div>
+              <p className="text-xs text-slate-300 mt-1 max-w-2xl leading-relaxed">
+                توليد شبكات حسابية (CFD/FEA) لهندسات متنوعة (أجنحة NACA، أنابيب فنتوري، مبددات حرارية، عينات إجهاد) مع فحص فوري ومباشر لمعيار جودة التعامد (Orthogonal Quality) والانحراف (Skewness) ومدرج التوزيع.
+              </p>
+            </div>
+          </div>
+
+          <button
+            type="button"
+            onClick={onOpenMeshGenerator}
+            className="px-4 py-2.5 rounded-xl bg-gradient-to-r from-sky-500 to-indigo-600 hover:from-sky-400 hover:to-indigo-500 text-white text-xs font-bold shadow-md shadow-sky-950/50 flex items-center gap-2 transition-all active:scale-95 shrink-0"
+            title="فتح استوديو توليد الشبكات الحسابية وفحص الجودة"
+          >
+            <Grid3X3 className="w-4 h-4" />
+            <span>تشغيل مولد الشبكات (Mesh Tool)</span>
+          </button>
+        </div>
+      )}
 
       {/* Dedicated Recall Previous Projects Banner */}
       {onOpenProjectsLibrary && (
@@ -460,6 +539,7 @@ export const CleanWorkspaceHome: React.FC<CleanWorkspaceHomeProps> = ({
             ref={fileInputRef}
             type="file"
             multiple
+            accept=".docx,.doc,.docm,.rtf,.pdf,.txt,.py,.jou,.mac,.inp,.cas,.dat,.cdb,.m,.xlsx,.xls,.csv,.png,.jpg,.jpeg,.svg,.webp,.zip,.wbpz"
             className="hidden"
             onChange={(e) => handleFilesSelected(e.target.files)}
           />
@@ -562,17 +642,22 @@ export const CleanWorkspaceHome: React.FC<CleanWorkspaceHomeProps> = ({
           )}
         </div>
 
-        {/* Benchmark Presets: 1-Click Loadable Engineering Models */}
+        {/* Benchmark Presets: Optional Standard Verification Cases */}
         <div className="bg-slate-950/70 border border-slate-800 rounded-2xl p-5 space-y-4">
           <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-800 pb-3">
-            <div className="flex items-center gap-2">
-              <Sparkles className="w-4 h-4 text-amber-400" />
-              <h3 className="text-xs sm:text-sm font-bold text-slate-100">
-                أو ابدأ فوراً بتحميل أحد النماذج الهندسية المعيارية المعتمدة (Benchmark Presets):
-              </h3>
+            <div className="space-y-0.5">
+              <div className="flex items-center gap-2">
+                <Sparkles className="w-4 h-4 text-amber-400" />
+                <h3 className="text-xs sm:text-sm font-bold text-slate-100">
+                  قوالب ونماذج التحقق القياسية المعتمدة (Optional Benchmark Validation Presets):
+                </h3>
+              </div>
+              <p className="text-[11px] text-slate-400">
+                حالات دراسية معيارية لاختبار المنصة والتحقق من حسابات روتش GCI؛ يمكنك تجربة أي منها أو العمل بمشروعك الخاص الجديد كلياً.
+              </p>
             </div>
-            <span className="text-[11px] text-slate-400 font-mono">
-              محاكاة كاملة 100% · ASME V&V 20
+            <span className="text-[11px] text-emerald-400 font-mono bg-emerald-500/10 px-2.5 py-1 rounded-lg border border-emerald-500/20 font-bold">
+              معايير ASME V&V 20
             </span>
           </div>
 

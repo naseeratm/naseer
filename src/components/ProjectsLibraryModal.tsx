@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useRef } from 'react';
 import {
   FolderOpen,
   Search,
@@ -9,6 +9,7 @@ import {
   ArrowRight,
   Trash2,
   PlusCircle,
+  Plus,
   X,
   FileText,
   Flame,
@@ -18,6 +19,8 @@ import {
   CheckCircle2,
   ExternalLink,
   Download,
+  Upload,
+  RotateCcw,
 } from 'lucide-react';
 import { ThesisProject } from '../types/thesis';
 import { exportToJournalHTML, exportToWordDocument } from '../utils/exporter';
@@ -29,7 +32,10 @@ interface ProjectsLibraryModalProps {
   currentProjectId?: string;
   onSelectProject: (project: ThesisProject) => void;
   onStartBlankProject: () => void;
+  onOpenNewProjectWizard?: () => void;
   onDeleteProject?: (projectId: string) => void;
+  onClearCustomProjects?: () => void;
+  onImportProject?: (project: ThesisProject) => void;
 }
 
 export const ProjectsLibraryModal: React.FC<ProjectsLibraryModalProps> = ({
@@ -39,10 +45,14 @@ export const ProjectsLibraryModal: React.FC<ProjectsLibraryModalProps> = ({
   currentProjectId,
   onSelectProject,
   onStartBlankProject,
+  onOpenNewProjectWizard,
   onDeleteProject,
+  onClearCustomProjects,
+  onImportProject,
 }) => {
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedField, setSelectedField] = useState<string>('all');
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   if (!isOpen) return null;
 
@@ -104,8 +114,44 @@ export const ProjectsLibraryModal: React.FC<ProjectsLibraryModalProps> = ({
     }
   };
 
+  const handleExportJSON = () => {
+    const dataStr = 'data:text/json;charset=utf-8,' + encodeURIComponent(JSON.stringify(projects, null, 2));
+    const downloadAnchor = document.createElement('a');
+    downloadAnchor.setAttribute('href', dataStr);
+    downloadAnchor.setAttribute('download', `cae_projects_library_${Date.now()}.json`);
+    document.body.appendChild(downloadAnchor);
+    downloadAnchor.click();
+    downloadAnchor.remove();
+  };
+
+  const handleImportFile = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      try {
+        const parsed = JSON.parse(event.target?.result as string);
+        const importedList: ThesisProject[] = Array.isArray(parsed) ? parsed : [parsed];
+        if (importedList.length > 0 && onImportProject) {
+          onImportProject(importedList[0]);
+        }
+      } catch (err) {
+        alert('تعذر استيراد الملف: تأكد من صحة تنسيق JSON');
+      }
+    };
+    reader.readAsText(file);
+    if (fileInputRef.current) fileInputRef.current.value = '';
+  };
+
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-md animate-in fade-in duration-200">
+      <input
+        ref={fileInputRef}
+        type="file"
+        accept=".json"
+        className="hidden"
+        onChange={handleImportFile}
+      />
       <div className="bg-slate-900 border border-slate-800 rounded-3xl max-w-4xl w-full max-h-[90vh] flex flex-col shadow-2xl overflow-hidden">
         
         {/* Modal Header */}
@@ -117,14 +163,14 @@ export const ProjectsLibraryModal: React.FC<ProjectsLibraryModalProps> = ({
             <div>
               <div className="flex items-center gap-2">
                 <h2 className="text-lg sm:text-xl font-bold text-slate-100">
-                  نافذة استدعاء البحوث والمشاريع السابقة
+                  مكتبة واستدعاء المشاريع الهندسية (CAE Projects Hub)
                 </h2>
                 <span className="px-2 py-0.5 rounded text-[11px] font-bold font-mono bg-slate-800 text-sky-400 border border-slate-700">
                   {projects.length} مشاريع متاحة
                 </span>
               </div>
               <p className="text-xs text-slate-400 mt-0.5">
-                يمكنك استدعاء أي مشروع سابق للتعديل والاستعراض فقط عند الحاجة، مع بقاء بيئة العمل الجديدة صافية
+                استدعاء وتعديل أي مشروع سابق أو قالب قياسي، مع إمكانية التصدير والاستيراد وتصفير المنصة للمزامنة النظيفة مع GitHub
               </p>
             </div>
           </div>
@@ -138,10 +184,10 @@ export const ProjectsLibraryModal: React.FC<ProjectsLibraryModalProps> = ({
           </button>
         </div>
 
-        {/* Search, Filter & Quick Blank Session Toolbar */}
+        {/* Search, Filter & Actions Toolbar */}
         <div className="px-6 py-4 bg-slate-950/60 border-b border-slate-800/80 flex flex-wrap items-center justify-between gap-3 text-xs">
           {/* Search Input */}
-          <div className="relative flex-1 min-w-[240px]">
+          <div className="relative flex-1 min-w-[200px]">
             <Search className="w-4 h-4 text-slate-500 absolute right-3.5 top-1/2 -translate-y-1/2" />
             <input
               type="text"
@@ -156,10 +202,10 @@ export const ProjectsLibraryModal: React.FC<ProjectsLibraryModalProps> = ({
           <div className="flex items-center gap-1.5 flex-wrap">
             {[
               { id: 'all', label: 'كافة المشاريع' },
-              { id: 'Thermal', label: 'الحرارة وتغير الطور (LHTES)' },
-              { id: 'CFD', label: 'ديناميكا الموائع (CFD)' },
-              { id: 'FEA', label: 'التحليل الإنشائي (FEA)' },
-              { id: 'custom', label: 'المشاريع المحفوظة محلياً' },
+              { id: 'custom', label: 'المشاريع المخصصة' },
+              { id: 'CFD', label: 'ميكانيكا الموائع' },
+              { id: 'FEA', label: 'التحليل الإنشائي' },
+              { id: 'Thermal', label: 'الحرارة' },
             ].map((f) => (
               <button
                 key={f.id}
@@ -175,17 +221,55 @@ export const ProjectsLibraryModal: React.FC<ProjectsLibraryModalProps> = ({
             ))}
           </div>
 
-          {/* Direct Blank Project Action */}
-          <button
-            onClick={() => {
-              onStartBlankProject();
-              onClose();
-            }}
-            className="px-3.5 py-1.5 rounded-xl bg-emerald-600/90 hover:bg-emerald-500 text-white font-bold text-xs flex items-center gap-1.5 shadow-md shadow-emerald-950/40 transition-all active:scale-95 shrink-0"
-          >
-            <PlusCircle className="w-4 h-4" />
-            <span>مشروع جديد فارغ</span>
-          </button>
+          {/* Action Buttons: New Project Wizard, Export, Import, Reset */}
+          <div className="flex items-center gap-2 flex-wrap">
+            {onOpenNewProjectWizard && (
+              <button
+                onClick={() => {
+                  onClose();
+                  onOpenNewProjectWizard();
+                }}
+                className="px-3.5 py-1.5 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white font-bold text-xs flex items-center gap-1.5 shadow-md shadow-emerald-950/40 transition-all active:scale-95"
+                title="إنشاء مشروع هندسي جديد ومخصص من الصفر"
+              >
+                <Plus className="w-3.5 h-3.5" />
+                <span>+ مشروع جديد مخصص</span>
+              </button>
+            )}
+
+            <button
+              onClick={handleExportJSON}
+              className="px-2.5 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 text-xs font-semibold flex items-center gap-1 transition-colors"
+              title="تصدير نسخة احتياطية من مكتبة المشاريع كملف JSON"
+            >
+              <Download className="w-3.5 h-3.5 text-sky-400" />
+              <span className="hidden sm:inline">تصدير JSON</span>
+            </button>
+
+            <button
+              onClick={() => fileInputRef.current?.click()}
+              className="px-2.5 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 text-xs font-semibold flex items-center gap-1 transition-colors"
+              title="استيراد مشروع من ملف JSON خارجي"
+            >
+              <Upload className="w-3.5 h-3.5 text-emerald-400" />
+              <span className="hidden sm:inline">استيراد JSON</span>
+            </button>
+
+            {onClearCustomProjects && (
+              <button
+                onClick={() => {
+                  if (window.confirm('هل تود تصفير وحذف كافة المشاريع المخصصة للتهيئة النظيفة قبل الرفع إلى GitHub؟')) {
+                    onClearCustomProjects();
+                  }
+                }}
+                className="px-2.5 py-1.5 rounded-xl bg-rose-500/10 hover:bg-rose-500/20 text-rose-300 border border-rose-500/30 text-xs font-semibold flex items-center gap-1 transition-colors"
+                title="تصفير المشاريع المخصصة لتهيئة الرفع النظيف إلى GitHub"
+              >
+                <RotateCcw className="w-3.5 h-3.5 text-rose-400" />
+                <span className="hidden sm:inline">تصفير المنصة</span>
+              </button>
+            )}
+          </div>
         </div>
 
         {/* Projects List Container */}

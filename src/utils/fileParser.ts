@@ -35,6 +35,23 @@ export interface ParsedFileResult {
  * Check if the file is a compressed archive (.zip, .wbpz ANSYS archive, .tar, .gz, or PK magic header)
  */
 function isArchiveFile(file: File, buffer: ArrayBuffer, ext: string): boolean {
+  // CRITICAL: Never treat Word documents (.docx, .doc), spreadsheets (.xlsx, .xls), or PDFs as generic ZIP archives
+  if (['docx', 'doc', 'docm', 'dotx', 'dot', 'rtf', 'xlsx', 'xls', 'xlsm', 'csv', 'pdf', 'pptx', 'ppt', 'odt', 'ods'].includes(ext)) {
+    return false;
+  }
+  const lowerName = file.name.toLowerCase();
+  if (lowerName.endsWith('.docx') || lowerName.endsWith('.doc') || lowerName.endsWith('.rtf') || lowerName.endsWith('.xlsx')) {
+    return false;
+  }
+  if (file.type && (
+    file.type.includes('word') ||
+    file.type.includes('document') ||
+    file.type.includes('sheet') ||
+    file.type.includes('presentation')
+  )) {
+    return false;
+  }
+
   if (['zip', 'wbpz', 'gz', 'tar', 'tgz', '7z', 'rar', 'bz2'].includes(ext)) {
     return true;
   }
@@ -362,16 +379,36 @@ async function parseSingleEngineeringFile(file: File, ext: string, arrayBuffer: 
       return baseItem;
     }
 
-    // 3. Word Documents (.docx, .doc)
-    if (ext === 'docx') {
+    // 3. Word Documents (.docx, .doc, .rtf, .docm)
+    if (['docx', 'doc', 'docm', 'dotx', 'dot', 'rtf'].includes(ext) || file.type.includes('word') || file.type.includes('officedocument.wordprocessingml')) {
       baseItem.category = 'word';
       baseItem.mimeType = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
-      const mammothResult = await mammoth.extractRawText({ arrayBuffer });
-      const rawText = mammothResult.value || '';
+
+      let rawText = '';
+
+      // Try mammoth for .docx
+      if (ext === 'docx' || ext === 'docm' || ext === 'dotx') {
+        try {
+          const mammothResult = await mammoth.extractRawText({ arrayBuffer });
+          rawText = mammothResult.value || '';
+        } catch (mammothErr) {
+          console.warn('Mammoth extraction failed, falling back to buffer decoding:', mammothErr);
+        }
+      }
+
+      // If mammoth gave empty text or if it's a binary .doc or .rtf, extract text safely from buffer
+      if (!rawText || rawText.trim().length === 0) {
+        rawText = extractTextFromBinaryBuffer(arrayBuffer);
+      }
+
+      if (!rawText.trim()) {
+        rawText = `[مستند وورد: ${file.name}]\nتم استقبال المستند بنجاح بحجم ${(file.size / 1024).toFixed(1)} KB.`;
+      }
+
       baseItem.content = rawText;
       const lines = rawText.split('\n').filter((l: string) => l.trim().length > 0);
       baseItem.parsedLines = lines.length;
-      baseItem.summary = `مستند وورد تقني يحتوي على ${lines.length} فقرة نصية ومواصفات هندسية.`;
+      baseItem.summary = `مستند وورد تقني (${ext.toUpperCase()}) يحتوي على ${lines.length} فقرة نصية ومواصفات هندسية مستخرجة بدقة.`;
 
       extractParametersFromText(rawText, baseItem.detectedParameters);
       return baseItem;
@@ -624,3 +661,22 @@ function readFileAsDataURL(file: File): Promise<string> {
     reader.readAsDataURL(file);
   });
 }
+
+/**
+ * Safely extracts human-readable text from binary buffers (such as legacy .doc, .rtf, or partial docx)
+ * Preserves Arabic unicode characters (\u0600-\u06FF, \u0750-\u077F, etc.), English text, numbers, and engineering symbols.
+ */
+function extractTextFromBinaryBuffer(buffer: ArrayBuffer): string {
+  try {
+    const decoder = new TextDecoder('utf-8', { fatal: false, ignoreBOM: true });
+    const fullText = decoder.decode(buffer);
+    const cleaned = fullText
+      .replace(/[^\x20-\x7E\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF\uFB50-\uFDFF\uFE70-\uFEFF\n\r\t]/g, ' ')
+      .replace(/[ ]{2,}/g, ' ')
+      .trim();
+    return cleaned.slice(0, 60000);
+  } catch {
+    return '';
+  }
+}
+

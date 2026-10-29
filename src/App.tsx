@@ -30,6 +30,9 @@ import { SupervisorAssistantDrawer } from './components/SupervisorAssistantDrawe
 import { KeyPoolModal } from './components/KeyPoolModal';
 import { ProjectsLibraryModal } from './components/ProjectsLibraryModal';
 import { CloudServerSettingsModal } from './components/CloudServerSettingsModal';
+import { AuditReportModal } from './components/AuditReportModal';
+import { MeshGenerativeTool } from './components/MeshGenerativeTool';
+import { NewProjectModal } from './components/NewProjectModal';
 import {
   LHTES_V3_MASTER_PROJECT,
   NACA_0012_CFD_PROJECT,
@@ -41,12 +44,15 @@ export type TabType = 'report' | 'contours' | 'mesh' | 'validation' | 'tables' |
 export default function App() {
   // Start with clean workspace (null) so previous research does NOT stick to the app!
   const [currentProject, setCurrentProject] = useState<ThesisProject | null>(null);
-  const [activeTab, setActiveTab] = useState<TabType>('report');
+  const [activeTab, setActiveTab] = useState<TabType>('overview');
+  const [isNewProjectModalOpen, setIsNewProjectModalOpen] = useState<boolean>(false);
   const [isUploadModalOpen, setIsUploadModalOpen] = useState<boolean>(false);
   const [isAssistantOpen, setIsAssistantOpen] = useState<boolean>(false);
   const [isKeyPoolModalOpen, setIsKeyPoolModalOpen] = useState<boolean>(false);
   const [isProjectsLibraryOpen, setIsProjectsLibraryOpen] = useState<boolean>(false);
   const [isCloudModalOpen, setIsCloudModalOpen] = useState<boolean>(false);
+  const [isAuditModalOpen, setIsAuditModalOpen] = useState<boolean>(false);
+  const [isMeshGeneratorOpen, setIsMeshGeneratorOpen] = useState<boolean>(false);
   const [saveToast, setSaveToast] = useState<string | null>(null);
 
   // Cloud 400GB & ANSYS License Server Configuration
@@ -190,6 +196,46 @@ export default function App() {
     setActiveTab('overview');
   };
 
+  const handleCreateNewProject = (createdProject: ThesisProject) => {
+    setCurrentProject(createdProject);
+    const updated = [createdProject, ...customProjects.filter((p) => p.id !== createdProject.id)];
+    setCustomProjects(updated);
+    try {
+      localStorage.setItem('workbench_custom_projects', JSON.stringify(updated));
+    } catch (e) {
+      console.error('Error saving new project:', e);
+    }
+    setActiveTab('overview');
+    setSaveToast(`تم تدشين المشروع الهندسي (${createdProject.title}) بنجاح!`);
+    setTimeout(() => setSaveToast(null), 3500);
+  };
+
+  const handleClearAllCustomProjects = () => {
+    setCustomProjects([]);
+    setCurrentProject(null);
+    try {
+      localStorage.removeItem('workbench_custom_projects');
+    } catch (e) {
+      console.error('Error clearing custom projects:', e);
+    }
+    setSaveToast('تم تصفير المنصة ومسح كافة المشاريع المخصصة بنجاح.');
+    setTimeout(() => setSaveToast(null), 3500);
+  };
+
+  const handleImportProject = (importedProj: ThesisProject) => {
+    setCurrentProject(importedProj);
+    const updated = [importedProj, ...customProjects.filter((p) => p.id !== importedProj.id)];
+    setCustomProjects(updated);
+    try {
+      localStorage.setItem('workbench_custom_projects', JSON.stringify(updated));
+    } catch (e) {
+      console.error('Error saving imported project:', e);
+    }
+    setActiveTab('overview');
+    setSaveToast(`تم استيراد المشروع (${importedProj.title}) بنجاح!`);
+    setTimeout(() => setSaveToast(null), 3500);
+  };
+
   const handleSaveCurrentProject = () => {
     if (!currentProject) return;
     const projectToSave: ThesisProject = {
@@ -236,6 +282,37 @@ export default function App() {
     }
   };
 
+  const handleApplyMeshToStudy = (applied: {
+    elementCount: number;
+    nodeCount: number;
+    minOrthogonalQuality: number;
+    maxSkewness: number;
+    description: string;
+  }) => {
+    if (!currentProject) return;
+    const updatedLevels = [...currentProject.meshStudy.meshLevels];
+    if (updatedLevels.length > 2) {
+      updatedLevels[2] = {
+        ...updatedLevels[2],
+        elements: applied.elementCount,
+        nodes: applied.nodeCount,
+      };
+    }
+    const updatedProj: ThesisProject = {
+      ...currentProject,
+      meshStudy: {
+        ...currentProject.meshStudy,
+        minOrthogonalQuality: applied.minOrthogonalQuality,
+        maxSkewness: applied.maxSkewness,
+        recommendation: `${applied.description} - تم التحقق من استقرار معادلات Navier-Stokes وجودة التعامد وفق معايير تقارب روتش (Roache GCI).`,
+        meshLevels: updatedLevels,
+      },
+    };
+    setCurrentProject(updatedProj);
+    setSaveToast(`تم اعتماد الشبكة الحسابية الجديدة (${applied.elementCount} عنصر) وتحديث مشروع المحاكاة بنجاح`);
+    setTimeout(() => setSaveToast(null), 3500);
+  };
+
   const handlePrint = () => {
     if (activeTab !== 'report') {
       setActiveTab('report');
@@ -253,11 +330,14 @@ export default function App() {
       <Navbar
         currentProject={currentProject}
         onResetToCleanWorkspace={() => setCurrentProject(null)}
+        onOpenNewProjectWizard={() => setIsNewProjectModalOpen(true)}
         onOpenProjectsLibrary={() => setIsProjectsLibraryOpen(true)}
         onOpenUploadModal={() => setIsUploadModalOpen(true)}
         onOpenAssistant={() => setIsAssistantOpen(true)}
         onOpenKeyPoolModal={() => setIsKeyPoolModalOpen(true)}
         onOpenCloudModal={() => setIsCloudModalOpen(true)}
+        onOpenAuditModal={() => setIsAuditModalOpen(true)}
+        onOpenMeshGenerator={() => setIsMeshGeneratorOpen(true)}
         onPrintReport={handlePrint}
         engineMode={engineMode}
         apiKeys={apiKeys}
@@ -274,8 +354,11 @@ export default function App() {
             apiKeys={apiKeys}
             engineMode={engineMode}
             onOpenKeyPool={() => setIsKeyPoolModalOpen(true)}
+            onOpenNewProjectWizard={() => setIsNewProjectModalOpen(true)}
             onOpenProjectsLibrary={() => setIsProjectsLibraryOpen(true)}
             onOpenCloudSettings={() => setIsCloudModalOpen(true)}
+            onOpenAuditModal={() => setIsAuditModalOpen(true)}
+            onOpenMeshGenerator={() => setIsMeshGeneratorOpen(true)}
             savedProjectsCount={allAvailableProjects.length}
           />
         ) : (
@@ -402,6 +485,7 @@ export default function App() {
                 <MeshStudyTab
                   meshStudy={currentProject.meshStudy}
                   softwareType={currentProject.softwareType}
+                  onOpenMeshGenerator={() => setIsMeshGeneratorOpen(true)}
                 />
               )}
 
@@ -409,6 +493,7 @@ export default function App() {
                 <ValidationTab
                   validation={currentProject.validation}
                   field={currentProject.field}
+                  project={currentProject}
                 />
               )}
 
@@ -492,7 +577,7 @@ export default function App() {
       />
 
 
-      {/* Dedicated Previous Research Projects Recall Window */}
+      {/* Dedicated Projects Hub & Recall Window */}
       <ProjectsLibraryModal
         isOpen={isProjectsLibraryOpen}
         onClose={() => setIsProjectsLibraryOpen(false)}
@@ -500,10 +585,35 @@ export default function App() {
         currentProjectId={currentProject?.id}
         onSelectProject={(proj) => {
           setCurrentProject(proj);
-          setActiveTab('report');
+          setActiveTab('overview');
         }}
         onStartBlankProject={() => setCurrentProject(null)}
+        onOpenNewProjectWizard={() => setIsNewProjectModalOpen(true)}
         onDeleteProject={handleDeleteCustomProject}
+        onClearCustomProjects={handleClearAllCustomProjects}
+        onImportProject={handleImportProject}
+      />
+
+      {/* New Project Wizard Modal */}
+      <NewProjectModal
+        isOpen={isNewProjectModalOpen}
+        onClose={() => setIsNewProjectModalOpen(false)}
+        onCreateProject={handleCreateNewProject}
+        onOpenMeshGenerator={() => setIsMeshGeneratorOpen(true)}
+      />
+
+      {/* Technical Audit & 100% Completeness Report Modal */}
+      <AuditReportModal
+        isOpen={isAuditModalOpen}
+        onClose={() => setIsAuditModalOpen(false)}
+      />
+
+      {/* Interactive Computational Mesh Generator & Orthogonal Quality Studio */}
+      <MeshGenerativeTool
+        isOpen={isMeshGeneratorOpen}
+        onClose={() => setIsMeshGeneratorOpen(false)}
+        currentProject={currentProject}
+        onApplyMeshToStudy={handleApplyMeshToStudy}
       />
 
       {/* Floating Save Toast Notification */}

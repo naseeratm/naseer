@@ -14,9 +14,14 @@ import { MeshStudyData } from '../types/thesis';
 interface MeshStudyTabProps {
   meshStudy: MeshStudyData;
   softwareType: string;
+  onOpenMeshGenerator?: () => void;
 }
 
-export const MeshStudyTab: React.FC<MeshStudyTabProps> = ({ meshStudy, softwareType }) => {
+export const MeshStudyTab: React.FC<MeshStudyTabProps> = ({
+  meshStudy,
+  softwareType,
+  onOpenMeshGenerator,
+}) => {
   const [selectedLevelIdx, setSelectedLevelIdx] = useState<number>(2); // Default to Fine Mesh (index 2)
   const [meshZoom, setMeshZoom] = useState<'structured' | 'inflation' | 'boundary'>('inflation');
 
@@ -41,10 +46,21 @@ export const MeshStudyTab: React.FC<MeshStudyTabProps> = ({ meshStudy, softwareT
               </p>
             </div>
           </div>
-          <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-semibold bg-emerald-500/15 text-emerald-400 border border-emerald-500/30">
-            <CheckCircle2 className="w-3.5 h-3.5" />
-            GCI = {selectedLevel.gciPercent}% (مستقلة تماماً)
-          </span>
+          <div className="flex items-center gap-2 flex-wrap">
+            {onOpenMeshGenerator && (
+              <button
+                onClick={onOpenMeshGenerator}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold bg-sky-500/20 hover:bg-sky-500/30 text-sky-300 border border-sky-500/40 shadow-sm transition-all active:scale-95"
+              >
+                <Grid3X3 className="w-3.5 h-3.5 text-sky-400" />
+                <span>فتح مولد ومحلل الشبكات التوليدي (Mesh Tool)</span>
+              </button>
+            )}
+            <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-semibold bg-emerald-500/15 text-emerald-400 border border-emerald-500/30">
+              <CheckCircle2 className="w-3.5 h-3.5" />
+              GCI = {selectedLevel.gciPercent}% (مستقلة تماماً)
+            </span>
+          </div>
         </div>
 
         <p className="text-sm text-slate-300 leading-relaxed bg-slate-950/60 p-4 rounded-xl border border-slate-800/80 mb-6 text-justify">

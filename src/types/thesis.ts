@@ -105,6 +105,87 @@ export interface SupervisorDefensePoint {
   scientificJustification: string;
 }
 
+export interface AcademicMeta {
+  studentName: string;
+  studentId: string;
+  supervisor: string;
+  coSupervisor?: string;
+  university: string;
+  department: string;
+  academicYear: string;
+  keywords: string[];
+  platformVersion: string;
+  ansysVersion: string;
+  pythonVersion: string;
+  modelRevision: string;
+  researchQuestion: string;
+  researchHypothesis: string;
+}
+
+export interface CaseStudyItem {
+  caseId: string; // Case-01, Case-02, ...
+  name: string;
+  nameAr: string;
+  studyVariable: string;
+  purpose: string;
+  meshElements: number;
+  meshNodes: number;
+  solverEngine: 'ANSYS Mechanical APDL' | 'Python SciPy Benchmark' | 'Fluent' | 'PyMAPDL';
+  keyOutputName: string;
+  keyOutputValue: number;
+  keyOutputUnit: string;
+  discrepancyPercent: number;
+  runDurationSec: number;
+  status: 'Baseline' | 'Converged' | 'Completed' | 'Pending';
+}
+
+export interface AnalyticalVerificationDossier {
+  theoryName: string;
+  exactFormula: string;
+  analyticalValue: number;
+  simulatedValue: number;
+  unit: string;
+  relativeErrorPercent: number;
+  apparentOrderOfConvergenceP: number;
+  isVerified: boolean;
+  residualsConvergence: { equation: string; finalResidual: number; criterion: number; isConverged: boolean }[];
+  energyBalanceErrorPercent: number;
+  scientificVerificationNote: string;
+}
+
+export interface RoacheGciCalculation {
+  gridRefinementRatioR: number; // e.g. 1.33
+  apparentOrderP: number; // e.g. 1.94
+  gci12Percent: number; // Fine to Medium (e.g. 1.12%)
+  gci23Percent: number; // Medium to Coarse (e.g. 2.85%)
+  safetyFactorFs: number; // 1.25 for 3+ grids
+  asymptoticRangeRatio: number; // GCI23 / (r^p * GCI12) ~ 1.0
+  isGridIndependent: boolean;
+  qualityMetrics: {
+    minOrthogonalQuality: number;
+    maxSkewness: number;
+    maxAspectRatio: number;
+    qualityAssessment: string;
+  };
+}
+
+export interface SimulationJobManifest {
+  jobId: string;
+  projectId: string;
+  caseId: string;
+  solver: 'ANSYS Mechanical APDL' | 'Python SciPy Benchmark' | 'Fluent' | 'PyMAPDL';
+  solverVersion: string;
+  status: 'queued' | 'running' | 'completed' | 'failed' | 'diverged';
+  startTime: string;
+  endTime?: string;
+  executionDurationSec: number;
+  boundaryChecksum: string;
+  outputChecksum: string;
+  logLines: string[];
+  errorCode?: string;
+  resultsSummary?: string;
+}
+
 export interface ThesisProject {
   id: string;
   title: string;
@@ -132,6 +213,15 @@ export interface ThesisProject {
   thesisTables: ThesisTable[];
   supervisorDefensePoints: SupervisorDefensePoint[];
   originalScriptContent?: string;
+
+  // New Rigorous Audit Additions
+  academicMeta?: AcademicMeta;
+  casesMatrix?: CaseStudyItem[];
+  verificationDossier?: AnalyticalVerificationDossier;
+  roacheGciDetails?: RoacheGciCalculation;
+  jobsHistory?: SimulationJobManifest[];
+  activeSolverBadge?: 'ANSYS Mechanical APDL' | 'Python SciPy Benchmark';
+
   // Professional CAE attributes
   projectType?: 'Industrial Simulation' | 'R&D Verification' | 'Certified CAE Report' | 'Failure Analysis';
   standardsCompliance?: string[];
