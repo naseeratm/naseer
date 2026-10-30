@@ -9,3 +9,8 @@ __pycache__/
 *.log
 .env*
 !.env.example
+venv/
+.venv312/
+backend/.venv312/
+*.venv*
+*venv*
