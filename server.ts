@@ -6,6 +6,7 @@ import net from 'net';
 import os from 'os';
 import dotenv from 'dotenv';
 import { GoogleGenAI } from '@google/genai';
+import fs from 'fs';
 
 dotenv.config();
 
@@ -137,11 +138,12 @@ app.get('/api/python/health', async (_req: Request, res: Response) => {
     throw new Error('Not ok');
   } catch (err: any) {
     return res.json({
-      connected: true,
+      connected: false,
       status: 'active',
       backendUrl: activeCloudUrl,
-      message: 'Integrated Native Node.js CAE & Physics Solver Active',
+      message: `تعذر الاتصال بمحرك بايثون على ${activeCloudUrl}`,
       engine: 'ANSYS WorkBench & Python Fallback Solver Bridge',
+      error: err?.message || String(err),
     });
   }
 });
@@ -947,6 +949,49 @@ if (process.env.NODE_ENV !== 'production') {
   });
   app.use(vite.middlewares);
 }
+
+async function ensureLocalPythonBackend(): Promise<void> {
+  const localBackend = new URL(activeCloudUrl).hostname;
+  if (localBackend !== '127.0.0.1' && localBackend !== 'localhost') return;
+
+  try {
+    const response = await fetch(`${activeCloudUrl}/api/health`, {
+      signal: AbortSignal.timeout(1500),
+    });
+    if (response.ok) return;
+  } catch {
+    // The local backend is not running yet.
+  }
+
+  const backendDir = path.join(__dirname, 'backend');
+  const pythonCandidates = [
+    path.join(backendDir, '.venv312', 'Scripts', 'python.exe'),
+    path.join(backendDir, '.venv', 'Scripts', 'python.exe'),
+    path.join(__dirname, '.venv', 'Scripts', 'python.exe'),
+  ];
+  const pythonExecutable = pythonCandidates.find((candidate) => fs.existsSync(candidate));
+  if (!pythonExecutable) {
+    console.warn('[Python Backend] No local virtual environment found; set PYTHON_BACKEND_URL or install backend dependencies.');
+    return;
+  }
+
+  const child = spawn(pythonExecutable, ['-m', 'uvicorn', 'main:app', '--host', '127.0.0.1', '--port', PYTHON_PORT], {
+    cwd: backendDir,
+    stdio: ['ignore', 'pipe', 'pipe'],
+    windowsHide: true,
+  });
+
+  child.stdout?.on('data', (data) => process.stdout.write(`[Python Backend] ${data}`));
+  child.stderr?.on('data', (data) => process.stderr.write(`[Python Backend] ${data}`));
+  child.on('error', (error) => console.error('[Python Backend] Failed to start:', error.message));
+  child.on('exit', (code) => {
+    if (code !== 0 && code !== null) console.error(`[Python Backend] Exited with code ${code}`);
+  });
+}
+
+ensureLocalPythonBackend().catch((error) => {
+  console.error('[Python Backend] Startup check failed:', error);
+});
 
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`[ANSYS Engineering WorkBench Server] Listening on http://0.0.0.0:${PORT}`);
