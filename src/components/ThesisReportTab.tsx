@@ -152,7 +152,8 @@ export const ThesisReportTab: React.FC<ThesisReportTabProps> = ({ project, onPri
           <EngineeringSchematicViewer project={project} />
         </div>
 
-        {/* 1. الخرائط الحرارية الملونة والرسوم البيانية (Thermal Heatmaps & Charts) */}
+        {/* 1. الخرائط الحرارية الملونة والرسوم البيانية (تظهر فقط للمشاريع الحرارية ذات الصلة) */}
+        {project.meltingComparison && project.meltingComparison.length > 0 && project.field === 'Thermal' && (
         <div className="space-y-6">
           <div className="flex items-center gap-2 text-sky-400 print:text-sky-800 font-bold text-base sm:text-lg border-r-4 border-sky-500 pr-3">
             <BarChart3 className="w-5 h-5 text-amber-400" />
@@ -292,8 +293,10 @@ export const ThesisReportTab: React.FC<ThesisReportTabProps> = ({ project, onPri
             </div>
           </div>
         </div>
+        )}
 
-        {/* 2. مصفوفة الأدبيات والدراسات السابقة (Literature Review Matrix) */}
+        {/* 2. مصفوفة الأدبيات والدراسات السابقة (تظهر فقط عند وجود بيانات أدبيات مدخلة) */}
+        {project.literatureReview && project.literatureReview.length > 0 && (
         <div className="space-y-4">
           <div className="flex items-center gap-2 text-sky-400 print:text-sky-800 font-bold text-base sm:text-lg border-r-4 border-sky-500 pr-3">
             <TableIcon className="w-5 h-5 text-indigo-400" />
@@ -341,6 +344,7 @@ export const ThesisReportTab: React.FC<ThesisReportTabProps> = ({ project, onPri
             </table>
           </div>
         </div>
+        )}
 
         {/* 3. المواصفات الهندسية ونواة التصميم (CAD & Physical System) */}
         <div className="space-y-4">
@@ -405,16 +409,16 @@ export const ThesisReportTab: React.FC<ThesisReportTabProps> = ({ project, onPri
               <div className="p-4 rounded-xl bg-slate-950/70 print:bg-slate-50 border border-slate-800 print:border-slate-200">
                 <span className="text-slate-500 block mb-1 font-semibold">المادة والخواص الفيزيائية (Material):</span>
                 <strong className="text-amber-400 print:text-amber-800 font-mono text-xs">
-                  {project.material.name} (كثافة = {project.material.density})
+                  {project.material?.name || 'مادة النموذج'} (كثافة = {project.material?.density || 'غير محدد'})
                 </strong>
               </div>
               <div className="p-4 rounded-xl bg-slate-950/70 print:bg-slate-50 border border-slate-800 print:border-slate-200">
                 <span className="text-slate-500 block mb-1 font-semibold">إعدادات المحلل وحل المعادلات (Solver):</span>
                 <strong className="text-sky-400 print:text-sky-800 font-mono text-xs">
-                  {project.solver.solverType} ({project.solver.scheme})
+                  {project.solver?.solverType || (project.field === 'FEA' ? 'Static Structural Sparse Direct' : project.field === 'Thermal' ? 'Thermal Conduction Solver' : 'Pressure-Based Coupled Solver')} ({project.solver?.scheme || 'Coupled Formulation'})
                 </strong>
               </div>
-              {project.boundaryConditions.map((b, idx) => (
+              {(project.boundaryConditions || []).map((b, idx) => (
                 <div key={idx} className="p-4 rounded-xl bg-slate-950/70 print:bg-slate-50 border border-slate-800 print:border-slate-200">
                   <span className="text-slate-500 block mb-1 font-semibold">{b.name} ({b.type}):</span>
                   <strong className="text-emerald-400 print:text-emerald-800 font-mono text-xs">

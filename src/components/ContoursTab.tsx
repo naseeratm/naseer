@@ -30,6 +30,14 @@ export const ContoursTab: React.FC<ContoursTabProps> = ({ contours }) => {
   const [selectedContourId, setSelectedContourId] = useState<string>(
     contours[0]?.id || ''
   );
+
+  // Reset selected contour if contours change or current id is invalid
+  useEffect(() => {
+    if (contours.length > 0 && (!selectedContourId || !contours.some((c) => c.id === selectedContourId))) {
+      setSelectedContourId(contours[0].id);
+      setProbeData(null);
+    }
+  }, [contours, selectedContourId]);
   const [colormap, setColormap] = useState<ColormapType>('jet');
   const [showStreamlines, setShowStreamlines] = useState<boolean>(true);
   const [showProbe, setShowProbe] = useState<boolean>(true);

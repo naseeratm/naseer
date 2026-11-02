@@ -52,6 +52,7 @@ export const ProjectsLibraryModal: React.FC<ProjectsLibraryModalProps> = ({
 }) => {
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedField, setSelectedField] = useState<string>('all');
+  const [confirmReset, setConfirmReset] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   if (!isOpen) return null;
@@ -256,18 +257,38 @@ export const ProjectsLibraryModal: React.FC<ProjectsLibraryModalProps> = ({
             </button>
 
             {onClearCustomProjects && (
-              <button
-                onClick={() => {
-                  if (window.confirm('هل تود تصفير وحذف كافة المشاريع المخصصة للتهيئة النظيفة قبل الرفع إلى GitHub؟')) {
-                    onClearCustomProjects();
-                  }
-                }}
-                className="px-2.5 py-1.5 rounded-xl bg-rose-500/10 hover:bg-rose-500/20 text-rose-300 border border-rose-500/30 text-xs font-semibold flex items-center gap-1 transition-colors"
-                title="تصفير المشاريع المخصصة لتهيئة الرفع النظيف إلى GitHub"
-              >
-                <RotateCcw className="w-3.5 h-3.5 text-rose-400" />
-                <span className="hidden sm:inline">تصفير المنصة</span>
-              </button>
+              confirmReset ? (
+                <div className="flex items-center gap-1.5 bg-rose-950/80 border border-rose-500/60 px-2 py-1 rounded-xl">
+                  <span className="text-[11px] text-rose-200 font-bold">تصفير وحذف جميع المشاريع؟</span>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      onClearCustomProjects();
+                      setConfirmReset(false);
+                    }}
+                    className="px-2.5 py-1 rounded-lg bg-rose-600 hover:bg-rose-500 text-white font-bold text-[11px] shadow-sm transition-all active:scale-95"
+                  >
+                    نعم، حذف الكل
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setConfirmReset(false)}
+                    className="px-2 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-[11px] transition-all"
+                  >
+                    إلغاء
+                  </button>
+                </div>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => setConfirmReset(true)}
+                  className="px-3 py-1.5 rounded-xl bg-rose-500/15 hover:bg-rose-500/25 text-rose-300 border border-rose-500/40 text-xs font-bold flex items-center gap-1.5 transition-colors shadow-sm"
+                  title="تصفير وفورمات المشاريع لتهيئة الرفع النظيف إلى GitHub"
+                >
+                  <RotateCcw className="w-3.5 h-3.5 text-rose-400" />
+                  <span>فورمات وتصفير المنصة</span>
+                </button>
+              )
             )}
           </div>
         </div>
@@ -388,8 +409,9 @@ export const ProjectsLibraryModal: React.FC<ProjectsLibraryModalProps> = ({
                         <span>Word (.doc)</span>
                       </button>
 
-                      {proj.isCustom && onDeleteProject && (
+                      {(proj.isCustom || !['lhtes-v3-master', 'naca-0012-cfd', 'cantilever-beam-fea'].includes(proj.id)) && onDeleteProject && (
                         <button
+                          type="button"
                           onClick={() => onDeleteProject(proj.id)}
                           className="px-2.5 py-1.5 rounded-lg bg-rose-500/10 hover:bg-rose-500/20 text-rose-300 border border-rose-500/30 text-[11px] flex items-center gap-1 transition-colors"
                           title="حذف هذا المشروع من الذاكرة المحلية"

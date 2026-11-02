@@ -32,7 +32,6 @@ import {
 import { ThesisProject, IngestedFileItem, ApiKeyItem, EngineMode } from '../types/thesis';
 import { generateLocalEngineeringProject } from '../utils/physicsEngine';
 import { parseEngineeringFilesOrArchive } from '../utils/fileParser';
-import { LHTES_V3_MASTER_PROJECT, NACA_0012_CFD_PROJECT, CANTILEVER_BEAM_FEA_PROJECT } from '../data/defaultPresets';
 
 interface CleanWorkspaceHomeProps {
   onStartProject: (project: ThesisProject) => void;
@@ -45,6 +44,7 @@ interface CleanWorkspaceHomeProps {
   onOpenAuditModal?: () => void;
   onOpenMeshGenerator?: () => void;
   savedProjectsCount?: number;
+  onResetWorkspace?: () => void;
 }
 
 export const CleanWorkspaceHome: React.FC<CleanWorkspaceHomeProps> = ({
@@ -57,7 +57,8 @@ export const CleanWorkspaceHome: React.FC<CleanWorkspaceHomeProps> = ({
   onOpenCloudSettings,
   onOpenAuditModal,
   onOpenMeshGenerator,
-  savedProjectsCount = 3,
+  savedProjectsCount = 0,
+  onResetWorkspace,
 }) => {
   const [filesList, setFilesList] = useState<IngestedFileItem[]>([]);
   const [isParsingFiles, setIsParsingFiles] = useState(false);
@@ -374,6 +375,22 @@ export const CleanWorkspaceHome: React.FC<CleanWorkspaceHomeProps> = ({
               </button>
             )}
 
+            <button
+              type="button"
+              onClick={() => {
+                setFilesList([]);
+                setDirectives('');
+                setProjectTitle('');
+                setErrorMessage(null);
+                if (onResetWorkspace) onResetWorkspace();
+              }}
+              className="px-3.5 py-2.5 rounded-xl bg-rose-500/15 hover:bg-rose-500/25 text-rose-300 border border-rose-500/40 text-xs font-bold shadow-md shadow-rose-950/40 flex items-center justify-center gap-1.5 transition-all active:scale-95"
+              title="تصفير وفورمات مساحة العمل وإعادة التهيئة النظيفة"
+            >
+              <RotateCcw className="w-4 h-4 text-rose-400" />
+              <span>تهيئة وفورمات المنصة (Reset)</span>
+            </button>
+
             {onOpenCloudSettings && (
               <button
                 type="button"
@@ -642,108 +659,7 @@ export const CleanWorkspaceHome: React.FC<CleanWorkspaceHomeProps> = ({
           )}
         </div>
 
-        {/* Benchmark Presets: Optional Standard Verification Cases */}
-        <div className="bg-slate-950/70 border border-slate-800 rounded-2xl p-5 space-y-4">
-          <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-800 pb-3">
-            <div className="space-y-0.5">
-              <div className="flex items-center gap-2">
-                <Sparkles className="w-4 h-4 text-amber-400" />
-                <h3 className="text-xs sm:text-sm font-bold text-slate-100">
-                  قوالب ونماذج التحقق القياسية المعتمدة (Optional Benchmark Validation Presets):
-                </h3>
-              </div>
-              <p className="text-[11px] text-slate-400">
-                حالات دراسية معيارية لاختبار المنصة والتحقق من حسابات روتش GCI؛ يمكنك تجربة أي منها أو العمل بمشروعك الخاص الجديد كلياً.
-              </p>
-            </div>
-            <span className="text-[11px] text-emerald-400 font-mono bg-emerald-500/10 px-2.5 py-1 rounded-lg border border-emerald-500/20 font-bold">
-              معايير ASME V&V 20
-            </span>
-          </div>
 
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-            {/* LHTES v3 Flagship Preset */}
-            <div
-              onClick={() => onStartProject(LHTES_V3_MASTER_PROJECT)}
-              className="p-3.5 rounded-xl bg-slate-900 border border-amber-500/30 hover:border-amber-400 cursor-pointer transition-all hover:scale-[1.02] flex flex-col justify-between group shadow-lg shadow-amber-950/10"
-            >
-              <div className="space-y-1.5">
-                <div className="flex items-center justify-between">
-                  <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-amber-500/20 text-amber-300 border border-amber-500/30 font-mono">
-                    LHTES v3 · Thermal
-                  </span>
-                  <span className="text-[10px] text-emerald-400 font-bold font-mono">
-                    GCI: 0.88%
-                  </span>
-                </div>
-                <h4 className="font-bold text-xs text-white group-hover:text-amber-300 transition-colors">
-                  تخزين الطاقة الحرارية الكامنة (LHTES Graded Fins & NePCM)
-                </h4>
-                <p className="text-[11px] text-slate-400 line-clamp-2">
-                  زعانف شجرية متدرجة، كويل حلزوني، شروط متذبذبة، وتخفيض زمن الانصهار 40.39%.
-                </p>
-              </div>
-              <div className="mt-3 pt-2.5 border-t border-slate-800/80 flex items-center justify-between text-[11px] text-amber-400 font-bold">
-                <span>تحميل المشروع واستعراض النتائج</span>
-                <span className="font-mono text-xs">←</span>
-              </div>
-            </div>
-
-            {/* NACA 0012 Airfoil CFD Preset */}
-            <div
-              onClick={() => onStartProject(NACA_0012_CFD_PROJECT)}
-              className="p-3.5 rounded-xl bg-slate-900 border border-sky-500/30 hover:border-sky-400 cursor-pointer transition-all hover:scale-[1.02] flex flex-col justify-between group shadow-lg shadow-sky-950/10"
-            >
-              <div className="space-y-1.5">
-                <div className="flex items-center justify-between">
-                  <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-sky-500/20 text-sky-300 border border-sky-500/30 font-mono">
-                    NACA 0012 · CFD
-                  </span>
-                  <span className="text-[10px] text-sky-400 font-bold font-mono">
-                    R² = 0.998
-                  </span>
-                </div>
-                <h4 className="font-bold text-xs text-white group-hover:text-sky-300 transition-colors">
-                  الانسياب الهوائي وانفصال التدفق (Aerodynamic Flow & SST k-ω)
-                </h4>
-                <p className="text-[11px] text-slate-400 line-clamp-2">
-                  محاكاة خارجية لمقطع الجناح عند Re = 3.0e6، زوايا هجوم 0°-15°، ومطابقة NASA.
-                </p>
-              </div>
-              <div className="mt-3 pt-2.5 border-t border-slate-800/80 flex items-center justify-between text-[11px] text-sky-400 font-bold">
-                <span>تحميل المشروع واستعراض النتائج</span>
-                <span className="font-mono text-xs">←</span>
-              </div>
-            </div>
-
-            {/* Cantilever Beam FEA Preset */}
-            <div
-              onClick={() => onStartProject(CANTILEVER_BEAM_FEA_PROJECT)}
-              className="p-3.5 rounded-xl bg-slate-900 border border-indigo-500/30 hover:border-indigo-400 cursor-pointer transition-all hover:scale-[1.02] flex flex-col justify-between group shadow-lg shadow-indigo-950/10"
-            >
-              <div className="space-y-1.5">
-                <div className="flex items-center justify-between">
-                  <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-indigo-500/20 text-indigo-300 border border-indigo-500/30 font-mono">
-                    Cantilever · FEA
-                  </span>
-                  <span className="text-[10px] text-indigo-400 font-bold font-mono">
-                    SF: 1.61
-                  </span>
-                </div>
-                <h4 className="font-bold text-xs text-white group-hover:text-indigo-300 transition-colors">
-                  التحليل الإنشائي بالعناصر المحدودة (Structural Steel Bending)
-                </h4>
-                <p className="text-[11px] text-slate-400 line-clamp-2">
-                  جائز كابولي مقطع I خاضع لحمولة طرفية 45 kN، إجهادات فون ميسيس وسهم التشوه.
-                </p>
-              </div>
-              <div className="mt-3 pt-2.5 border-t border-slate-800/80 flex items-center justify-between text-[11px] text-indigo-400 font-bold">
-                <span>تحميل المشروع واستعراض النتائج</span>
-                <span className="font-mono text-xs">←</span>
-              </div>
-            </div>
-          </div>
-        </div>
 
         {/* Attached Files List & Diagnostics Card */}
         {filesList.length > 0 && (

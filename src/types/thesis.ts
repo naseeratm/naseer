@@ -81,7 +81,7 @@ export interface ContourField {
   id: string;
   name: string;
   nameEn: string;
-  field: 'velocity' | 'pressure' | 'temperature' | 'turbulent_ke' | 'stress' | 'deformation';
+  field: 'velocity' | 'pressure' | 'temperature' | 'turbulent_ke' | 'stress' | 'deformation' | 'heat_flux' | 'gradient';
   unit: string;
   minVal: number;
   maxVal: number;
@@ -186,6 +186,18 @@ export interface SimulationJobManifest {
   resultsSummary?: string;
 }
 
+export interface EngineeringAudit {
+  auditId: string;
+  timestamp: string;
+  version: string;
+  reviewer: string;
+  complianceChecks: { check: string; status: 'Pass' | 'Fail' | 'Not Applicable'; comment?: string }[];
+  parameterConsistency: boolean;
+  numericalStability: boolean;
+  verificationSource: string;
+  engineeringSignature: string;
+}
+
 export interface ThesisProject {
   id: string;
   title: string;
@@ -214,15 +226,14 @@ export interface ThesisProject {
   supervisorDefensePoints: SupervisorDefensePoint[];
   originalScriptContent?: string;
 
-  // New Rigorous Audit Additions
+  // Rigorous Audit & Professional CAE attributes
   academicMeta?: AcademicMeta;
   casesMatrix?: CaseStudyItem[];
   verificationDossier?: AnalyticalVerificationDossier;
   roacheGciDetails?: RoacheGciCalculation;
   jobsHistory?: SimulationJobManifest[];
   activeSolverBadge?: 'ANSYS Mechanical APDL' | 'Python SciPy Benchmark';
-
-  // Professional CAE attributes
+  engineeringAudit?: EngineeringAudit; // NEW: Rigorous Audit Addition
   projectType?: 'Industrial Simulation' | 'R&D Verification' | 'Certified CAE Report' | 'Failure Analysis';
   standardsCompliance?: string[];
   directivesApplied?: string;

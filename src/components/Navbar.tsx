@@ -18,6 +18,8 @@ import {
   FolderOpen,
   Grid3X3,
   Cloud,
+  Database,
+  Sliders,
 } from 'lucide-react';
 import { ThesisProject, EngineMode, ApiKeyItem, CloudServerConfig } from '../types/thesis';
 import { exportToWordDocument, exportToCSV, exportToLatex, exportToJournalHTML } from '../utils/exporter';
@@ -26,6 +28,8 @@ interface NavbarProps {
   currentProject: ThesisProject | null;
   onResetToCleanWorkspace: () => void;
   onOpenNewProjectWizard?: () => void;
+  onOpenMaterialsModal?: () => void;
+  onOpenParametricSweep?: () => void;
   onOpenProjectsLibrary: () => void;
   onOpenUploadModal: () => void;
   onOpenAssistant: () => void;
@@ -44,6 +48,8 @@ export const Navbar: React.FC<NavbarProps> = ({
   currentProject,
   onResetToCleanWorkspace,
   onOpenNewProjectWizard,
+  onOpenMaterialsModal,
+  onOpenParametricSweep,
   onOpenProjectsLibrary,
   onOpenUploadModal,
   onOpenAssistant,
@@ -129,8 +135,31 @@ export const Navbar: React.FC<NavbarProps> = ({
               title="مولد الشبكات وتدقيق جودة التعامد الهندسية (MeshGenerativeTool)"
             >
               <Grid3X3 className="w-3.5 h-3.5 text-sky-400" />
-              <span className="hidden md:inline">مولد الشبكات:</span>
-              <span className="text-emerald-400 font-mono font-bold">Mesh Tool</span>
+              <span className="hidden md:inline">مولد الشبكات</span>
+            </button>
+          )}
+
+          {/* Standard Materials Database Button */}
+          {onOpenMaterialsModal && (
+            <button
+              onClick={onOpenMaterialsModal}
+              className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-bold bg-amber-500/10 hover:bg-amber-500/20 text-amber-300 border border-amber-500/30 transition-all active:scale-95 shadow-sm"
+              title="مكتبة المواد الهندسية القياسية المعيارية"
+            >
+              <Database className="w-3.5 h-3.5 text-amber-400" />
+              <span className="hidden lg:inline">مكتبة المواد</span>
+            </button>
+          )}
+
+          {/* Parametric Sweep Analysis Button */}
+          {onOpenParametricSweep && (
+            <button
+              onClick={onOpenParametricSweep}
+              className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-bold bg-indigo-500/10 hover:bg-indigo-500/20 text-indigo-300 border border-indigo-500/30 transition-all active:scale-95 shadow-sm"
+              title="أداة مسح المتغيرات وسحط الاستجابة الحسابي"
+            >
+              <Sliders className="w-3.5 h-3.5 text-indigo-400" />
+              <span className="hidden lg:inline">مسح المتغيرات</span>
             </button>
           )}
 
@@ -147,14 +176,14 @@ export const Navbar: React.FC<NavbarProps> = ({
             </button>
           )}
 
-          {/* New Clean Session / Reset Button */}
+          {/* New Clean Session / Format & Reset Button */}
           <button
             onClick={onResetToCleanWorkspace}
-            className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-semibold bg-slate-800/80 hover:bg-slate-700 text-slate-200 border border-slate-700 transition-all active:scale-95"
-            title="بدء جلسة عمل جديدة ونظيفة دون المشروع القديم"
+            className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-bold bg-rose-500/15 hover:bg-rose-500/25 text-rose-300 border border-rose-500/40 transition-all active:scale-95 shadow-sm"
+            title="تهيئة وفورمات المنصة: تصفير مساحة العمل والخروج من أي مشروع قديم"
           >
-            <RotateCcw className="w-3.5 h-3.5 text-sky-400" />
-            <span className="hidden sm:inline">جلسة جديدة</span>
+            <RotateCcw className="w-3.5 h-3.5 text-rose-400" />
+            <span>تهيئة وفورمات (Reset)</span>
           </button>
 
           {/* Engine & Key Pool Manager Button */}

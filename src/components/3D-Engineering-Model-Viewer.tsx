@@ -15,20 +15,57 @@ interface EngineeringModelViewer3DProps {
 
 export const EngineeringModelViewer3D: React.FC<EngineeringModelViewer3DProps> = ({ project }) => {
   const containerRef = useRef<HTMLDivElement | null>(null);
+  const isFEA = project.field === 'FEA';
+  const isCFD = project.field === 'CFD';
+  const isThermal = project.field === 'Thermal';
+  const isLHTES = Boolean(project.meltingComparison && project.meltingComparison.length > 0) || project.id === 'lhtes-v3-master';
   const [activeLayer, setActiveLayer] = useState<'lhtes_assembly' | 'pcm_melt' | 'temperature_field'>('lhtes_assembly');
+
+  const defaultEq = isThermal
+    ? '\\mathbf{q}\'\' = -k \\nabla T'
+    : isFEA
+    ? '\\nabla \\cdot \\boldsymbol{\\sigma} + \\mathbf{b} = 0'
+    : '\\nabla \\cdot \\vec{V} = 0';
+
+  const initialPin = {
+    title: project.boundaryConditions[0]
+      ? `${project.boundaryConditions[0].name} (${project.boundaryConditions[0].type})`
+      : isThermal
+      ? 'مصدر الحرارة الأساسي'
+      : isFEA
+      ? 'التثبيت الإنشائي الأساسي'
+      : 'مدخل التدفق الأساسي',
+    type: 'input' as const,
+    value: project.boundaryConditions[0]
+      ? `${project.boundaryConditions[0].value} ${project.boundaryConditions[0].unit}`
+      : isThermal
+      ? '2500 W/m²'
+      : isFEA
+      ? '15.0 MPa'
+      : '22.0 m/s',
+    equation: project.governingEquations[0]?.latex || defaultEq,
+    description: project.boundaryConditions[0]?.description || 'الشرط الحدودي الأساسي المطبق على النموذج الهندسي.',
+  };
+
   const [selectedPin, setSelectedPin] = useState<{
     title: string;
     type: 'input' | 'output' | 'constant';
     value: string;
     equation: string;
     description: string;
-  } | null>({
-    title: 'دخل مائع التبادل الحراري (HTF Inlet - Oscillating Temp)',
-    type: 'input',
-    value: 'Tin(t) = 348 + 10·sin(2πt / 1200 s), ṁ = 0.025 kg/s',
-    equation: project.governingEquations[2]?.latex || '\\rho c_p (\\vec{V} \\cdot \\nabla) T = k \\nabla^2 T + \\Phi',
-    description: 'دخل مائع التبادل الحراري (HTF) داخل الكويل الحلزوني مع دوران حراري ترددي ومعدل جريان 0.025 كغ/ثانية.',
-  });
+  } | null>(initialPin);
+
+  useEffect(() => {
+    if (project.boundaryConditions[0]) {
+      setSelectedPin({
+        title: `${project.boundaryConditions[0].name} (${project.boundaryConditions[0].type})`,
+        type: 'input',
+        value: `${project.boundaryConditions[0].value} ${project.boundaryConditions[0].unit}`,
+        equation: project.governingEquations[0]?.latex || defaultEq,
+        description: project.boundaryConditions[0].description || 'الشرط الحدودي الأساسي المطبق على النموذج الهندسي.',
+      });
+    }
+  }, [project.id]);
 
   const shellMeshRef = useRef<THREE.Mesh | null>(null);
   const pcmMeshRef = useRef<THREE.Mesh | null>(null);
@@ -202,7 +239,7 @@ export const EngineeringModelViewer3D: React.FC<EngineeringModelViewer3DProps> =
       cfdGroup.add(streamTubes);
 
       modelGroup.add(cfdGroup);
-    } else {
+    } else if (isLHTES) {
       // Flagship LHTES Helical Coiled Cylindrical Storage Unit
       const shellGeo = new THREE.CylinderGeometry(1.8, 1.8, 4.5, 32, 1, true);
       const shellMat = new THREE.MeshPhysicalMaterial({
@@ -282,6 +319,59 @@ export const EngineeringModelViewer3D: React.FC<EngineeringModelViewer3DProps> =
         finInstanced.setMatrixAt(i, dummy.matrix);
       }
       modelGroup.add(finInstanced);
+    } else {
+      // 3D Solid Thermal Conduction & Fin Heat Sink Model
+      const thermalGroup = new THREE.Group();
+
+      // Base Solid Conduction Block
+      const baseBlockGeo = new THREE.BoxGeometry(4.0, 0.8, 3.0);
+      const baseBlockMat = new THREE.MeshStandardMaterial({
+        color: 0xd97706,
+        metalness: 0.6,
+        roughness: 0.35,
+      });
+      shellMeshRef.current = new THREE.Mesh(baseBlockGeo, baseBlockMat);
+      shellMeshRef.current.position.set(0, -0.6, 0);
+      shellMeshRef.current.castShadow = true;
+      shellMeshRef.current.receiveShadow = true;
+      thermalGroup.add(shellMeshRef.current);
+
+      // Bottom Heat Influx Pad (Glowing hot red/orange)
+      const heatSourceGeo = new THREE.BoxGeometry(3.6, 0.15, 2.6);
+      const heatSourceMat = new THREE.MeshStandardMaterial({
+        color: 0xef4444,
+        emissive: 0xd97706,
+        emissiveIntensity: 0.8,
+      });
+      pcmMeshRef.current = new THREE.Mesh(heatSourceGeo, heatSourceMat);
+      pcmMeshRef.current.position.set(0, -1.05, 0);
+      thermalGroup.add(pcmMeshRef.current);
+
+      // Array of 7 vertical cooling fins conducting heat upwards
+      const finsGroup = new THREE.Group();
+      const finGeo = new THREE.BoxGeometry(0.18, 2.2, 2.8);
+      const finMat = new THREE.MeshStandardMaterial({
+        color: 0x38bdf8,
+        metalness: 0.8,
+        roughness: 0.25,
+      });
+      for (let i = -3; i <= 3; i++) {
+        const finMesh = new THREE.Mesh(finGeo, finMat);
+        finMesh.position.set(i * 0.55, 0.9, 0);
+        finMesh.castShadow = true;
+        finsGroup.add(finMesh);
+      }
+      coilMeshRef.current = finsGroup as any;
+      thermalGroup.add(finsGroup);
+
+      // Heat flux indicator arrows pointing upward from heat source
+      const arrowDir = new THREE.Vector3(0, 1, 0);
+      for (let k = -2; k <= 2; k += 2) {
+        const arrow = new THREE.ArrowHelper(arrowDir, new THREE.Vector3(k * 0.8, -0.2, 0), 1.0, 0xf59e0b, 0.3, 0.15);
+        thermalGroup.add(arrow);
+      }
+
+      modelGroup.add(thermalGroup);
     }
 
     const shadowGeo = new THREE.PlaneGeometry(8, 8);
@@ -342,24 +432,25 @@ export const EngineeringModelViewer3D: React.FC<EngineeringModelViewer3DProps> =
     }
   }, [activeLayer]);
 
-  const isFEA = project.field === 'FEA';
-  const isCFD = project.field === 'CFD';
-
   const viewerTitle = isFEA
     ? 'عارض المجسم ثلاثي الأبعاد (3D Structural FEA Engine)'
     : isCFD
     ? 'عارض المجسم ثلاثي الأبعاد (3D Aerodynamics CFD Engine)'
-    : 'عارض المجسم ثلاثي الأبعاد (LHTES Thermal Engine)';
+    : isLHTES
+    ? 'عارض المجسم ثلاثي الأبعاد (LHTES Phase Change Engine)'
+    : 'عارض المجسم ثلاثي الأبعاد (3D Thermal Conduction Engine)';
 
   const viewerSubtitle = isFEA
     ? 'نموذج إنشائي تفاعلي: جائز كابولي I-Beam، قاعدة التثبيت، ونواة تركيز الإجهادات فون ميسيس'
     : isCFD
-    ? 'نموذج هوائي تفاعلي: مقطع الجناح NACA 0012، قمة الامتصاص، وخطوط الانسياب'
-    : 'نموذج حراري تفاعلي: الغلاف، الكويل الحلزوني (HTF)، ووسط انصهار الـ NePCM';
+    ? 'نموذج جريان وهوائي تفاعلي: مقطع الجناح، قمة الامتصاص، وتدرج السرعة'
+    : isLHTES
+    ? 'نموذج حراري تفاعلي: الغلاف، الكويل الحلزوني (HTF)، ووسط انصهار الـ NePCM'
+    : 'نموذج حراري تفاعلي: كتلة التوصيل الحراري، شريحة التسخين، وزعانف التبديد بالحمل';
 
-  const layer1Label = isFEA ? 'كامل الجائز (I-Beam)' : isCFD ? 'مقطع الجناح (Airfoil)' : 'تجميع المنظومة';
-  const layer2Label = isFEA ? 'إجهادات فون ميسيس (Von Mises)' : isCFD ? 'قمة امتصاص الضغط (Suction)' : 'منطقة انصهار PCM';
-  const layer3Label = isFEA ? 'حمولة وركيزة التثبيت (BCs)' : isCFD ? 'خطوط الانسياب (Streamlines)' : 'حقل درجات الحرارة';
+  const layer1Label = isFEA ? 'كامل الجائز (I-Beam)' : isCFD ? 'السطح الانسيابي (Airfoil)' : isLHTES ? 'تجميع المنظومة' : 'الهيكل الحراري (Solid Block)';
+  const layer2Label = isFEA ? 'إجهادات فون ميسيس (Von Mises)' : isCFD ? 'قمة امتصاص الضغط (Suction)' : isLHTES ? 'منطقة انصهار PCM' : 'فيض الحرارة (Heat Flux)';
+  const layer3Label = isFEA ? 'حمولة وركيزة التثبيت (BCs)' : isCFD ? 'حقل السرعة (Velocity Field)' : isLHTES ? 'حقل درجات الحرارة' : 'تدرج درجات الحرارة (Isotherms)';
 
   return (
     <div className="bg-slate-900/90 rounded-[2.5rem] border border-slate-800 p-8 shadow-2xl space-y-6">
@@ -422,169 +513,68 @@ export const EngineeringModelViewer3D: React.FC<EngineeringModelViewer3DProps> =
               مكونات المجسم الهندسي ({project.field} Hotspots):
             </span>
             <div className="grid grid-cols-1 gap-1 pt-1">
-              {isFEA ? (
-                <>
-                  <button
-                    type="button"
-                    onClick={() =>
-                      setSelectedPin({
-                        title: 'حمولة الانحناء الطرفية المركزة (Tip Load P)',
-                        type: 'input',
-                        value: 'Fy = -45.0 kN (Nodal Surface Force)',
-                        equation: '[K] {u} = {F}',
-                        description: 'حمولة رأسية مطبقة على الحافة الحرة للكابول مسببة لعزم انحناء أقصى عند نقطة التثبيت.',
-                      })
-                    }
-                    className="text-right px-2.5 py-1.5 rounded-lg bg-sky-500/10 hover:bg-sky-500/20 text-sky-300 border border-sky-500/20 flex items-center justify-between transition-colors"
-                  >
-                    <span>1. الحمولة الطرفية المطبقة (Load)</span>
-                    <span className="font-mono text-xs font-bold">45.0 kN</span>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() =>
-                      setSelectedPin({
-                        title: 'تمركز إجهاد فون ميسيس الأقصى (Max Von Mises Stress)',
-                        type: 'output',
-                        value: 'σ_vm = 214.8 MPa (Root Flange Notch)',
-                        equation: '\\sigma_{vm} = \\sqrt{3 J_2} < \\sigma_y (345\\text{ MPa})',
-                        description: 'أقصى إجهاد مسجل عند السطح الخارجي لمنطقة التثبيت مع معامل أمان 1.61 في النطاق المرن الآمن.',
-                      })
-                    }
-                    className="text-right px-2.5 py-1.5 rounded-lg bg-amber-500/10 hover:bg-amber-500/20 text-amber-300 border border-amber-500/20 flex items-center justify-between transition-colors"
-                  >
-                    <span>2. إجهاد فون ميسيس (Max Stress)</span>
-                    <span className="font-mono text-xs font-bold">214.8 MPa</span>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() =>
-                      setSelectedPin({
-                        title: 'سهم الانحناء الأقصى عند الطرف (Tip Deflection)',
-                        type: 'output',
-                        value: 'Uy = 11.24 mm (Timoshenko Bending + Shear)',
-                        equation: 'w_{max} = \\frac{P L^3}{3 E I} + \\frac{P L}{\\kappa A G}',
-                        description: 'مقدار الهبوط الرأسي للطرف الحر مطابق للحل التحليلي بنسبة 99.4% وضمن حدود الخدمة L/250.',
-                      })
-                    }
-                    className="text-right px-2.5 py-1.5 rounded-lg bg-rose-500/10 hover:bg-rose-500/20 text-rose-300 border border-rose-500/20 flex items-center justify-between transition-colors"
-                  >
-                    <span>3. سهم التشوه الأقصى (Deflection)</span>
-                    <span className="font-mono text-xs font-bold">11.24 mm</span>
-                  </button>
-                </>
-              ) : isCFD ? (
-                <>
-                  <button
-                    type="button"
-                    onClick={() =>
-                      setSelectedPin({
-                        title: 'سرعة التدفق الحر المتدفق نحو الجناح (Inlet Velocity)',
-                        type: 'input',
-                        value: 'V = 68.2 m/s (Re = 3.0e6, Ma = 0.20)',
-                        equation: '\\rho (\\vec{V} \\cdot \\nabla) \\vec{V} = -\\nabla p + \\mu \\nabla^2 \\vec{V}',
-                        description: 'تدفق الهواء المتجه نحو مقطع NACA 0012 مسبباً قوى رفع وسحب ديناميكية.',
-                      })
-                    }
-                    className="text-right px-2.5 py-1.5 rounded-lg bg-sky-500/10 hover:bg-sky-500/20 text-sky-300 border border-sky-500/20 flex items-center justify-between transition-colors"
-                  >
-                    <span>1. سرعة الجريان الحر (Inlet)</span>
-                    <span className="font-mono text-xs font-bold">68.2 m/s</span>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() =>
-                      setSelectedPin({
-                        title: 'ذروة الامتصاص والرفع الديناميكي (Suction Peak)',
-                        type: 'output',
-                        value: 'Cp = -2.4, V_max = 92.4 m/s',
-                        equation: 'C_l = \\frac{L}{\\frac{1}{2} \\rho V^2 c} = 0.443 \\text{ at } 4^\\circ',
-                        description: 'تسارع الهواء فوق السطح العلوي ينتج منطقة ضغط منخفض تسحب الجناح للأعلى وتولد قوة الرفع.',
-                      })
-                    }
-                    className="text-right px-2.5 py-1.5 rounded-lg bg-amber-500/10 hover:bg-amber-500/20 text-amber-300 border border-amber-500/20 flex items-center justify-between transition-colors"
-                  >
-                    <span>2. معامل الرفع والامتصاص (Cl)</span>
-                    <span className="font-mono text-xs font-bold">Cl = 0.443</span>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() =>
-                      setSelectedPin({
-                        title: 'موقع انفصال التدفق والدوامات الخلفية (Flow Separation)',
-                        type: 'constant',
-                        value: 'x/c = 0.38 at 4°, 0.04 at 15° (Stall)',
-                        equation: '\\frac{\\partial u}{\\partial y}\\Big|_{wall} = 0 \\implies C_f = 0',
-                        description: 'نقطة انعدام إجهاد القص الجداري وتحول التدفق إلى دوامات انفصال مضطربة في الأثر الخلفي.',
-                      })
-                    }
-                    className="text-right px-2.5 py-1.5 rounded-lg bg-rose-500/10 hover:bg-rose-500/20 text-rose-300 border border-rose-500/20 flex items-center justify-between transition-colors"
-                  >
-                    <span>3. خطوط الانفصال (Wake Region)</span>
-                    <span className="font-mono text-xs font-bold">y+ &lt; 1</span>
-                  </button>
-                </>
-              ) : (
-                <>
-                  <button
-                    type="button"
-                    onClick={() =>
-                      setSelectedPin({
-                        title: 'دخل مائع التبادل الحراري (HTF Inlet - Oscillating Temp)',
-                        type: 'input',
-                        value: 'Tin(t) = 348 + 10·sin(2πt / 1200 s), ṁ = 0.025 kg/s',
-                        equation: project.governingEquations[2]?.latex || '\\rho c_p (\\vec{V} \\cdot \\nabla) T = k \\nabla^2 T + \\Phi',
-                        description: 'مائع التسخين/التبريد (HTF) يتدفق داخل الكويل الحلزوني الأحمر مع موجة حرارية ترددية.',
-                      })
-                    }
-                    className="text-right px-2.5 py-1.5 rounded-lg bg-sky-500/10 hover:bg-sky-500/20 text-sky-300 border border-sky-500/20 flex items-center justify-between transition-colors"
-                  >
-                    <span>1. الكويل الحلزوني للـ HTF (Input)</span>
-                    <span className="font-mono text-xs font-bold">348 K</span>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() =>
-                      setSelectedPin({
-                        title: 'مادة تغيير الطور النانوية (NePCM Annulus)',
-                        type: 'constant',
-                        value: 'RT50 Organic PCM + Al2O3 Nanoparticles (3 vol.%)',
-                        equation: project.governingEquations[0]?.latex || '\\nabla \\cdot (\\rho \\vec{V}) = 0',
-                        description: 'الأسطوانة الداخلية تحتوي على شمع عضوي مدمج بجسيمات نانوية لرفع التوصيل الحراري بنسبة 35%.',
-                      })
-                    }
-                    className="text-right px-2.5 py-1.5 rounded-lg bg-amber-500/10 hover:bg-amber-500/20 text-amber-300 border border-amber-500/20 flex items-center justify-between transition-colors"
-                  >
-                    <span>2. قلب مادة NePCM (Constant)</span>
-                    <span className="font-mono text-xs font-bold">T_melt = 321 K</span>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() =>
-                      setSelectedPin({
-                        title: 'الغلاف الأسطواني الخارجي (Cinthane/Glass Shell)',
-                        type: 'output',
-                        value: 't95 = 2.504 h (Optimal Melting Time)',
-                        equation: project.governingEquations[1]?.latex || '\\rho (\\vec{V} \\cdot \\nabla) \\vec{V} = -\\nabla p + \\mu \\nabla^2 \\vec{V}',
-                        description: 'الغلاف الخارجي العازل الذي يحوي وسط التخزين الحراري محققاً زمناً قياسياً قدره 2.504 ساعة.',
-                      })
-                    }
-                    className="text-right px-2.5 py-1.5 rounded-lg bg-rose-500/10 hover:bg-rose-500/20 text-rose-300 border border-rose-500/20 flex items-center justify-between transition-colors"
-                  >
-                    <span>3. الغلاف الأسطواني (Output)</span>
-                    <span className="font-mono text-xs font-bold">2.504 h</span>
-                  </button>
-                </>
-              )}
+              {/* Pin 1: Primary Boundary Condition / Input */}
+              <button
+                type="button"
+                onClick={() =>
+                  setSelectedPin({
+                    title: project.boundaryConditions[0] ? `${project.boundaryConditions[0].name} (Input)` : isThermal ? 'مصدر الحرارة الأساسي' : isFEA ? 'التثبيت الإنشائي' : 'مدخل التدفق',
+                    type: 'input',
+                    value: project.boundaryConditions[0] ? `${project.boundaryConditions[0].value} ${project.boundaryConditions[0].unit}` : (isFEA ? '15.0 MPa' : isThermal ? '2500 W/m²' : '22.0 m/s'),
+                    equation: project.governingEquations[0]?.latex || defaultEq,
+                    description: project.boundaryConditions[0]?.description || 'الشرط الحدودي الأساسي المطبق على النموذج.',
+                  })
+                }
+                className="text-right px-2.5 py-1.5 rounded-lg bg-sky-500/10 hover:bg-sky-500/20 text-sky-300 border border-sky-500/20 flex items-center justify-between transition-colors"
+              >
+                <span className="truncate max-w-[160px]">1. {project.boundaryConditions[0]?.name || (isThermal ? 'مصدر الحرارة' : isFEA ? 'التثبيت' : 'مدخل التدفق')}</span>
+                <span className="font-mono text-xs font-bold shrink-0">{project.boundaryConditions[0] ? `${project.boundaryConditions[0].value} ${project.boundaryConditions[0].unit}` : 'Input'}</span>
+              </button>
+
+              {/* Pin 2: Primary Physical Field Output */}
+              <button
+                type="button"
+                onClick={() =>
+                  setSelectedPin({
+                    title: project.contours[0] ? `${project.contours[0].name} (Peak Output)` : 'المخرج المحسوب الأساسي',
+                    type: 'output',
+                    value: project.contours[0] ? `Max = ${project.contours[0].maxVal} ${project.contours[0].unit}` : (isFEA ? '214.8 MPa' : isThermal ? '85.0 °C' : '28.5 m/s'),
+                    equation: project.governingEquations[1]?.latex || project.governingEquations[0]?.latex || defaultEq,
+                    description: project.contours[0]?.physicalDescription || 'ذروة الحقل المحسوب الناتج عن محاكاة النموذج الهندسي.',
+                  })
+                }
+                className="text-right px-2.5 py-1.5 rounded-lg bg-amber-500/10 hover:bg-amber-500/20 text-amber-300 border border-amber-500/20 flex items-center justify-between transition-colors"
+              >
+                <span className="truncate max-w-[160px]">2. {project.contours[0]?.name || 'المخرج المحسوب'}</span>
+                <span className="font-mono text-xs font-bold shrink-0">{project.contours[0] ? `${project.contours[0].maxVal} ${project.contours[0].unit}` : 'Peak'}</span>
+              </button>
+
+              {/* Pin 3: Secondary Output or Material Constant */}
+              <button
+                type="button"
+                onClick={() =>
+                  setSelectedPin({
+                    title: project.contours[1]
+                      ? `${project.contours[1].name} (Field Output)`
+                      : (project.boundaryConditions[1] ? `${project.boundaryConditions[1].name} (Boundary)` : `المادة: ${project.material.name}`),
+                    type: project.contours[1] ? 'output' : 'constant',
+                    value: project.contours[1]
+                      ? `Max = ${project.contours[1].maxVal} ${project.contours[1].unit}`
+                      : (project.boundaryConditions[1] ? `${project.boundaryConditions[1].value} ${project.boundaryConditions[1].unit}` : project.material.density),
+                    equation: project.governingEquations[2]?.latex || project.governingEquations[0]?.latex || '\\boldsymbol{\\sigma} = \\mathbf{C} : \\boldsymbol{\\varepsilon}',
+                    description: project.contours[1]?.physicalDescription || project.boundaryConditions[1]?.description || `الخواص المادية للنموذج: ${project.material.name} (كثافة = ${project.material.density}).`,
+                  })
+                }
+                className="text-right px-2.5 py-1.5 rounded-lg bg-rose-500/10 hover:bg-rose-500/20 text-rose-300 border border-rose-500/20 flex items-center justify-between transition-colors"
+              >
+                <span className="truncate max-w-[160px]">3. {project.contours[1]?.name || (project.boundaryConditions[1]?.name || 'الخواص المادية')}</span>
+                <span className="font-mono text-xs font-bold shrink-0">{project.contours[1] ? `${project.contours[1].maxVal} ${project.contours[1].unit}` : (project.boundaryConditions[1]?.value || project.material.density)}</span>
+              </button>
             </div>
           </div>
 
           <div className="absolute bottom-3 left-3 bg-slate-900/80 px-3 py-1.5 rounded-full border border-slate-800 text-[10px] text-slate-400 font-mono">
-            {isFEA
-              ? 'التوجيه: الجائز الأزرق يمثل I-Beam، والقاعدة الرمادية تمثل التثبيت، وهالة الأحمر تمثل تمركز الإجهاد.'
-              : isCFD
-              ? 'التوجيه: المقطع الأزرق يمثل جناح NACA 0012، والمنطقة العلوية تمثل قمة الامتصاص وخطوط الانسياب الخضراء.'
-              : 'التوجيه: الغلاف الشفاف يمثل الأسطوانة، والكويل الأحمر هو أنبوب مائع التبادل الحراري (HTF).'}
+            مجسم ثلاثي الأبعاد تفاعلي يمثل نطاق الحل والشروط الحدية لـ ({project.title}) | {project.field}
           </div>
         </div>
 

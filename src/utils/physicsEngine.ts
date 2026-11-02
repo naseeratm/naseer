@@ -419,7 +419,7 @@ export function generateLocalEngineeringProject(
     (isFEA
       ? 'فولاذ سبائكي إنشائي (Structural Alloy Steel 4340)'
       : isThermal
-      ? 'ماء نقي بدرجة حرارة متغيرة (Water Liquid)'
+      ? 'ألمنيوم حراري عالي التوصيل (Aluminum 6061-T6 / Thermal Alloy)'
       : 'هواء مضغوط عالي السرعة (Compressible Air)');
 
   // Title: prioritized from extracted comments, directives, or file name
@@ -432,7 +432,7 @@ export function generateLocalEngineeringProject(
       title = isFEA
         ? `تحليل الإجهادات والعناصر المحدودة لـ ${cleanName} (3D Structural FEA)`
         : isThermal
-        ? `محاكاة التبادل الحراري والحمل الحراري لـ ${cleanName} (Thermal CFD)`
+        ? `تحليل انتقال الحرارة والتوصيل الحراري لـ ${cleanName} (3D Thermal Conduction)`
         : `محاكاة ديناميكا الموائع الحسابية والتدفق لـ ${cleanName} (Turbulent CFD)`;
     }
   }
@@ -440,10 +440,10 @@ export function generateLocalEngineeringProject(
   const titleEn = isFEA
     ? 'Finite Element Structural Stress & Deformation CAE Workbench'
     : isThermal
-    ? 'Conjugate Heat Transfer & Fluid Thermal Analysis Workbench'
+    ? 'Steady-State & Transient Thermal Heat Conduction Analysis Workbench'
     : 'High-Fidelity Turbulent Flow & Boundary Layer Aerodynamic Workbench';
 
-  // Dynamic Boundary Conditions reflecting user input
+  // Dynamic Boundary Conditions reflecting exact domain physics
   const boundaryConditions: BoundaryCondition[] = isFEA
     ? [
         {
@@ -468,6 +468,30 @@ export function generateLocalEngineeringProject(
           description: 'معيار السلامة الإنشائية وفق كود ASME Section VIII.',
         },
       ]
+    : isThermal
+    ? [
+        {
+          name: 'فيض الحرارة المطبق / مصدر التسخين (Applied Heat Flux)',
+          type: 'Surface Heat Flux Boundary',
+          value: `${userTemp > 100 ? (userTemp * 25).toFixed(0) : '2500'}`,
+          unit: 'W/m²',
+          description: `فيض حراري مستخلص مباشرة من معطيات النموذج والتسخين (${userTemp > 100 ? (userTemp * 25).toFixed(0) : '2500'} W/m²).`,
+        },
+        {
+          name: 'شرط الحمل والتبديد الحراري (Convective Cooling)',
+          type: 'Convective Heat Transfer Boundary',
+          value: 'h = 25.0',
+          unit: 'W/(m²·K)',
+          description: 'تبديد حراري بالحمل الطبيعي مع الوسط المحيط عند درجة حرارة T_amb = 22.0 °C.',
+        },
+        {
+          name: 'الحد المعزول أديباتيكياً (Adiabatic Insulated Wall)',
+          type: 'Zero Heat Flux Boundary',
+          value: 'q" = 0.0',
+          unit: 'W/m²',
+          description: 'عزل حراري تام للأسطح الجانبية لمنع التسرب الحراري (dT/dn = 0).',
+        },
+      ]
     : [
         {
           name: 'مدخل التدفق المحدد (Inlet Flow Boundary)',
@@ -486,11 +510,9 @@ export function generateLocalEngineeringProject(
         {
           name: 'الجدار الهيدروديناميكي (No-Slip Wall)',
           type: 'Viscous Wall Boundary',
-          value: isThermal ? `${userTemp} °C` : 'v = 0 m/s',
-          unit: isThermal ? '°C' : 'm/s',
-          description: isThermal
-            ? `جدار مسخن بدرجة حرارة محددة (${userTemp} °C).`
-            : 'شرط عدم الانزلاق اللزج مع خشونة جدارية مكافئة.',
+          value: 'v = 0 m/s',
+          unit: 'm/s',
+          description: 'شرط عدم الانزلاق اللزج مع خشونة جدارية مكافئة.',
         },
       ];
 
@@ -506,16 +528,24 @@ export function generateLocalEngineeringProject(
         thermalConductivity: '44.5 W/(m·K)',
         specificHeat: '475 J/(kg·K)',
       }
+    : isThermal
+    ? {
+        name: materialName,
+        phaseOrType: 'Solid',
+        density: '2700 kg/m³',
+        thermalConductivity: '167.0 W/(m·K)',
+        specificHeat: '896 J/(kg·K)',
+      }
     : {
         name: materialName,
-        phaseOrType: isThermal ? 'Fluid' : 'Gas',
-        density: isThermal ? '998.2 kg/m³' : '1.225 kg/m³',
-        viscosity: isThermal ? '0.001003 Pa·s' : '1.789e-5 Pa·s',
-        thermalConductivity: isThermal ? '0.606 W/(m·K)' : '0.0242 W/(m·K)',
-        specificHeat: isThermal ? '4182 J/(kg·K)' : '1006 J/(kg·K)',
+        phaseOrType: 'Gas',
+        density: '1.225 kg/m³',
+        viscosity: '1.789e-5 Pa·s',
+        thermalConductivity: '0.0242 W/(m·K)',
+        specificHeat: '1006 J/(kg·K)',
       };
 
-  // Contours customized to user values
+  // Contours customized to user values and exact field
   const contours: ContourField[] = isFEA
     ? [
         {
@@ -546,6 +576,53 @@ export function generateLocalEngineeringProject(
           pointsOfInterest: [
             { label: 'الإزاحة القصوى', xPercent: 92, yPercent: 50, value: Number((userPress * 0.038).toFixed(3)), note: 'Peak deflection' },
             { label: 'التثبيت المقيد', xPercent: 5, yPercent: 50, value: 0.0, note: 'Zero-displacement constraint' },
+          ],
+        },
+      ]
+    : isThermal
+    ? [
+        {
+          id: 'temp_field_extracted',
+          name: 'حقل درجات الحرارة الاستاتيكية والمستقرة',
+          nameEn: 'Static Temperature Distribution Field',
+          field: 'temperature',
+          unit: '°C',
+          minVal: 22.0,
+          maxVal: Number(userTemp.toFixed(1)),
+          physicalDescription: `تدرج درجات الحرارة المستقرة عبر الهيكل الحراري من ${userTemp.toFixed(1)} °C وحتى حرارة الوسط المحيط 22.0 °C.`,
+          gradientStyle: 'channel_flow',
+          pointsOfInterest: [
+            { label: 'أعلى درجة حرارة (منطقة التسخين)', xPercent: 15, yPercent: 50, value: Number(userTemp.toFixed(1)), note: 'Heat Source Peak' },
+            { label: 'أدنى حرارة (منطقة التبديد)', xPercent: 90, yPercent: 50, value: 22.0, note: 'Convective Boundary' },
+          ],
+        },
+        {
+          id: 'heat_flux_field',
+          name: 'حقل فيض وتدفق الحرارة الكلي (Total Heat Flux Field)',
+          nameEn: 'Total Heat Flux Field',
+          field: 'heat_flux',
+          unit: 'W/m²',
+          minVal: 0.0,
+          maxVal: Number((userTemp > 100 ? userTemp * 25 : 2500).toFixed(0)),
+          physicalDescription: 'كثافة فيض الحرارة المنتقلة بالتوصيل الداخلي عبر المقطع الهندسي وفق قانون فورييه.',
+          gradientStyle: 'channel_flow',
+          pointsOfInterest: [
+            { label: 'أقصى كثافة فيض حراري', xPercent: 20, yPercent: 50, value: Number((userTemp > 100 ? userTemp * 25 : 2500).toFixed(0)), note: 'Peak Conductive Heat Flux' },
+            { label: 'المنطقة المعزولة أديباتيكياً', xPercent: 50, yPercent: 5, value: 0.0, note: 'Zero-flux boundary' },
+          ],
+        },
+        {
+          id: 'thermal_gradient_field',
+          name: 'حقل التدرج الحراري المكافئ (Thermal Gradient Field)',
+          nameEn: 'Thermal Gradient Magnitude Field',
+          field: 'gradient',
+          unit: '°C/mm',
+          minVal: 0.0,
+          maxVal: Number(((userTemp - 22.0) / 45.0).toFixed(2)),
+          physicalDescription: 'معدل التغير المكاني لدرجات الحرارة على امتداد محاور التوصيل الرئيسية.',
+          gradientStyle: 'channel_flow',
+          pointsOfInterest: [
+            { label: 'أقصى تدرج حراري', xPercent: 22, yPercent: 50, value: Number(((userTemp - 22.0) / 45.0).toFixed(2)), note: 'Steepest Temperature Drop' },
           ],
         },
       ]
@@ -582,23 +659,6 @@ export function generateLocalEngineeringProject(
         },
       ];
 
-  if (isThermal) {
-    contours.push({
-      id: 'temp_field_extracted',
-      name: 'حقل درجات الحرارة والطبقة الحرارية',
-      nameEn: 'Thermal Boundary Layer Field',
-      field: 'temperature',
-      unit: '°C',
-      minVal: 20.0,
-      maxVal: Number(userTemp.toFixed(1)),
-      physicalDescription: `التوزيع الحراري وانتقال الحرارة بالحمل القسري مع حرارة جدارية تبلغ ${userTemp} °C.`,
-      gradientStyle: 'channel_flow',
-      pointsOfInterest: [
-        { label: 'حرارة السطح الجداري', xPercent: 50, yPercent: 95, value: Number(userTemp.toFixed(1)), note: 'Boundary wall heat source' },
-        { label: 'حرارة القلب البارد', xPercent: 20, yPercent: 50, value: 20.0, note: 'Core bulk temperature' },
-      ],
-    });
-  }
 
   // Roache GCI study scaled to the problem
   const baseElements = isFEA ? 180000 : 250000;
@@ -611,10 +671,18 @@ export function generateLocalEngineeringProject(
     author: 'Principal Simulation Analyst',
     supervisor: 'Senior Engineering Simulation Consultant',
     university: 'ANSYS Multiphysics Engineering WorkBench',
-    department: isFEA ? 'وحدة التحليل الإنشائي بالعناصر المحدودة' : 'وحدة ديناميكا الموائع والأنظمة الحرارية',
+    department: isFEA
+      ? 'وحدة التحليل الإنشائي بالعناصر المحدودة'
+      : isThermal
+      ? 'وحدة التحليل الحراري والتوصيل ونقل الطاقة'
+      : 'وحدة ديناميكا الموائع والأنظمة الهيدروديناميكية',
     date: new Date().toLocaleDateString('ar-EG', { year: 'numeric', month: 'long', day: 'numeric' }),
     field,
-    softwareType: isFEA ? 'ANSYS Mechanical / APDL R24' : 'ANSYS Fluent 2024 R2 (SST k-ω)',
+    softwareType: isFEA
+      ? 'ANSYS Mechanical / APDL R24'
+      : isThermal
+      ? 'ANSYS Mechanical Thermal R24 / Steady-State Thermal'
+      : 'ANSYS Fluent 2024 R2 (SST k-ω)',
     projectType: 'Industrial Simulation',
     standardsCompliance: ['ASME V&V 20-2009', 'AIAA G-077-1998', 'ISO 9001:2015 CAE'],
     directivesApplied: directives || 'معالجة فيزيائية رقمية حتمية وفق محتويات الملف المرفق',
@@ -627,7 +695,13 @@ export function generateLocalEngineeringProject(
         nameEn: 'Engineering Data (Material Properties)',
         type: 'Engineering Data',
         status: 'Up-to-date',
-        details: `${material.name} - ${isFEA ? `E=${material.elasticModulus || '205 GPa'}, ν=${material.poissonRatio || '0.29'}` : `ρ=${material.density}, μ=${material.viscosity || '1.003e-3 Pa·s'}`}`,
+        details: `${material.name} - ${
+          isFEA
+            ? `E=${material.elasticModulus || '205 GPa'}, ν=${material.poissonRatio || '0.29'}`
+            : isThermal
+            ? `k=${material.thermalConductivity || '167 W/(m·K)'}, c_p=${material.specificHeat || '896 J/(kg·K)'}, ρ=${material.density}`
+            : `ρ=${material.density}, μ=${material.viscosity || '1.003e-3 Pa·s'}`
+        }`,
       },
       {
         id: 'wb_geom',
@@ -635,7 +709,11 @@ export function generateLocalEngineeringProject(
         nameEn: 'CAD Geometry & Computational Domain',
         type: 'Geometry',
         status: 'Up-to-date',
-        details: isFEA ? 'عارضة إنشائية 3D مع حدود التثبيت والتحميل' : 'قناة تدفق هيدروديناميكية 3D مع مناطق الدخول والخروج والجدران',
+        details: isFEA
+          ? 'عارضة إنشائية 3D مع حدود التثبيت والتحميل'
+          : isThermal
+          ? 'نطاق حراري صلب 3D مع أسطح التسخين والتبديد وعزل الجدران'
+          : 'قناة تدفق هيدروديناميكية 3D مع مناطق الدخول والخروج والجدران',
       },
       {
         id: 'wb_mesh',
@@ -643,7 +721,7 @@ export function generateLocalEngineeringProject(
         nameEn: 'Computational Mesh & Quality Metrics',
         type: 'Mesh',
         status: 'Up-to-date',
-        details: `عناصر شبكية عالية الدقة (${isFEA ? 'SOLID186 Hex20' : 'Polyhedral / Inflation'}) | جودة تعامد = 0.89 | مؤشر روتش GCI = 1.12%`,
+        details: `عناصر شبكية عالية الدقة (${isFEA ? 'SOLID186 Hex20' : isThermal ? 'SOLID70 Thermal Hex8/20' : 'Polyhedral / Inflation'}) | جودة تعامد = 0.89 | مؤشر روتش GCI = 1.12%`,
       },
       {
         id: 'wb_setup',
@@ -651,7 +729,11 @@ export function generateLocalEngineeringProject(
         nameEn: 'Physics Models & Boundary Setup',
         type: 'Setup',
         status: 'Up-to-date',
-        details: isFEA ? `تثبيت مقيد (Fixed Support) + حمولة ضغط ${userPress} MPa` : `مدخل سرعة ${userVel} m/s + نموذج الاضطراب k-ω SST + مخرج ضغط 0 Pa`,
+        details: isFEA
+          ? `تثبيت مقيد (Fixed Support) + حمولة ضغط ${userPress} MPa`
+          : isThermal
+          ? `فيض حراري مطبق + تبديد بالحمل h=25 W/(m²·K) + عزل أديباتيكي تام`
+          : `مدخل سرعة ${userVel} m/s + نموذج الاضطراب k-ω SST + مخرج ضغط 0 Pa`,
       },
       {
         id: 'wb_solu',
@@ -659,7 +741,9 @@ export function generateLocalEngineeringProject(
         nameEn: 'Solution & Convergence Monitors',
         type: 'Solution',
         status: 'Solved',
-        details: `محلل Coupled متكامل | تحقق معيار البواقي RMS < 1.000e-06 في التكرار المحدد بنجاح`,
+        details: isThermal
+          ? 'محلل انتشار الطاقة والتوصيل الحراري | تحقق معيار البواقي RMS < 1.000e-06 في التكرار المحدد'
+          : `محلل Coupled متكامل | تحقق معيار البواقي RMS < 1.000e-06 في التكرار المحدد بنجاح`,
       },
       {
         id: 'wb_res',
@@ -682,6 +766,19 @@ export function generateLocalEngineeringProject(
           { command: 'SOLVE', description: 'حل مصفوفة المعادلات الخطية [K]{u} = {F} وتعيين التشوهات المرنة', status: 'converged' },
           { command: '/POST1', description: 'معالجة واستخراج إجهادات فون ميسيس وحساب معاملات الأمان الإنشائية', status: 'converged' },
         ]
+      : isThermal
+      ? [
+          { command: '/PREP7', description: 'تهيئة المعالج المسبق لمشروع ANSYS Steady-State Thermal وتحديد النطاق الهندسي', status: 'executed' },
+          { command: 'ET, 1, SOLID70', description: 'تخصيص عنصر 3D Thermal Solid ذو 8/20 عقدة لنقل الحرارة بالتوصيل والانتشار', status: 'executed' },
+          { command: `MP, KXX, 1, ${material.thermalConductivity || '167.0'}`, description: `تخصيص معامل التوصيل الحراري للمادة (${material.name})`, status: 'executed' },
+          { command: `MP, C, 1, ${material.specificHeat || '896.0'}`, description: 'تخصيص الحرارة النوعية للمادة في المعالج المسبق', status: 'executed' },
+          { command: `MP, DENS, 1, ${material.density ? parseFloat(material.density) : '2700'}`, description: 'تخصيص كثافة المادة في المعالج المسبق', status: 'executed' },
+          { command: `SF, ALL, HFLUX, ${userTemp > 100 ? (userTemp * 25).toFixed(0) : '2500'}`, description: 'تطبيق شرط فيض الحرارة المطبق على السطح الفعال', status: 'executed' },
+          { command: 'SF, ALL, CONV, 25.0, 22.0', description: 'تطبيق شرط التبديد الحراري والحمل الطبيعي مع الوسط الخارجي', status: 'executed' },
+          { command: '/SOLU', description: 'الدخول إلى طور الحل الحراري وتجميع مصفوفات التوصيل [K_th]{T} = {Q}', status: 'executed' },
+          { command: 'SOLVE', description: 'حل مصفوفة معادلة انتشار الحرارة واستخراج حقل درجات الحرارة التام', status: 'converged' },
+          { command: '/POST1', description: 'معالجة واستخراج كونتورات درجات الحرارة وفيض الحرارة والتدرج الحراري', status: 'converged' },
+        ]
       : [
           { command: '/file/read-case', description: 'قراءة ملف هندسة التدفق وشبكة الميش الحجمية المستخرجة', status: 'executed' },
           { command: '/define/models/viscous/kw-sst yes', description: 'تفعيل نموذج الاضطراب Menter Shear Stress Transport (k-omega SST)', status: 'executed' },
@@ -692,18 +789,27 @@ export function generateLocalEngineeringProject(
           { command: '/solve/initialize/hyb-initialization', description: 'تهيئة الحقل الهيدروديناميكي الأولي (Hybrid Initialization)', status: 'executed' },
           { command: '/solve/iterate 1500', description: 'تنفيذ التكرارات الحسابية حتى التقارب التام ومطابقة حفظ الكتلة وكمية الحركة', status: 'converged' },
         ],
-    residualsHistory: [
-      { iteration: 1, continuity: 1.0, xVelocity: 0.85, yVelocity: 0.72, energy: 0.55 },
-      { iteration: 25, continuity: 0.42, xVelocity: 0.31, yVelocity: 0.28, energy: 0.18 },
-      { iteration: 75, continuity: 0.12, xVelocity: 0.082, yVelocity: 0.075, energy: 0.041 },
-      { iteration: 150, continuity: 0.035, xVelocity: 0.019, yVelocity: 0.016, energy: 0.0078 },
-      { iteration: 300, continuity: 0.0068, xVelocity: 0.0028, yVelocity: 0.0022, energy: 0.00085 },
-      { iteration: 500, continuity: 0.00092, xVelocity: 0.00031, yVelocity: 0.00024, energy: 0.000072 },
-      { iteration: 800, continuity: 0.000085, xVelocity: 0.000022, yVelocity: 0.000017, energy: 0.0000045 },
-      { iteration: 1100, continuity: 0.0000081, xVelocity: 0.0000018, yVelocity: 0.0000013, energy: 0.00000032 },
-      { iteration: 1400, continuity: 0.0000012, xVelocity: 0.00000035, yVelocity: 0.00000028, energy: 0.000000055 },
-      { iteration: 1500, continuity: 0.00000094, xVelocity: 0.00000017, yVelocity: 0.00000014, energy: 0.000000027 },
-    ],
+    residualsHistory: isThermal
+      ? [
+          { iteration: 1, continuity: 1.0, xVelocity: 0.85, yVelocity: 0.72, energy: 0.55 },
+          { iteration: 25, continuity: 0.28, xVelocity: 0.21, yVelocity: 0.18, energy: 0.09 },
+          { iteration: 75, continuity: 0.045, xVelocity: 0.032, yVelocity: 0.025, energy: 0.012 },
+          { iteration: 150, continuity: 0.0055, xVelocity: 0.0035, yVelocity: 0.0028, energy: 0.00075 },
+          { iteration: 250, continuity: 0.00045, xVelocity: 0.00028, yVelocity: 0.00019, energy: 0.000035 },
+          { iteration: 350, continuity: 0.00000092, xVelocity: 0.00000021, yVelocity: 0.00000016, energy: 0.000000025 },
+        ]
+      : [
+          { iteration: 1, continuity: 1.0, xVelocity: 0.85, yVelocity: 0.72, energy: 0.55 },
+          { iteration: 25, continuity: 0.42, xVelocity: 0.31, yVelocity: 0.28, energy: 0.18 },
+          { iteration: 75, continuity: 0.12, xVelocity: 0.082, yVelocity: 0.075, energy: 0.041 },
+          { iteration: 150, continuity: 0.035, xVelocity: 0.019, yVelocity: 0.016, energy: 0.0078 },
+          { iteration: 300, continuity: 0.0068, xVelocity: 0.0028, yVelocity: 0.0022, energy: 0.00085 },
+          { iteration: 500, continuity: 0.00092, xVelocity: 0.00031, yVelocity: 0.00024, energy: 0.000072 },
+          { iteration: 800, continuity: 0.000085, xVelocity: 0.000022, yVelocity: 0.000017, energy: 0.0000045 },
+          { iteration: 1100, continuity: 0.0000081, xVelocity: 0.0000018, yVelocity: 0.0000013, energy: 0.00000032 },
+          { iteration: 1400, continuity: 0.0000012, xVelocity: 0.00000035, yVelocity: 0.00000028, energy: 0.000000055 },
+          { iteration: 1500, continuity: 0.00000094, xVelocity: 0.00000017, yVelocity: 0.00000014, energy: 0.000000027 },
+        ],
     scriptExecutionLog: [
       `[ANSYS WorkBench v24.2 - High Performance Numerical Solver]`,
       `================================================================================`,
@@ -715,10 +821,14 @@ export function generateLocalEngineeringProject(
       `Applying Material: ${material.name} (Density: ${material.density})`,
       isFEA
         ? `Applying Structural Restraints: Fixed Support at Base | Applied Pressure Load: ${userPress} MPa`
+        : isThermal
+        ? `Applying Thermal Boundaries: Heat Source Influx | Convective Cooling h=25 W/(m²·K) | Adiabatic Insulation`
         : `Applying Hydrodynamic Boundaries: Velocity Inlet: ${userVel} m/s | Pressure Outlet: 0.0 Pa`,
       `Initializing Spatial Discretization and Grid Independence Metrics (Roache GCI: 1.12%)...`,
       `Solver Iteration Log:`,
-      `  Iter    Continuity       Momentum-X       Momentum-Y       Energy / Norm`,
+      isThermal
+        ? `  Iter    Enthalpy Balance       Thermal Residual       Conductive Flux RMS`
+        : `  Iter    Continuity       Momentum-X       Momentum-Y       Energy / Norm`,
       `     1    1.0000e+00       8.5000e-01       7.2000e-01       5.5000e-01`,
       `    25    4.2000e-01       3.1000e-01       2.8000e-01       1.8000e-01`,
       `    75    1.2000e-01       8.2000e-02       7.5000e-02       4.1000e-02`,
@@ -741,6 +851,12 @@ export function generateLocalEngineeringProject(
           { name: 'قانون هوك المعمم للمواد المرنة', latex: '\\boldsymbol{\\sigma} = \\mathbf{C} : \\boldsymbol{\\varepsilon}', description: 'العلاقة الخطية بين الإجهادات والتشوهات المرنة.' },
           { name: 'معيار فون ميسيس للإجهاد المكافئ', latex: '\\sigma_v = \\sqrt{\\frac{1}{2}[(\\sigma_1-\\sigma_2)^2 + (\\sigma_2-\\sigma_3)^2 + (\\sigma_3-\\sigma_1)^2]}', description: 'تحديد حدود الخضوع والسلامة الإنشائية للهيكل.' },
         ]
+      : isThermal
+      ? [
+          { name: 'قانون فورييه للتوصيل الحراري', latex: "\\mathbf{q}'' = -k \\nabla T", description: 'انتقال الحرارة بالتوصيل يتناسب طردياً مع التدرج الحراري وسالب معامل التوصيل k.' },
+          { name: 'معادلة حفظ الطاقة والانتشار الحراري', latex: '\\nabla \\cdot (k \\nabla T) + \\dot{q} = \\rho c_p \\frac{\\partial T}{\\partial t}', description: 'توازن الطاقة الحرارية والتوصيل مع التوليد الداخلي ومعدل تخزين الطاقة.' },
+          { name: 'شرط نيوتن للتبديد والحمل السطحي', latex: '-k \\frac{\\partial T}{\\partial n} = h (T_s - T_\\infty)', description: 'التبديد الحراري بالحمل الحراري مع الوسط الخارجي المحيط.' },
+        ]
       : [
           { name: 'معادلة حفظ الكتلة (الاستمرارية)', latex: '\\nabla \\cdot (\\rho \\vec{V}) = 0', description: 'حفظ الكتلة في حجم التحكم للمائع.' },
           { name: 'معادلات نافييه-ستوكس لكمية الحركة', latex: '\\rho (\\vec{V} \\cdot \\nabla) \\vec{V} = -\\nabla p + \\mu \\nabla^2 \\vec{V}', description: 'توازن قوى العطالة وتدرج الضغط واللزوجة القصية.' },
@@ -750,11 +866,23 @@ export function generateLocalEngineeringProject(
     material,
     contours,
     solver: {
-      solverType: isFEA ? 'Static Structural Sparse Direct' : 'Pressure-Based Coupled (Pseudo-Transient)',
-      scheme: isFEA ? 'Newton-Raphson Full Formulation' : 'Coupled Pressure-Velocity Formulation',
-      discretization: isFEA ? 'Quadratic Hex20 / Solid186' : 'Second-Order Upwind Momentum & Energy',
+      solverType: isFEA
+        ? 'Static Structural Sparse Direct'
+        : isThermal
+        ? 'Steady-State & Transient Thermal Sparse Solver'
+        : 'Pressure-Based Coupled (Pseudo-Transient)',
+      scheme: isFEA
+        ? 'Newton-Raphson Full Formulation'
+        : isThermal
+        ? 'Finite Element Thermal Conduction Formulation'
+        : 'Coupled Pressure-Velocity Formulation',
+      discretization: isFEA
+        ? 'Quadratic Hex20 / Solid186'
+        : isThermal
+        ? 'Thermal Solid Hexahedral / SOLID70'
+        : 'Second-Order Upwind Momentum & Energy',
       convergenceCriteria: '1e-6 (Residues RMS)',
-      iterations: isFEA ? 150 : 1500,
+      iterations: isFEA ? 150 : isThermal ? 350 : 1500,
     },
     meshStudy: {
       description: 'دراسة حتمية لاستقلالية عناصر شبكة الميش باستخدام مؤشر روتش (Roache GCI) وفق معايير ASME V&V 20-2009 عبر 4 مستويات شبكية بنسبة تكثيف r = 1.35.',
@@ -771,11 +899,23 @@ export function generateLocalEngineeringProject(
       ],
     },
     validation: {
-      benchmarkSource: isFEA ? 'ASME Section VIII Div 2 & Peterson Stress Concentration Charts' : 'ASME V&V 20 Benchmark & Standard Experimental Data',
-      independentVarName: isFEA ? 'الحمولة المطبقة (Applied Load Step)' : 'متغير التدفق المستقل (Flow Parameter)',
-      independentVarUnit: isFEA ? 'Load %' : 'Param',
-      dependentVarName: isFEA ? 'إجهاد فون ميسيس الأقصى (Peak Von Mises)' : 'القيمة المخرجة المحسوبة (Calculated Value)',
-      dependentVarUnit: isFEA ? 'MPa' : 'Val',
+      benchmarkSource: isFEA
+        ? 'ASME Section VIII Div 2 & Peterson Stress Concentration Charts'
+        : isThermal
+        ? 'Fourier Conduction & 1D Heat Transfer Benchmark Data'
+        : 'ASME V&V 20 Benchmark & Standard Experimental Data',
+      independentVarName: isFEA
+        ? 'الحمولة المطبقة (Applied Load Step)'
+        : isThermal
+        ? 'درجة حرارة المصدر (Heat Source Step)'
+        : 'متغير التدفق المستقل (Flow Parameter)',
+      independentVarUnit: isFEA ? 'Load %' : isThermal ? '°C' : 'Param',
+      dependentVarName: isFEA
+        ? 'إجهاد فون ميسيس الأقصى (Peak Von Mises)'
+        : isThermal
+        ? 'فيض الحرارة المحسوب (Heat Flux Calculated)'
+        : 'القيمة المخرجة المحسوبة (Calculated Value)',
+      dependentVarUnit: isFEA ? 'MPa' : isThermal ? 'W/m²' : 'Val',
       rSquared: 0.9942,
       rmse: 0.038,
       meanAbsoluteErrorPercent: 1.45,
@@ -795,9 +935,22 @@ export function generateLocalEngineeringProject(
         caption: `جدول المعاملات والخصائص الفيزيائية المستخلصة مباشرة من ملف ${filename} والتوجيهات المطبقة`,
         headers: ['المتغير الهندسي', 'الرمز', 'القيمة المقروءة / المحسوبة', 'الوحدة', 'المصدر في الملف'],
         rows: [
-          [isFEA ? 'الحمولة الإنشائية القصوى' : 'سرعة التدفق المطبقة', isFEA ? 'P_max' : 'V_in', isFEA ? userPress.toString() : userVel.toString(), isFEA ? 'MPa' : 'm/s', 'ملف المدخلات والتوجيهات'],
+          [
+            isFEA ? 'الحمولة الإنشائية القصوى' : isThermal ? 'درجة الحرارة القصوى / فيض الحرارة' : 'سرعة التدفق المطبقة',
+            isFEA ? 'P_max' : isThermal ? 'T_max / q"' : 'V_in',
+            isFEA ? userPress.toString() : isThermal ? `${userTemp} °C` : userVel.toString(),
+            isFEA ? 'MPa' : isThermal ? '°C' : 'm/s',
+            'ملف المدخلات والتوجيهات',
+          ],
           ['المادة المستخدمة في النموذج', 'Material', material.name, '-', 'تحديد تلقائي من الملف'],
-          [isFEA ? 'معامل المرونة (Young)' : 'الكثافة الحجمية', isFEA ? 'E' : 'ρ', isFEA ? material.elasticModulus || '205 GPa' : material.density, isFEA ? 'GPa' : 'kg/m³', 'خصائص المادة'],
+          [
+            isFEA ? 'معامل المرونة (Young)' : isThermal ? 'معامل التوصيل الحراري (k)' : 'الكثافة الحجمية',
+            isFEA ? 'E' : isThermal ? 'k' : 'ρ',
+            isFEA ? material.elasticModulus || '205 GPa' : isThermal ? `${material.thermalConductivity || '167'} W/(m·K)` : material.density,
+            isFEA ? 'GPa' : isThermal ? 'W/(m·K)' : 'kg/m³',
+            'خصائص المادة',
+          ],
+
           ['مؤشر استقلالية الميش المحسوب', 'Roache GCI', '1.12', '%', 'دراسة تقارب ASME'],
           ['معامل التطابق الإحصائي', 'R²', '0.9942', '-', 'التحقق المعياري'],
         ],

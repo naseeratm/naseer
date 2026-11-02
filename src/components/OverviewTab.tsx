@@ -33,6 +33,7 @@ import {
 import { ThesisProject } from '../types/thesis';
 import { EngineeringSchematicViewer } from './EngineeringSchematicViewer';
 import { EngineeringModelViewer3D } from './3D-Engineering-Model-Viewer';
+import { exportToOpenFoamScripts } from '../utils/exporter';
 
 interface OverviewTabProps {
   project: ThesisProject;
@@ -40,14 +41,33 @@ interface OverviewTabProps {
 
 export const OverviewTab: React.FC<OverviewTabProps> = ({ project }) => {
   const isFEA = project.field === 'FEA';
+  const isThermal = project.field === 'Thermal';
+  const isCFD = project.field === 'CFD';
 
   // Sub-navigation view inside OverviewTab
   const [workbenchView, setWorkbenchView] = useState<'cases_matrix' | 'lhtes_charts' | 'schematic' | 'residuals' | 'console' | 'script' | 'parameters' | 'cad_schematic' | '3d_viewer'>('cases_matrix');
   const [isSolving, setIsSolving] = useState<boolean>(false);
   const [solveProgress, setSolveProgress] = useState<number>(100);
-  const [currentIter, setCurrentIter] = useState<number>(project.solver?.iterations || 1500);
+  const [currentIter, setCurrentIter] = useState<number>(project.solver?.iterations || (isFEA ? 150 : isThermal ? 350 : 1500));
   const [copiedLog, setCopiedLog] = useState<boolean>(false);
   const [activeSchematicCell, setActiveSchematicCell] = useState<string>('wb_setup');
+
+  // Thermal states for parametric calculator
+  const [thermalConductivityK, setThermalConductivityK] = useState<number>(
+    project.material?.thermalConductivity ? parseFloat(project.material.thermalConductivity) : 167.0
+  );
+  const [heatFluxWm2, setHeatFluxWm2] = useState<number>(2500);
+  const [wallThicknessM, setWallThicknessM] = useState<number>(0.025);
+  const [ambientTempC, setAmbientTempC] = useState<number>(22.0);
+  const [convectionCoeffH, setConvectionCoeffH] = useState<number>(25.0);
+
+  // Deterministic Thermal Conduction & Convection calculations
+  const rCond = wallThicknessM / Math.max(0.1, thermalConductivityK);
+  const rConv = 1 / Math.max(1, convectionCoeffH);
+  const rTotal = rCond + rConv;
+  const surfaceTempC = ambientTempC + (heatFluxWm2 * rConv);
+  const baseTempC = surfaceTempC + (heatFluxWm2 * rCond);
+  const biotNumber = (convectionCoeffH * wallThicknessM) / Math.max(0.1, thermalConductivityK);
 
   // CFD states for parametric calculator
   const [inletVel, setInletVel] = useState<number>(18.5);
@@ -144,7 +164,11 @@ export const OverviewTab: React.FC<OverviewTabProps> = ({ project }) => {
       nameEn: 'Geometry Domain',
       type: 'Geometry' as const,
       status: 'Up-to-date' as const,
-      details: isFEA ? 'نطاق إنشائي ثلاثي الأبعاد مع شروط التثبيت' : 'قناة تدفق هيدروديناميكية 3D مع مناطق الدخول والخروج',
+      details: isFEA
+        ? 'نطاق إنشائي ثلاثي الأبعاد مع شروط التثبيت'
+        : isThermal
+        ? 'نطاق حراري صلب 3D مع أسطح التسخين والتبديد وعزل الجدران'
+        : 'قناة تدفق هيدروديناميكية 3D مع مناطق الدخول والخروج',
     },
     {
       id: 'wb_mesh',
@@ -238,7 +262,9 @@ export const OverviewTab: React.FC<OverviewTabProps> = ({ project }) => {
               </div>
               <div className="hidden md:flex items-center gap-2">
                 <span className="text-slate-400">طريقة الحل:</span>
-                <span className="text-slate-200 font-mono text-[11px]">{project.solver?.scheme || 'Coupled Pressure-Velocity'}</span>
+                <span className="text-slate-200 font-mono text-[11px]">
+                  {project.solver?.scheme || (isFEA ? 'Newton-Raphson Sparse Direct' : isThermal ? 'Finite Element Thermal Conduction' : 'Coupled Pressure-Velocity')}
+                </span>
               </div>
             </div>
 
@@ -320,7 +346,7 @@ export const OverviewTab: React.FC<OverviewTabProps> = ({ project }) => {
                 سؤال البحث العلمي (Research Question):
               </span>
               <p className="text-slate-200 text-xs leading-relaxed font-sans text-justify">
-                {project.academicMeta?.researchQuestion || 'ما هو السلوك الميكانيكي والحراري الدقيق للمنظومة تحت الشروط الحدية المركبة ومقارنتها بالحلول التحليلية؟'}
+                {project.academicMeta?.researchQuestion || `ما هو السلوك الدقيق للمنظومة (${project.title}) تحت الشروط الحدية المطبقة ومدى تطابق الحل العددي مع معايير الدقة الهندسية؟`}
               </p>
             </div>
             <div className="space-y-1 md:border-r md:border-slate-800 md:pr-4">
@@ -329,7 +355,7 @@ export const OverviewTab: React.FC<OverviewTabProps> = ({ project }) => {
                 الفرضية العلمية القابلة للفحص (Scientific Hypothesis):
               </span>
               <p className="text-slate-200 text-xs leading-relaxed font-sans text-justify">
-                {project.academicMeta?.researchHypothesis || 'الحل العددي المتقارب يطابق الحل التحليلي الكابولي بدقة تفوق 98% مع تحقيق استقلالية الشبكة وفق Roache GCI < 2%.'}
+                {project.academicMeta?.researchHypothesis || `الحل العددي المتقارب لـ ${project.title} يحقق استقلالية عناصر الشبكة بمؤشر Roache GCI < 2% ومطابقة معيارية ASME V&V 20 بدقة تفوق 98%.`}
               </p>
             </div>
           </div>
@@ -352,18 +378,20 @@ export const OverviewTab: React.FC<OverviewTabProps> = ({ project }) => {
             <span>مصفوفة الحالات والتشغيل (Cases Matrix & Runs)</span>
           </button>
 
-          <button
-            type="button"
-            onClick={() => setWorkbenchView('lhtes_charts' as any)}
-            className={`px-3.5 py-2 rounded-xl font-bold flex items-center gap-2 transition-all ${
-              (workbenchView as string) === 'lhtes_charts'
-                ? 'bg-amber-500 text-slate-950 shadow-md shadow-amber-500/30'
-                : 'text-amber-400 hover:text-amber-200 hover:bg-slate-800/60'
-            }`}
-          >
-            <Flame className="w-4 h-4" />
-            <span>خرائط الانصهار والحرارة (Figures 2, 6, 7 & Literature)</span>
-          </button>
+          {project.meltingComparison && project.meltingComparison.length > 0 && project.field === 'Thermal' && (
+            <button
+              type="button"
+              onClick={() => setWorkbenchView('lhtes_charts' as any)}
+              className={`px-3.5 py-2 rounded-xl font-bold flex items-center gap-2 transition-all ${
+                (workbenchView as string) === 'lhtes_charts'
+                  ? 'bg-amber-500 text-slate-950 shadow-md shadow-amber-500/30'
+                  : 'text-amber-400 hover:text-amber-200 hover:bg-slate-800/60'
+              }`}
+            >
+              <Flame className="w-4 h-4" />
+              <span>خرائط الانصهار والحرارة (Figures 2, 6, 7 & Literature)</span>
+            </button>
+          )}
 
           <button
             type="button"
@@ -401,7 +429,7 @@ export const OverviewTab: React.FC<OverviewTabProps> = ({ project }) => {
             }`}
           >
             <Terminal className="w-4 h-4 text-amber-400" />
-            <span>سجل Fluent 3D (build_LHTES_project.wbjn)</span>
+            <span>سجل تنفيذ المحلل ({project.softwareType || 'ANSYS Solver Log'})</span>
           </button>
 
           <button
@@ -496,13 +524,22 @@ export const OverviewTab: React.FC<OverviewTabProps> = ({ project }) => {
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-800/60 font-sans">
-                    {(project.casesMatrix || [
-                      { caseId: 'Case-01', name: 'Baseline M1', nameAr: 'الحل المرجعي القياسي', studyVariable: 'Baseline Operating Condition', purpose: 'الحل المرجعي المعتمد', meshElements: 180000, meshNodes: 410000, solverEngine: 'ANSYS Mechanical APDL', keyOutputName: isFEA ? 'أقصى إجهاد فون ميسيس' : 'القيمة المخرجة', keyOutputValue: 214.8, keyOutputUnit: isFEA ? 'MPa' : 'm/s', discrepancyPercent: 0.0, runDurationSec: 140, status: 'Baseline' },
-                      { caseId: 'Case-02', name: 'Coarse Mesh M2', nameAr: 'شبكة خشنة (Coarse L1)', studyVariable: 'Grid Spacing h3 = 12.0 mm', purpose: 'فحص الحساسية الأولية', meshElements: 18500, meshNodes: 42000, solverEngine: 'Python SciPy Benchmark', keyOutputName: isFEA ? 'أقصى إجهاد فون ميسيس' : 'القيمة المخرجة', keyOutputValue: 198.4, keyOutputUnit: isFEA ? 'MPa' : 'm/s', discrepancyPercent: 7.6, runDurationSec: 15, status: 'Completed' },
-                      { caseId: 'Case-03', name: 'Medium Mesh M3', nameAr: 'شبكة متوسطة (Medium L2)', studyVariable: 'Grid Spacing h2 = 8.0 mm', purpose: 'التقارب القياسي لمؤشر روتش', meshElements: 65000, meshNodes: 148000, solverEngine: 'ANSYS Mechanical APDL', keyOutputName: isFEA ? 'أقصى إجهاد فون ميسيس' : 'القيمة المخرجة', keyOutputValue: 209.6, keyOutputUnit: isFEA ? 'MPa' : 'm/s', discrepancyPercent: 2.4, runDurationSec: 48, status: 'Converged' },
-                      { caseId: 'Case-04', name: 'Fine Mesh M4', nameAr: 'شبكة فائقة الدقة (Fine L3 - Optimal)', studyVariable: 'Grid Spacing h1 = 4.0 mm', purpose: 'تحقيق استقلالية الشبكة Roache GCI', meshElements: 180000, meshNodes: 410000, solverEngine: 'ANSYS Mechanical APDL', keyOutputName: isFEA ? 'أقصى إجهاد فون ميسيس' : 'القيمة المخرجة', keyOutputValue: 214.8, keyOutputUnit: isFEA ? 'MPa' : 'm/s', discrepancyPercent: 0.35, runDurationSec: 140, status: 'Converged' },
-                      { caseId: 'Case-05', name: 'Parametric Sweep', nameAr: 'دراسة حساسية الأحمال', studyVariable: 'Cyclic Load Sweep (+25%)', purpose: 'تقييم خطية النظام والاستجابة', meshElements: 180000, meshNodes: 410000, solverEngine: 'Python SciPy Benchmark', keyOutputName: isFEA ? 'أقصى إجهاد فون ميسيس' : 'القيمة المخرجة', keyOutputValue: 268.5, keyOutputUnit: isFEA ? 'MPa' : 'm/s', discrepancyPercent: 0.0, runDurationSec: 12, status: 'Completed' },
-                    ]).map((c, i) => (
+                    {(project.casesMatrix || (project.meshStudy?.meshLevels || []).map((lvl, idx) => ({
+                      caseId: `Case-0${idx + 1}`,
+                      name: lvl.levelName,
+                      nameAr: lvl.levelName,
+                      studyVariable: `Grid Spacing h = ${lvl.gridSpacingMm || (idx + 1) * 1.2} mm`,
+                      purpose: idx === 2 ? 'تحقيق استقلالية الشبكة Roache GCI' : 'فحص حساسية التقارب العددي',
+                      meshElements: lvl.elements,
+                      meshNodes: lvl.nodes,
+                      solverEngine: project.softwareType || 'ANSYS Solver',
+                      keyOutputName: project.contours[0]?.name || (isFEA ? 'أقصى إجهاد مكافئ' : 'القيمة المخرجة'),
+                      keyOutputValue: lvl.keyResultValue,
+                      keyOutputUnit: project.contours[0]?.unit || (isFEA ? 'MPa' : 'm/s'),
+                      discrepancyPercent: lvl.percentageError || 0.0,
+                      runDurationSec: lvl.computationTimeSec || (idx + 1) * 35,
+                      status: idx === 2 ? 'Converged' : (idx === 0 ? 'Baseline' : 'Completed'),
+                    }))).map((c, i) => (
                       <tr key={i} className="hover:bg-slate-900/60 transition-colors">
                         <td className="py-3 px-4 font-mono font-bold text-sky-400">{c.caseId}</td>
                         <td className="py-3 px-4">
@@ -874,27 +911,65 @@ export const OverviewTab: React.FC<OverviewTabProps> = ({ project }) => {
                   <span>منحنى تقارب البواقي اللوغاريتمي لمصفوفات الحفظ (ANSYS Residuals Monitor)</span>
                 </h3>
                 <p className="text-slate-400 text-xs mt-0.5">
-                  مراقبة انخفاض البواقي RMS لمعادلات الاستمرارية، كمية الحركة X/Y، والطاقة عبر التكرارات الحسابية حتى &lt; 10⁻⁶
+                  {isThermal
+                    ? 'مراقبة انخفاض البواقي RMS لمعادلات توازن الطاقة، التوصيل الحراري، والفيض حتى < 10⁻⁶'
+                    : isFEA
+                    ? 'مراقبة تقارب توازن القوى L2-Norm ومتبقيات التشوه المرن وحفظ طاقة الانفعال حتى < 10⁻⁶'
+                    : 'مراقبة انخفاض البواقي RMS لمعادلات الاستمرارية، كمية الحركة X/Y، والطاقة عبر التكرارات الحسابية حتى < 10⁻⁶'}
                 </p>
               </div>
 
               <div className="flex flex-wrap items-center gap-3 text-[11px] font-mono bg-slate-950 p-2 rounded-xl border border-slate-800">
-                <span className="flex items-center gap-1.5 text-rose-400">
-                  <span className="w-2.5 h-2.5 rounded-full bg-rose-500 inline-block" />
-                  Continuity: 9.40e-07
-                </span>
-                <span className="flex items-center gap-1.5 text-emerald-400">
-                  <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 inline-block" />
-                  Momentum-X: 1.70e-07
-                </span>
-                <span className="flex items-center gap-1.5 text-sky-400">
-                  <span className="w-2.5 h-2.5 rounded-full bg-sky-500 inline-block" />
-                  Momentum-Y: 1.40e-07
-                </span>
-                <span className="flex items-center gap-1.5 text-purple-400">
-                  <span className="w-2.5 h-2.5 rounded-full bg-purple-500 inline-block" />
-                  Energy: 2.70e-08
-                </span>
+                {isThermal ? (
+                  <>
+                    <span className="flex items-center gap-1.5 text-rose-400">
+                      <span className="w-2.5 h-2.5 rounded-full bg-rose-500 inline-block" />
+                      Thermal Energy: 2.70e-08
+                    </span>
+                    <span className="flex items-center gap-1.5 text-amber-400">
+                      <span className="w-2.5 h-2.5 rounded-full bg-amber-500 inline-block" />
+                      Heat Flux RMS: 1.40e-07
+                    </span>
+                    <span className="flex items-center gap-1.5 text-sky-400">
+                      <span className="w-2.5 h-2.5 rounded-full bg-sky-500 inline-block" />
+                      Temp Residual: 9.20e-07
+                    </span>
+                  </>
+                ) : isFEA ? (
+                  <>
+                    <span className="flex items-center gap-1.5 text-rose-400">
+                      <span className="w-2.5 h-2.5 rounded-full bg-rose-500 inline-block" />
+                      Force Balance: 4.80e-06
+                    </span>
+                    <span className="flex items-center gap-1.5 text-emerald-400">
+                      <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 inline-block" />
+                      Displacement Norm: 1.20e-06
+                    </span>
+                    <span className="flex items-center gap-1.5 text-purple-400">
+                      <span className="w-2.5 h-2.5 rounded-full bg-purple-500 inline-block" />
+                      Strain Energy: 8.50e-07
+                    </span>
+                  </>
+                ) : (
+                  <>
+                    <span className="flex items-center gap-1.5 text-rose-400">
+                      <span className="w-2.5 h-2.5 rounded-full bg-rose-500 inline-block" />
+                      Continuity: 9.40e-07
+                    </span>
+                    <span className="flex items-center gap-1.5 text-emerald-400">
+                      <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 inline-block" />
+                      Momentum-X: 1.70e-07
+                    </span>
+                    <span className="flex items-center gap-1.5 text-sky-400">
+                      <span className="w-2.5 h-2.5 rounded-full bg-sky-500 inline-block" />
+                      Momentum-Y: 1.40e-07
+                    </span>
+                    <span className="flex items-center gap-1.5 text-purple-400">
+                      <span className="w-2.5 h-2.5 rounded-full bg-purple-500 inline-block" />
+                      Energy: 2.70e-08
+                    </span>
+                  </>
+                )}
               </div>
             </div>
 
@@ -1030,9 +1105,19 @@ export const OverviewTab: React.FC<OverviewTabProps> = ({ project }) => {
                 <Code className="w-4 h-4 text-sky-400" />
                 <span>تحليل أوامر السكربت والملفات المستخرجة من الأرشيف (Parsed Commands & Macros)</span>
               </span>
-              <span className="text-slate-400 text-xs">
-                {detectedCommands.length} أوامر هندسية تم تحليلها وتطبيقها
-              </span>
+              <div className="flex items-center gap-2">
+                <span className="text-slate-400 text-xs hidden sm:inline">
+                  {detectedCommands.length} أوامر هندسية
+                </span>
+                <button
+                  type="button"
+                  onClick={() => exportToOpenFoamScripts(project)}
+                  className="px-3 py-1.5 rounded-lg bg-sky-600 hover:bg-sky-500 text-white font-bold text-xs flex items-center gap-1.5 transition-all shadow-md shadow-sky-950/40 active:scale-95"
+                >
+                  <FileCode className="w-3.5 h-3.5" />
+                  <span>تصدير سكربت OpenFOAM (blockMesh & controlDict)</span>
+                </button>
+              </div>
             </div>
 
             {/* Detected Commands Badges */}
@@ -1086,7 +1171,11 @@ export const OverviewTab: React.FC<OverviewTabProps> = ({ project }) => {
                 <span>حاسبة الحساسية الفيزيائية والأرقام اللابُعدية (Parametric Solver)</span>
               </span>
               <span className="text-xs text-slate-400">
-                حل حتمي مباشر لمعادلات هبوط الضغط ودارسي-فايسباخ ورقم رينولدز أو إجهادات العارضة
+                {isThermal
+                  ? 'حل حتمي مباشر لقوانين فورييه للتوصيل وحساب درجات حرارة القاعدة والسطح والمقاومة الحرارية'
+                  : isFEA
+                  ? 'حل حتمي مباشر لمعادلات إجهادات وانحرافات العارضة الإنشائية ومعامل الأمان'
+                  : 'حل حتمي مباشر لمعادلات هبوط الضغط ودارسي-فايسباخ ورقم رينولدز'}
               </span>
             </div>
 
@@ -1155,6 +1244,72 @@ export const OverviewTab: React.FC<OverviewTabProps> = ({ project }) => {
                         type="number"
                         value={momentOfInertiaCm4}
                         onChange={(e) => setMomentOfInertiaCm4(parseFloat(e.target.value) || 10)}
+                        className="w-full px-2.5 py-1.5 rounded-lg bg-slate-900 border border-slate-700 text-xs font-mono text-slate-200"
+                      />
+                    </div>
+                  </>
+                ) : isThermal ? (
+                  <>
+                    <div>
+                      <label className="text-xs text-slate-400 block mb-1">
+                        فيض الحرارة المطبق $q''$ (Heat Flux):
+                      </label>
+                      <div className="flex items-center gap-2">
+                        <input
+                          type="range"
+                          min="500"
+                          max="15000"
+                          step="250"
+                          value={heatFluxWm2}
+                          onChange={(e) => setHeatFluxWm2(parseFloat(e.target.value))}
+                          className="w-full accent-amber-500"
+                        />
+                        <span className="text-xs font-mono font-bold text-amber-400 w-20 text-left">
+                          {heatFluxWm2} W/m²
+                        </span>
+                      </div>
+                    </div>
+
+                    <div>
+                      <label className="text-xs text-slate-400 block mb-1">
+                        معامل التوصيل $k$ (W/m·K):
+                      </label>
+                      <div className="flex items-center gap-2">
+                        <input
+                          type="range"
+                          min="1"
+                          max="400"
+                          step="1"
+                          value={thermalConductivityK}
+                          onChange={(e) => setThermalConductivityK(parseFloat(e.target.value))}
+                          className="w-full accent-sky-500"
+                        />
+                        <span className="text-xs font-mono font-bold text-sky-400 w-20 text-left">
+                          {thermalConductivityK} W/mK
+                        </span>
+                      </div>
+                    </div>
+
+                    <div>
+                      <label className="text-xs text-slate-400 block mb-1">
+                        معامل التبديد $h$ (W/m²·K):
+                      </label>
+                      <input
+                        type="number"
+                        value={convectionCoeffH}
+                        onChange={(e) => setConvectionCoeffH(parseFloat(e.target.value) || 5)}
+                        className="w-full px-2.5 py-1.5 rounded-lg bg-slate-900 border border-slate-700 text-xs font-mono text-slate-200"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="text-xs text-slate-400 block mb-1">
+                        سماكة التوصيل $L$ (mm):
+                      </label>
+                      <input
+                        type="number"
+                        value={(wallThicknessM * 1000).toFixed(0)}
+                        onChange={(e) => setWallThicknessM((parseFloat(e.target.value) || 25) / 1000)}
                         className="w-full px-2.5 py-1.5 rounded-lg bg-slate-900 border border-slate-700 text-xs font-mono text-slate-200"
                       />
                     </div>
@@ -1269,6 +1424,46 @@ export const OverviewTab: React.FC<OverviewTabProps> = ({ project }) => {
                         {(appliedLoadKn * beamLengthM).toFixed(1)} <span className="text-xs font-normal text-slate-400">kN&middot;m</span>
                       </div>
                       <div className="text-[11px] text-slate-400 mt-1">عزم التثبيت عند قاعدة الهيكل</div>
+                    </div>
+                  </>
+                ) : isThermal ? (
+                  <>
+                    <div className="bg-slate-950/80 p-3.5 rounded-xl border border-slate-800 flex flex-col justify-between">
+                      <span className="text-xs text-slate-400">حرارة القاعدة القصوى (T_base):</span>
+                      <div className="font-mono text-xl font-bold text-rose-400 mt-1">
+                        {baseTempC.toFixed(1)} <span className="text-xs font-normal text-slate-400">&deg;C</span>
+                      </div>
+                      <div className="text-[11px] text-slate-400 mt-1">عند سطح التوليد الحراري q&#39;&#39;</div>
+                    </div>
+
+                    <div className="bg-slate-950/80 p-3.5 rounded-xl border border-slate-800 flex flex-col justify-between">
+                      <span className="text-xs text-slate-400">حرارة سطح التبديد (T_surface):</span>
+                      <div className="font-mono text-xl font-bold text-amber-400 mt-1">
+                        {surfaceTempC.toFixed(1)} <span className="text-xs font-normal text-slate-400">&deg;C</span>
+                      </div>
+                      <div className="text-[11px] text-slate-400 mt-1">سطح التبديد بالحمل h</div>
+                    </div>
+
+                    <div className="bg-slate-950/80 p-3.5 rounded-xl border border-slate-800 flex flex-col justify-between">
+                      <span className="text-xs text-slate-400">المقاومة الحرارية (R_total):</span>
+                      <div className="font-mono text-xl font-bold text-sky-400 mt-1">
+                        {rTotal.toFixed(4)} <span className="text-xs font-normal text-slate-400">m&sup2;&middot;K/W</span>
+                      </div>
+                      <div className="text-[11px] text-slate-400 mt-1">R_cond + R_conv متسلسلة</div>
+                    </div>
+
+                    <div className="bg-slate-950/80 p-3.5 rounded-xl border border-slate-800 flex flex-col justify-between">
+                      <span className="text-xs text-slate-400">رقم بيوت (Biot Number Bi):</span>
+                      <div className="font-mono text-xl font-bold text-emerald-400 mt-1">
+                        {biotNumber.toFixed(4)}
+                      </div>
+                      <div className="text-[11px] mt-1">
+                        {biotNumber < 0.1 ? (
+                          <span className="text-emerald-400 font-medium">سعة مجمعة (Bi &lt; 0.1)</span>
+                        ) : (
+                          <span className="text-amber-400 font-medium">تدرج حراري داخلي (Bi &ge; 0.1)</span>
+                        )}
+                      </div>
                     </div>
                   </>
                 ) : (
