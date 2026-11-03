@@ -182,7 +182,7 @@ function generateCadSchematicSvg(project: ThesisProject): string {
 
   // Thermal Projects: Distinguish between Flat Geometry (Plate/Conduction) vs Cylindrical LHTES PCM System
   const textCorpus = `${project.title} ${project.titleEn} ${project.abstractAr} ${project.abstractEn}`.toLowerCase();
-  const isCylindricalPcm = textCorpus.includes('lhtes') || textCorpus.includes('pcm') || textCorpus.includes('helical') || textCorpus.includes('شجرية') || textCorpus.includes('انصهار') || textCorpus.includes('طاقوي');
+  const isCylindricalPcm = (project.id === 'lhtes_v3_master' || project.id === 'lhtes-v3-master') || (textCorpus.includes('lhtes') && textCorpus.includes('helical'));
 
   if (!isCylindricalPcm) {
     // Thermal Flat Geometry Schematic (Aluminum Plate / Solid Heat Conduction)
@@ -255,7 +255,7 @@ function generateCadSchematicSvg(project: ThesisProject): string {
 
     <!-- PCM Medium Background -->
     <rect x="145" y="35" width="370" height="190" rx="6" fill="#f59e0b" fill-opacity="0.18" />
-    <text x="260" y="70" fill="#fbbf24" font-size="11" font-weight="bold">RT50 PCM + Al2O3 Nano (3 vol.%)</text>
+    <text x="260" y="70" fill="#fbbf24" font-size="11" font-weight="bold">${project.material?.name || 'PCM Phase Change Storage'}</text>
 
     <!-- Helical Coil representation -->
     <path d="M 220 30 C 220 70, 240 70, 240 110 C 240 150, 220 150, 220 190 C 220 230, 240 230, 240 230" fill="none" stroke="#ef4444" stroke-width="6" />
@@ -428,7 +428,22 @@ function generateMeshGciPlotSvg(project: ThesisProject): string {
 /**
  * Generate Melting Progress Curve SVG (for LHTES)
  */
-function generateMeltingCurveSvg(): string {
+function generateMeltingCurveSvg(project?: ThesisProject): string {
+  if (!project?.meltingComparison || project.meltingComparison.length === 0) {
+    return '';
+  }
+
+  const curves = project.meltingComparison.map((item, idx) => {
+    const colors = ['#10b981', '#38bdf8', '#f43f5e', '#a855f7'];
+    const color = item.color || colors[idx % colors.length];
+    const xPos = 200 + idx * 100;
+    return `
+    <path d="M 70 180 Q ${xPos - 50} ${160 - idx * 10} ${xPos} 45" fill="none" stroke="${color}" stroke-width="2.5"/>
+    <circle cx="${xPos}" cy="45" r="4" fill="${color}"/>
+    <text x="${xPos - 40}" y="${65 + idx * 15}" fill="${color}" font-size="9" font-weight="bold">${item.caseName} (${item.t95Hours}h)</text>
+    `;
+  }).join('');
+
   return `
   <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 680 240" width="680" height="240" style="background:#0f172a; border-radius:8px; font-family:'Segoe UI',Arial,sans-serif;">
     <rect x="70" y="30" width="540" height="150" fill="#1e293b" fill-opacity="0.4" stroke="#334155" stroke-width="1.5"/>
@@ -439,20 +454,7 @@ function generateMeltingCurveSvg(): string {
     <line x1="70" y1="45" x2="610" y2="45" stroke="#fbbf24" stroke-dasharray="5 4" stroke-width="1.5"/>
     <text x="520" y="40" fill="#fbbf24" font-size="10" font-weight="bold">t95 Criterion (95% Melted)</text>
 
-    <!-- Curve 1: Proposed Graded Tree Fins (t95 = 2.504 h) -->
-    <path d="M 70 180 Q 180 150 250 80 T 320 45" fill="none" stroke="#10b981" stroke-width="3"/>
-    <circle cx="320" cy="45" r="5" fill="#10b981"/>
-    <text x="250" y="35" fill="#34d399" font-size="10" font-weight="bold">Proposed Graded Tree (2.504 h)</text>
-
-    <!-- Curve 2: Uniform Tree Fins (t95 = 3.386 h) -->
-    <path d="M 70 180 Q 220 160 330 110 T 420 45" fill="none" stroke="#38bdf8" stroke-dasharray="6 3" stroke-width="2.5"/>
-    <circle cx="420" cy="45" r="4" fill="#38bdf8"/>
-    <text x="380" y="70" fill="#38bdf8" font-size="9">Uniform Tree (3.386 h)</text>
-
-    <!-- Curve 3: Traditional Spiral Fins (t95 = 4.201 h) -->
-    <path d="M 70 180 Q 260 170 410 130 T 520 45" fill="none" stroke="#f43f5e" stroke-dasharray="4 4" stroke-width="2"/>
-    <circle cx="520" cy="45" r="4" fill="#f43f5e"/>
-    <text x="490" y="90" fill="#f43f5e" font-size="9">Traditional Spiral (4.201 h)</text>
+    ${curves}
 
     <!-- Axes Labels -->
     <text x="340" y="215" fill="#e2e8f0" font-size="11" font-weight="bold" text-anchor="middle">Charging Time (Hours)</text>
@@ -697,7 +699,7 @@ export async function exportToWordDocument(project: ThesisProject) {
   const validationSvg = generateValidationPlotSvg(project);
   const meshGciSvg = generateMeshGciPlotSvg(project);
   const residualsSvg = generateResidualsPlotSvg();
-  const meltingSvg = (project.meltingComparison && project.field === 'Thermal') ? generateMeltingCurveSvg() : '';
+  const meltingSvg = (project.meltingComparison && project.field === 'Thermal') ? generateMeltingCurveSvg(project) : '';
 
   // 2.5 Convert all SVGs into Base64 PNGs so Microsoft Word can display them without issue
   const cadPng = await svgToPngDataUrl(cadSvg, 680, 260);
@@ -1613,7 +1615,7 @@ export function exportToJournalHTML(project: ThesisProject) {
   const validationSvg = generateValidationPlotSvg(project);
   const meshGciSvg = generateMeshGciPlotSvg(project);
   const residualsSvg = generateResidualsPlotSvg();
-  const meltingSvg = project.meltingComparison ? generateMeltingCurveSvg() : '';
+  const meltingSvg = (project.meltingComparison && project.field === 'Thermal') ? generateMeltingCurveSvg(project) : '';
   const renderedContours: Array<{ contour: ContourField; pngDataUrl: string }> = (project.contours || []).map(
     (c: ContourField) => ({
       contour: c,

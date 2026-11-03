@@ -378,7 +378,7 @@ export const OverviewTab: React.FC<OverviewTabProps> = ({ project }) => {
             <span>مصفوفة الحالات والتشغيل (Cases Matrix & Runs)</span>
           </button>
 
-          {project.meltingComparison && project.meltingComparison.length > 0 && project.field === 'Thermal' && (
+          {(project.id === 'lhtes_v3_master' || project.id === 'lhtes-v3-master') && project.meltingComparison && project.meltingComparison.length > 0 && (
             <button
               type="button"
               onClick={() => setWorkbenchView('lhtes_charts' as any)}
@@ -705,7 +705,7 @@ export const OverviewTab: React.FC<OverviewTabProps> = ({ project }) => {
                     الشكل (6): خريطة نسبة الانصهار (Liquid Fraction Map)
                   </span>
                   <span className="font-mono text-[11px] text-slate-400">
-                    Figure 6: Spatiotemporal Liquid Fraction Heatmap (Graded Tree)
+                    Figure 6: Spatiotemporal Liquid Fraction Heatmap
                   </span>
                 </div>
 
@@ -715,7 +715,7 @@ export const OverviewTab: React.FC<OverviewTabProps> = ({ project }) => {
                       Transition Boundary (Z = 0.25 m: Dense / Open)
                     </span>
                     <span className="bg-black/70 text-emerald-300 font-mono text-[10px] px-2 py-0.5 rounded">
-                      t95 = 2.504 h
+                      t95 = {project.meltingComparison?.[0]?.t95Hours ? `${project.meltingComparison[0].t95Hours} h` : 'مكتمل'}
                     </span>
                   </div>
                   <div className="flex justify-between text-white font-mono text-[10px] z-10 drop-shadow">
@@ -803,26 +803,36 @@ export const OverviewTab: React.FC<OverviewTabProps> = ({ project }) => {
                   <span>3. المواصفات الهندسية ونواة التصميم (CAD & Physical System)</span>
                 </h3>
                 <div className="space-y-2 text-xs">
-                  <div className="p-2.5 rounded-lg bg-slate-900 border border-slate-800">
-                    <span className="text-slate-400 block font-semibold">Shell Dimensions:</span>
-                    <strong className="text-slate-200 font-mono">Height = 0.500 m (500 mm), Diameter = 0.150 m (150 mm)</strong>
-                  </div>
-                  <div className="p-2.5 rounded-lg bg-slate-900 border border-slate-800">
-                    <span className="text-slate-400 block font-semibold">Coil Dimensions:</span>
-                    <strong className="text-slate-200 font-mono">Inner Dia = 10 mm, Outer Dia = 12 mm, Helix Dia = 70 mm, Pitch = 50 mm</strong>
-                  </div>
-                  <div className="p-2.5 rounded-lg bg-slate-900 border border-slate-800">
-                    <span className="text-slate-400 block font-semibold">Fin Layout (Graded Tree):</span>
-                    <strong className="text-emerald-400 font-mono">Total 204 fin plates (139 lower half [Dense], 65 upper half [Open])</strong>
-                  </div>
-                  <div className="p-2.5 rounded-lg bg-slate-900 border border-slate-800">
-                    <span className="text-slate-400 block font-semibold">PCM & Nanoparticles:</span>
-                    <strong className="text-amber-400 font-mono">RT50 Organic PCM (T_melt = 321 - 325 K) + 3 vol.% Al2O3 NePCM</strong>
-                  </div>
-                  <div className="p-2.5 rounded-lg bg-slate-900 border border-slate-800">
-                    <span className="text-slate-400 block font-semibold">Oscillating HTF Boundary:</span>
-                    <strong className="text-rose-400 font-mono">Tin(t) = 348 + 10*sin(2*pi*t / 1200 s), Flow = 0.025 kg/s</strong>
-                  </div>
+                  {project.cadSpecs?.shell && (
+                    <div className="p-2.5 rounded-lg bg-slate-900 border border-slate-800">
+                      <span className="text-slate-400 block font-semibold">ابعاد وهيكل النطاق (Domain Dimensions):</span>
+                      <strong className="text-slate-200 font-mono">{project.cadSpecs.shell}</strong>
+                    </div>
+                  )}
+                  {project.cadSpecs?.coil && (
+                    <div className="p-2.5 rounded-lg bg-slate-900 border border-slate-800">
+                      <span className="text-slate-400 block font-semibold">حدود المدخل والتثبيت (Inlet / Support Boundary):</span>
+                      <strong className="text-slate-200 font-mono">{project.cadSpecs.coil}</strong>
+                    </div>
+                  )}
+                  {project.cadSpecs?.fins && (
+                    <div className="p-2.5 rounded-lg bg-slate-900 border border-slate-800">
+                      <span className="text-slate-400 block font-semibold">الشروط والتجهيزات (Boundary Layout):</span>
+                      <strong className="text-emerald-400 font-mono">{project.cadSpecs.fins}</strong>
+                    </div>
+                  )}
+                  {project.cadSpecs?.pcm && (
+                    <div className="p-2.5 rounded-lg bg-slate-900 border border-slate-800">
+                      <span className="text-slate-400 block font-semibold">مادة وركيزة النموذج (Material Specification):</span>
+                      <strong className="text-amber-400 font-mono">{project.cadSpecs.pcm}</strong>
+                    </div>
+                  )}
+                  {project.cadSpecs?.htf && (
+                    <div className="p-2.5 rounded-lg bg-slate-900 border border-slate-800">
+                      <span className="text-slate-400 block font-semibold">شروط الوسط والتشغيل (Operating Conditions):</span>
+                      <strong className="text-rose-400 font-mono">{project.cadSpecs.htf}</strong>
+                    </div>
+                  )}
                 </div>
               </div>
 

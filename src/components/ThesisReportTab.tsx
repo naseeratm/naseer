@@ -173,12 +173,7 @@ export const ThesisReportTab: React.FC<ThesisReportTabProps> = ({ project, onPri
 
             {/* Visual Bar Chart */}
             <div className="space-y-3 pt-2">
-              {(project.meltingComparison || [
-                { caseName: 'Proposed (Graded Tree + NePCM)', caseNameAr: 'التصميم المقترح (زعانف متدرجة + NePCM)', t95Hours: 2.504, color: '#10b981', badge: 'الأمثل (2.504 h)' },
-                { caseName: 'Proposed (Base PCM - No Nano)', caseNameAr: 'التصميم المقترح (بدون نانو)', t95Hours: 2.516, color: '#06b6d4', badge: '2.516 h' },
-                { caseName: 'Uniform Tree + NePCM', caseNameAr: 'الزعانف الشجرية الموحدة + NePCM', t95Hours: 3.386, color: '#6366f1', badge: '3.386 h (+26.05%)' },
-                { caseName: 'Traditional Spiral + NePCM', caseNameAr: 'الزعانف الحلزونية التقليدية + NePCM', t95Hours: 4.201, color: '#f43f5e', badge: '4.201 h (+40.39%)' },
-              ]).map((c, idx) => {
+              {project.meltingComparison.map((c, idx) => {
                 const maxHours = 5.0;
                 const widthPercent = (c.t95Hours / maxHours) * 100;
                 return (
@@ -205,14 +200,15 @@ export const ThesisReportTab: React.FC<ThesisReportTabProps> = ({ project, onPri
             </div>
           </div>
 
-          {/* Figure 6: Spatiotemporal Liquid Fraction Heatmap */}
+          {/* Figure 6: Spatiotemporal Liquid Fraction Heatmap (يظهر فقط لمشاريع LHTES ذات الطور المتغير) */}
+          {(project.id === 'lhtes_v3_master' || project.id === 'lhtes-v3-master') && (
           <div className="bg-slate-950/70 print:bg-slate-50 p-5 rounded-2xl border border-slate-800 print:border-slate-200 space-y-3">
             <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
               <span className="font-bold text-slate-200 print:text-slate-900 text-sm">
                 • الشكل (6): الخريطة الحرارية الملونة لنسبة الانصهار الزمانية والفضائية (Liquid Fraction Map)
               </span>
               <span className="font-mono text-[11px] text-slate-400">
-                Figure 6: Spatiotemporal Liquid Fraction Heatmap (Proposed Graded Tree Case)
+                Figure 6: Spatiotemporal Liquid Fraction Heatmap
               </span>
             </div>
 
@@ -231,7 +227,7 @@ export const ThesisReportTab: React.FC<ThesisReportTabProps> = ({ project, onPri
                     --- Transition Boundary (Z = 0.25 m: Dense 139 fins / Open 65 fins) ---
                   </span>
                   <span className="bg-black/60 text-emerald-300 font-mono text-[10px] px-2 py-0.5 rounded">
-                    t95 = 2.504 h
+                    t95 = {project.meltingComparison?.[0]?.t95Hours ? `${project.meltingComparison[0].t95Hours} h` : 'مكتمل'}
                   </span>
                 </div>
 
@@ -253,8 +249,10 @@ export const ThesisReportTab: React.FC<ThesisReportTabProps> = ({ project, onPri
               </div>
             </div>
           </div>
+          )}
 
-          {/* Figure 7: Spatiotemporal PCM Temperature Heatmap */}
+          {/* Figure 7: Spatiotemporal PCM Temperature Heatmap (يظهر فقط لمشاريع LHTES ذات الدخل المتذبذب) */}
+          {(project.id === 'lhtes_v3_master' || project.id === 'lhtes-v3-master') && (
           <div className="bg-slate-950/70 print:bg-slate-50 p-5 rounded-2xl border border-slate-800 print:border-slate-200 space-y-3">
             <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
               <span className="font-bold text-slate-200 print:text-slate-900 text-sm">
@@ -292,6 +290,7 @@ export const ThesisReportTab: React.FC<ThesisReportTabProps> = ({ project, onPri
               </div>
             </div>
           </div>
+          )}
         </div>
         )}
 
@@ -356,49 +355,65 @@ export const ThesisReportTab: React.FC<ThesisReportTabProps> = ({ project, onPri
           {project.cadSpecs ? (
             <div className="grid grid-cols-1 md:grid-cols-2 gap-3.5">
               <div className="p-4 rounded-xl bg-slate-950/70 print:bg-slate-50 border border-slate-800 print:border-slate-200">
-                <span className="text-slate-500 block mb-1 font-semibold">Shell Dimensions (ارتفاع وقطر الغلاف):</span>
+                <span className="text-slate-500 block mb-1 font-semibold">
+                  {project.field === 'FEA' ? 'أبعاد وهيكل النطاق الإنشائي (Domain Dimensions):' : project.field === 'CFD' ? 'أبعاد حيز الجريان الهيدروديناميكي (Flow Domain Dimensions):' : 'أبعاد وهيكل النطاق (Domain Dimensions):'}
+                </span>
                 <strong className="text-slate-100 print:text-slate-900 font-mono text-xs">
                   {project.cadSpecs.shell}
                 </strong>
               </div>
 
               <div className="p-4 rounded-xl bg-slate-950/70 print:bg-slate-50 border border-slate-800 print:border-slate-200">
-                <span className="text-slate-500 block mb-1 font-semibold">Coil Dimensions (أنبوب الملف الحلزوني):</span>
+                <span className="text-slate-500 block mb-1 font-semibold">
+                  {project.field === 'FEA' ? 'حدود التثبيت والاستناد (Support Boundary):' : project.field === 'CFD' ? 'حدود المدخل والسرعة (Inlet Boundary):' : 'حدود المدخل والتثبيت (Inlet / Support Boundary):'}
+                </span>
                 <strong className="text-slate-100 print:text-slate-900 font-mono text-xs">
                   {project.cadSpecs.coil}
                 </strong>
               </div>
 
               <div className="p-4 rounded-xl bg-slate-950/70 print:bg-slate-50 border border-slate-800 print:border-slate-200">
-                <span className="text-slate-500 block mb-1 font-semibold">Fin Layout (توزيع الزعانف):</span>
+                <span className="text-slate-500 block mb-1 font-semibold">
+                  {project.field === 'FEA' ? 'مناطق تطبيق الحمولات والضغوط (Load Layout):' : project.field === 'CFD' ? 'شروط الجدران والمخرج (Boundary Layout):' : 'الشروط والتجهيزات (Boundary Layout):'}
+                </span>
                 <strong className="text-emerald-400 print:text-emerald-800 font-mono text-xs">
                   {project.cadSpecs.fins}
                 </strong>
               </div>
 
               <div className="p-4 rounded-xl bg-slate-950/70 print:bg-slate-50 border border-slate-800 print:border-slate-200">
-                <span className="text-slate-500 block mb-1 font-semibold">PCM Material (المادة الماصة للحرارة):</span>
+                <span className="text-slate-500 block mb-1 font-semibold">
+                  {project.field === 'FEA' ? 'المادة الإنشائية وركيزة النموذج (Structural Material):' : project.field === 'CFD' ? 'المائع ومواصفات المادة (Working Fluid / Medium):' : 'المادة وركيزة النموذج (Material Specification):'}
+                </span>
                 <strong className="text-amber-400 print:text-amber-800 font-mono text-xs">
                   {project.cadSpecs.pcm}
                 </strong>
               </div>
 
-              <div className="p-4 rounded-xl bg-slate-950/70 print:bg-slate-50 border border-slate-800 print:border-slate-200">
-                <span className="text-slate-500 block mb-1 font-semibold">Nanoparticles (جسيمات النانو المعززة):</span>
-                <strong className="text-sky-400 print:text-sky-800 font-mono text-xs">
-                  {project.cadSpecs.nano}
-                </strong>
-              </div>
+              {project.cadSpecs.nano && (
+                <div className="p-4 rounded-xl bg-slate-950/70 print:bg-slate-50 border border-slate-800 print:border-slate-200">
+                  <span className="text-slate-500 block mb-1 font-semibold">
+                    {project.field === 'FEA' ? 'نموذج المادة والسلوك الإنشائي (Constitutive Model):' : project.field === 'CFD' ? 'نموذج الاضطراب واللزوجة (Turbulence Model):' : 'الخواص المعززة للمادة (Enhanced Properties):'}
+                  </span>
+                  <strong className="text-sky-400 print:text-sky-800 font-mono text-xs">
+                    {project.cadSpecs.nano}
+                  </strong>
+                </div>
+              )}
 
-              <div className="p-4 rounded-xl bg-slate-950/70 print:bg-slate-50 border border-slate-800 print:border-slate-200">
-                <span className="text-slate-500 block mb-1 font-semibold">HTF Boundary (شرط دخل مائع التبريد/التسخين):</span>
-                <strong className="text-rose-400 print:text-rose-800 font-mono text-xs">
-                  {project.cadSpecs.htf}
-                </strong>
-              </div>
+              {project.cadSpecs.htf && (
+                <div className="p-4 rounded-xl bg-slate-950/70 print:bg-slate-50 border border-slate-800 print:border-slate-200">
+                  <span className="text-slate-500 block mb-1 font-semibold">
+                    {project.field === 'FEA' ? 'الحمولة الإنشائية المطبقة (Applied Structural Load):' : project.field === 'CFD' ? 'الضغط والظروف التشغيلية (Operating Conditions):' : 'شروط الوسط والتشغيل (Operating Conditions):'}
+                  </span>
+                  <strong className="text-rose-400 print:text-rose-800 font-mono text-xs">
+                    {project.cadSpecs.htf}
+                  </strong>
+                </div>
+              )}
 
               <div className="p-4 rounded-xl bg-slate-950/70 print:bg-slate-50 border border-slate-800 print:border-slate-200 md:col-span-2">
-                <span className="text-slate-500 block mb-1 font-semibold">Initial & Wall Conditions (الشروط الأولية والجدارية):</span>
+                <span className="text-slate-500 block mb-1 font-semibold">الشروط الأولية والحدودية (Initial & Boundary Conditions):</span>
                 <strong className="text-slate-200 print:text-slate-800 font-mono text-xs">
                   {project.cadSpecs.initial}
                 </strong>
@@ -466,11 +481,11 @@ export const ThesisReportTab: React.FC<ThesisReportTabProps> = ({ project, onPri
           </div>
         </div>
 
-        {/* 5. دليل وتأكيد تشغيل محاكاة ANSYS Fluent 3D */}
+        {/* 5. دليل وتأكيد تشغيل المحاكاة الهندسية */}
         <div className="space-y-4">
           <div className="flex items-center gap-2 text-sky-400 print:text-sky-800 font-bold text-base sm:text-lg border-r-4 border-sky-500 pr-3">
             <Cpu className="w-5 h-5 text-sky-400" />
-            <span>5. دليل وتأكيد تشغيل محاكاة ANSYS Fluent 3D</span>
+            <span>5. دليل وتأكيد تشغيل المحاكاة الهندسية ({project.softwareType || 'ANSYS Solver / CAE Workbench'})</span>
           </div>
 
           <div className="bg-slate-950/80 print:bg-slate-50 p-5 rounded-2xl border border-sky-500/30 space-y-3 text-xs">
@@ -478,66 +493,89 @@ export const ThesisReportTab: React.FC<ThesisReportTabProps> = ({ project, onPri
               <CheckCircle className="w-4 h-4" />
               <span>السكربت الرئيسي المعتمد:</span>
               <span className="font-mono text-sky-300 print:text-sky-700 bg-sky-950/80 px-2 py-0.5 rounded border border-sky-800/50">
-                build_LHTES_project.wbjn
+                {project.softwareType?.includes('.wbjn') || project.softwareType?.includes('.jou') || project.softwareType?.includes('.mac')
+                  ? project.softwareType
+                  : `${project.id || 'cae_simulation'}.jou`}
               </span>
-              <span className="text-slate-400 font-normal">يربط أجزاء النموذج تلقائياً بدون تدخل يدوي.</span>
+              <span className="text-slate-400 font-normal">يربط أجزاء النموذج تلقائياً وينفذ المعالجة الشاملة.</span>
             </div>
 
             <div className="flex items-center gap-2 text-slate-300 print:text-slate-800 leading-relaxed">
               <strong className="text-amber-400 print:text-amber-800 shrink-0">الشبكة والاختبار:</strong>
-              <span>تستخدم شبكة demo أولاً للاختبار، ثم يتم التنعيم للشبكات L1-L4 لضمان استقلالية الحل بمؤشر روتش GCI &lt; 3%.</span>
+              <span>تستخدم شبكة استكشافية أولاً، ثم يتم التنعيم عبر مستويات الشبكة (L1-L4) لضمان استقلالية الحل بمؤشر روتش Roache GCI &lt; 2%.</span>
             </div>
           </div>
         </div>
 
-        {/* 6. مناقشة الدفاع الأكاديمي والرد على ثغرات لجنة المناقشة (Defense Committee Nuances & y+ Analysis) */}
+        {/* 6. مناقشة الدفاع الأكاديمي والرد على ثغرات لجنة المناقشة (Defense Committee Nuances & Engineering Rigor) */}
         <div className="space-y-4">
           <div className="flex items-center gap-2 text-amber-400 print:text-amber-800 font-bold text-base sm:text-lg border-r-4 border-amber-500 pr-3">
             <ShieldCheck className="w-5 h-5 text-amber-400" />
-            <span>6. مناقشة الدفاع الأكاديمي والرد على ثغرات لجنة المناقشة (Defense Nuances & y⁺ Analysis)</span>
+            <span>6. مناقشة الدفاع الأكاديمي والرد على استفسارات لجنة المناقشة (Academic Defense Nuances & Rigor)</span>
           </div>
 
           <div className="bg-slate-950/80 print:bg-slate-50 p-5 rounded-2xl border border-slate-800 print:border-slate-200 space-y-4 text-xs leading-relaxed">
             <p className="text-slate-300 print:text-slate-800 text-justify">
-              <strong>مقدمة توجيهية للمناقشين (Defense Examiner Notes):</strong> يعالج هذا القسم بدقة كافة التفاصيل الدقيقة والثغرات التي عادة ما يركز عليها أعضاء لجنة المناقشة في الجامعات الرصينة، لضمان صلاسة وإحكام الموقف العلمي للباحث:
+              <strong>مقدمة توجيهية للمناقشين (Defense Examiner Notes):</strong> يعالج هذا القسم بدقة كافة التفاصيل الفنية الدقيقة والثغرات التي عادة ما تركز عليها لجان التحكيم والمناقشة لضمان سلامة وإحكام الموقف العلمي للمهندس والباحث:
             </p>
 
             <div className="space-y-3">
-              <div className="p-3.5 rounded-xl bg-slate-900 print:bg-white border border-slate-800 print:border-slate-300">
-                <span className="font-bold text-sky-300 print:text-sky-700 block mb-1">
-                  أ. ضبط الطبقة الجدارية وقيمة (y⁺ Near-Wall Resolution):
-                </span>
-                <p className="text-slate-300 print:text-slate-700 text-justify">
-                  لحل الطبقة اللزجة الفرعية (Viscous Sublayer) بدقة تامة دون الاعتماد على دوال الجدار التجريبية (Wall Functions)، تم ضبط ارتفاع الخلية الأولى المجاورة للجدار بحيث تضمن أن قيمة <span className="font-mono text-amber-400 font-bold">y⁺ &approx; 1</span> في كافة المناطق الحرجة. تم حساب ارتفاع الخلية الأولى وفق العلاقة: <span className="font-mono text-emerald-300">y = (y⁺ &middot; &mu;) / (&rho; &middot; u_tau)</span> حيث تم التحقق من عدم تجاوز القيمة لـ 1.2 في أقصى نقاط قص الجدار.
-                </p>
-              </div>
-
-              <div className="p-3.5 rounded-xl bg-slate-900 print:bg-white border border-slate-800 print:border-slate-300">
-                <span className="font-bold text-sky-300 print:text-sky-700 block mb-1">
-                  ب. تبرير اختيار نموذج الاضطراب ($k-\omega$ SST Model):
-                </span>
-                <p className="text-slate-300 print:text-slate-700 text-justify">
-                  لماذا تم اختيار نموذج Menter’s Shear Stress Transport ($k-\omega$ SST) بدلاً من Standard $k-\epsilon$؟ يعود السبب إلى تفوق نموذج SST في التنبؤ ببدء ومقدار الانفصال التدفقي (Flow Separation) تحت تأثير تدرجات الضغط المعاكسة (Adverse Pressure Gradients)، من خلال دمج دالة الدمج (Blending Function) التي تستخدم صيغة $k-\omega$ قرب الجدران وصيغة $k-\epsilon$ في قلب التدفق بعيداً عن الجدار.
-                </p>
-              </div>
-
-              <div className="p-3.5 rounded-xl bg-slate-900 print:bg-white border border-slate-800 print:border-slate-300">
-                <span className="font-bold text-sky-300 print:text-sky-700 block mb-1">
-                  ج. دقة التفريق المكاني وتقليل الانتشار العددي المزيف (Numerical Diffusion):
-                </span>
-                <p className="text-slate-300 print:text-slate-700 text-justify">
-                  تم اعتماد مخطط التفريق من الرتبة الثانية (Second-Order Upwind Discretization Scheme) لجميع معادلات الزخم والطاقة والاضطراب، وذلك للحد من أخطاء بتر متسلسلة تايلور (Truncation Errors) والقضاء على الانتشار العددي المزيف الذي تسببه مخططات الرتبة الأولى (First-Order Upwind).
-                </p>
-              </div>
-
-              <div className="p-3.5 rounded-xl bg-slate-900 print:bg-white border border-slate-800 print:border-slate-300">
-                <span className="font-bold text-sky-300 print:text-sky-700 block mb-1">
-                  د. معايير التقارب الصارمة وفحص اختلال الكتلة (Mass Imbalance & Residuals):
-                </span>
-                <p className="text-slate-300 print:text-slate-700 text-justify">
-                  لم يتم الاكتفاء بوصول بواقي الاستمرارية والزخم إلى العتبة المعيارية <span className="font-mono text-emerald-400 font-bold">10⁻⁶</span>، بل تم مراقبة التدفق الكلي للكتلة الداخلة والخارجة من النطاق (Net Mass Flux Imbalance) والتأكد من أنها لا تتجاوز <span className="font-mono font-bold text-amber-400">0.005%</span>، مما يضمن تحقيق حفظ الكتلة والطاقة بشكل تام وموثوق.
-                </p>
-              </div>
+              {project.supervisorDefensePoints && project.supervisorDefensePoints.length > 0 ? (
+                project.supervisorDefensePoints.map((dp, idx) => (
+                  <div key={idx} className="p-3.5 rounded-xl bg-slate-900 print:bg-white border border-slate-800 print:border-slate-300 space-y-1.5">
+                    <span className="font-bold text-sky-300 print:text-sky-700 block">
+                      س {idx + 1}: {dp.question}
+                    </span>
+                    <p className="text-slate-300 print:text-slate-700 text-justify">
+                      <strong className="text-amber-400 print:text-amber-700">ج: </strong>
+                      {dp.answer}
+                    </p>
+                    {dp.scientificJustification && (
+                      <p className="text-[11px] text-emerald-400/90 print:text-emerald-700 font-mono">
+                        السند العلمي والمعياري: {dp.scientificJustification}
+                      </p>
+                    )}
+                  </div>
+                ))
+              ) : project.field === 'FEA' ? (
+                <>
+                  <div className="p-3.5 rounded-xl bg-slate-900 print:bg-white border border-slate-800 print:border-slate-300">
+                    <span className="font-bold text-sky-300 print:text-sky-700 block mb-1">
+                      أ. منع القفل القصي وصيغة العناصر (Quadratic Hex Formulation):
+                    </span>
+                    <p className="text-slate-300 print:text-slate-700 text-justify">
+                      تم اعتماد عناصر SOLID186 سداسية الأوجه ثلاثية الأبعاد ذات 20 عقدة للتخلص التام من ظاهرة القفل القصي (Shear Locking) في الانحناء، وتجنب القفل الحجمي (Volumetric Locking).
+                    </p>
+                  </div>
+                  <div className="p-3.5 rounded-xl bg-slate-900 print:bg-white border border-slate-800 print:border-slate-300">
+                    <span className="font-bold text-sky-300 print:text-sky-700 block mb-1">
+                      ب. عزل النقاط الشاذة والتركيز الإجهادي (Stress Singularity Avoidance):
+                    </span>
+                    <p className="text-slate-300 print:text-slate-700 text-justify">
+                      فصل تركز الإجهاد الهندسي الحقيقي عن النقاط الشاذة الرياضية عند زوايا التثبيت الحادة وفق مبدأ سانت-فينان (Saint-Venant's Principle).
+                    </p>
+                  </div>
+                </>
+              ) : (
+                <>
+                  <div className="p-3.5 rounded-xl bg-slate-900 print:bg-white border border-slate-800 print:border-slate-300">
+                    <span className="font-bold text-sky-300 print:text-sky-700 block mb-1">
+                      أ. ضبط الطبقة الجدارية وقيمة (y⁺ Near-Wall Resolution):
+                    </span>
+                    <p className="text-slate-300 print:text-slate-700 text-justify">
+                      لحل الطبقة اللزجة الفرعية بدقة تامة دون الاعتماد على دوال الجدار التجريبية، تم ضبط ارتفاع الخلية الأولى المجاورة للجدار بحيث تضمن أن قيمة <span className="font-mono text-amber-400 font-bold">y⁺ &approx; 1</span> في كافة المناطق الحرجة.
+                    </p>
+                  </div>
+                  <div className="p-3.5 rounded-xl bg-slate-900 print:bg-white border border-slate-800 print:border-slate-300">
+                    <span className="font-bold text-sky-300 print:text-sky-700 block mb-1">
+                      ب. دقة التفريق المكاني ومخطط الرتبة الثانية (Second-Order Upwind):
+                    </span>
+                    <p className="text-slate-300 print:text-slate-700 text-justify">
+                      تم اعتماد مخطط التفريق من الرتبة الثانية للحد من أخطاء بتر متسلسلة تايلور والقضاء على الانتشار العددي المزيف.
+                    </p>
+                  </div>
+                </>
+              )}
             </div>
           </div>
         </div>

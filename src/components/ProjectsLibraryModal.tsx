@@ -409,12 +409,12 @@ export const ProjectsLibraryModal: React.FC<ProjectsLibraryModalProps> = ({
                         <span>Word (.doc)</span>
                       </button>
 
-                      {(proj.isCustom || !['lhtes-v3-master', 'naca-0012-cfd', 'cantilever-beam-fea'].includes(proj.id)) && onDeleteProject && (
+                      {onDeleteProject && (
                         <button
                           type="button"
                           onClick={() => onDeleteProject(proj.id)}
                           className="px-2.5 py-1.5 rounded-lg bg-rose-500/10 hover:bg-rose-500/20 text-rose-300 border border-rose-500/30 text-[11px] flex items-center gap-1 transition-colors"
-                          title="حذف هذا المشروع من الذاكرة المحلية"
+                          title="حذف هذا المشروع نهائياً"
                         >
                           <Trash2 className="w-3 h-3" />
                           <span>حذف</span>

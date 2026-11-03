@@ -18,7 +18,7 @@ export const EngineeringModelViewer3D: React.FC<EngineeringModelViewer3DProps> =
   const isFEA = project.field === 'FEA';
   const isCFD = project.field === 'CFD';
   const isThermal = project.field === 'Thermal';
-  const isLHTES = Boolean(project.meltingComparison && project.meltingComparison.length > 0) || project.id === 'lhtes-v3-master';
+  const isLHTES = project.id === 'lhtes_v3_master' || project.id === 'lhtes-v3-master';
   const [activeLayer, setActiveLayer] = useState<'lhtes_assembly' | 'pcm_melt' | 'temperature_field'>('lhtes_assembly');
 
   const defaultEq = isThermal

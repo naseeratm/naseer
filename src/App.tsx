@@ -274,15 +274,12 @@ export default function App() {
   };
 
   const handleFactoryReset = () => {
-    // Clear all workbench related localStorage items
-    const keysToClear = [
-      'workbench_custom_projects',
-      'workbench_cloud_config',
-      'workbench_api_keys',
-      'workbench_engine_mode'
-    ];
-    
-    keysToClear.forEach(key => localStorage.removeItem(key));
+    try {
+      localStorage.clear();
+      sessionStorage.clear();
+    } catch (e) {
+      console.error('Error clearing storage:', e);
+    }
     
     // Clear state
     setCustomProjects([]);
