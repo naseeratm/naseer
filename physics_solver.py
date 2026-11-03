@@ -23,6 +23,8 @@ def solve_2d_thermal_dynamic(json_data):
     bcs = json_data.get("boundary_conditions", {})
     T_left = float(bcs.get("left_edge_x0", {}).get("value", 100.0))
     T_right = float(bcs.get("right_edge_x1", {}).get("value", 0.0))
+    h_conv = float(bcs.get("convection", {}).get("h_coefficient", 0.0))
+    T_inf = float(bcs.get("convection", {}).get("T_ambient", 25.0))
     
     # 3. بناء مصفوفة النظام الخطي (Global Sparse Matrix)
     K = lil_matrix((N_total, N_total))
@@ -50,6 +52,11 @@ def solve_2d_thermal_dynamic(json_data):
                 F[idx] = 0.0
             # الحد العلوي (عزل حراري)
             elif j == Ny - 1:
+                if h_conv > 0 and i not in (0, Nx - 1):
+                    K[idx, idx] = (k / dy) + h_conv
+                    K[idx, get_node_index(i, Ny - 2)] = -k / dy
+                    F[idx] = h_conv * T_inf
+                    continue
                 K[idx, idx] = 1.0
                 K[idx, get_node_index(i, Ny - 2)] = -1.0
                 F[idx] = 0.0
