@@ -33,6 +33,7 @@ pandas>=2.2.0
 # --- قراءة وهندسة ملفات الشبيكة والـ CAD (Mesh & CAD Geometry Parsers) ---
 meshio>=5.3.5
 trimesh>=4.3.0
+gmsh>=4.13.1
 
 # --- التواصل المباشر مع محرك ANSYS APDL (ANSYS MAPDL Python Interface) ---
 # ملاحظة: إذا كان ANSYS مثبت على الجهاز، تتيح هذه المكتبة تشغيل MAPDL مباشرة في الخلفية
