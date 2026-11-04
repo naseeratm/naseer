@@ -48,6 +48,11 @@ interface SimulationResults {
   solver_engine?: string;
   process_time?: number;
   process_time_ms?: number;
+  temperature_min?: number;
+  temperature_max?: number;
+  max_temperature?: number;
+  center_temperature?: number;
+  calculated_heat_flux?: number;
 }
 
 export default function App() {
@@ -95,8 +100,13 @@ export default function App() {
           data?.temperature_matrix ??
           data?.data?.temperature_matrix ??
           data?.data?.solver_results?.temperature_matrix;
+        const solverData =
+          (data?.data?.solver_results as SimulationResults | undefined) ??
+          (data?.data as SimulationResults | undefined) ??
+          {};
         setResults({
           ...data,
+          ...solverData,
           temperature_matrix: Array.isArray(temperatureMatrix) ? temperatureMatrix : undefined,
         });
       })
@@ -661,44 +671,93 @@ export default function App() {
                 <OverviewTab project={currentProject} />
               )}
             </div>
-            {(results?.physics_type ||
-              results?.classified_type ||
-              results?.recommended_solver ||
-              results?.solver_engine ||
-              results?.process_time !== undefined ||
-              results?.process_time_ms !== undefined) && (
-              <section
-                aria-label="Simulation status"
-                className="flex flex-wrap gap-3 rounded-xl border border-slate-800 bg-[#1e1e2e] p-4"
-              >
-                <div className="flex min-w-[200px] flex-1 items-center gap-2 rounded-lg border border-sky-500/30 bg-sky-500/10 px-3 py-2">
-                  <span className="text-lg">🧠</span>
-                  <span className="text-xs text-slate-400">Physics Detected</span>
-                  <strong className="ml-auto text-sm text-sky-300">
-                    {results.physics_type || results.classified_type || 'Unknown'}
-                  </strong>
+            {results?.temperature_matrix && (
+              <section className="grid grid-cols-12 gap-4 rounded-2xl border border-slate-800 bg-slate-900/40 p-4">
+                <aside className="col-span-12 space-y-3 rounded-xl border border-slate-800 bg-[#141421] p-4 lg:col-span-2">
+                  <div className="flex items-center gap-2 text-xs font-bold uppercase tracking-wider text-sky-300">
+                    <Upload className="h-4 w-4" /> Input Panel
+                  </div>
+                  <p className="text-xs text-slate-400">CAD and analysis inputs</p>
+                  <button
+                    onClick={() => setIsUploadModalOpen(true)}
+                    className="w-full rounded-lg border border-sky-500/30 bg-sky-500/10 px-3 py-2 text-xs font-semibold text-sky-300 hover:bg-sky-500/20"
+                  >
+                    Import Engineering Model
+                  </button>
+                  <dl className="space-y-2 text-xs">
+                    <div><dt className="text-slate-500">Domain</dt><dd className="text-slate-200">{currentProject.field}</dd></div>
+                    <div><dt className="text-slate-500">Solver</dt><dd className="text-slate-200">{currentProject.softwareType}</dd></div>
+                  </dl>
+                </aside>
+
+                <div className="col-span-12 flex flex-col items-center justify-center rounded-xl border border-slate-800 bg-[#11111b] p-3 lg:col-span-7">
+                  <HeatmapCanvas matrix={results.temperature_matrix} />
+                  {(results.physics_type ||
+                    results.classified_type ||
+                    results.recommended_solver ||
+                    results.solver_engine ||
+                    results.process_time !== undefined ||
+                    results.process_time_ms !== undefined) && (
+                    <section
+                      aria-label="Simulation status"
+                      className="mt-4 grid w-full grid-cols-1 gap-3 rounded-xl border border-slate-800 bg-[#1e1e2e] p-3 md:grid-cols-3"
+                    >
+                      <div className="flex min-h-16 items-center gap-2 rounded-lg border border-sky-500/30 bg-sky-500/10 px-3 py-2">
+                        <span className="text-lg">🧠</span>
+                        <span className="text-xs text-slate-400">Physics Type</span>
+                        <strong className="ml-auto text-sm text-sky-300">
+                          {results.physics_type || results.classified_type || 'Unknown'}
+                        </strong>
+                      </div>
+                      <div className="flex min-h-16 items-center gap-2 rounded-lg border border-violet-500/30 bg-violet-500/10 px-3 py-2">
+                        <span className="text-lg">⚙️</span>
+                        <span className="text-xs text-slate-400">Solver Engine</span>
+                        <strong className="ml-auto text-sm text-violet-300">
+                          {results.recommended_solver || results.solver_engine || 'Automatic fallback'}
+                        </strong>
+                      </div>
+                      <div className="flex min-h-16 items-center gap-2 rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-3 py-2">
+                        <span className="text-lg">⏱️</span>
+                        <span className="text-xs text-slate-400">Process Time</span>
+                        <strong className="ml-auto text-sm text-emerald-300">
+                          {typeof results.process_time === 'number'
+                            ? `${results.process_time.toFixed(2)}s`
+                            : typeof results.process_time_ms === 'number'
+                              ? `${(results.process_time_ms / 1000).toFixed(2)}s`
+                              : 'Unavailable'}
+                        </strong>
+                      </div>
+                    </section>
+                  )}
                 </div>
-                <div className="flex min-w-[200px] flex-1 items-center gap-2 rounded-lg border border-violet-500/30 bg-violet-500/10 px-3 py-2">
-                  <span className="text-lg">⚙️</span>
-                  <span className="text-xs text-slate-400">Selected Engine</span>
-                  <strong className="ml-auto text-sm text-violet-300">
-                    {results.recommended_solver || results.solver_engine || 'Automatic fallback'}
-                  </strong>
-                </div>
-                <div className="flex min-w-[200px] flex-1 items-center gap-2 rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-3 py-2">
-                  <span className="text-lg">⏱️</span>
-                  <span className="text-xs text-slate-400">Processing Time</span>
-                  <strong className="ml-auto text-sm text-emerald-300">
-                    {typeof results.process_time === 'number'
-                      ? `${results.process_time.toFixed(2)}s`
-                      : typeof results.process_time_ms === 'number'
-                        ? `${(results.process_time_ms / 1000).toFixed(2)}s`
-                        : 'Unavailable'}
-                  </strong>
-                </div>
+
+                <aside className="col-span-12 rounded-xl border border-slate-800 bg-[#141421] p-4 lg:col-span-3">
+                  <div className="mb-3 text-xs font-bold uppercase tracking-wider text-emerald-300">Results</div>
+                  <dl className="grid grid-cols-2 gap-2 lg:grid-cols-1">
+                    <div className="rounded-lg bg-slate-900/80 p-3">
+                      <dt className="text-[11px] text-slate-500">Max temperature</dt>
+                      <dd className="mt-1 text-lg font-semibold text-red-300">
+                        {typeof results.max_temperature === 'number' ? `${results.max_temperature.toFixed(1)} °C` : 'Calculated'}
+                      </dd>
+                    </div>
+                    <div className="rounded-lg bg-slate-900/80 p-3">
+                      <dt className="text-[11px] text-slate-500">Center temperature</dt>
+                      <dd className="mt-1 text-lg font-semibold text-sky-300">
+                        {typeof results.center_temperature === 'number' ? `${results.center_temperature.toFixed(1)} °C` : 'Calculated'}
+                      </dd>
+                    </div>
+                    <div className="rounded-lg bg-slate-900/80 p-3">
+                      <dt className="text-[11px] text-slate-500">Heat flux</dt>
+                      <dd className="mt-1 text-lg font-semibold text-amber-300">
+                        {typeof results.calculated_heat_flux === 'number'
+                          ? `${results.calculated_heat_flux.toFixed(2)} W/m²`
+                          : 'Post-processing'}
+                      </dd>
+                    </div>
+                  </dl>
+                </aside>
               </section>
             )}
-            {results?.temperature_matrix && <HeatmapCanvas matrix={results.temperature_matrix} />}
           </div>
         )}
       </main>

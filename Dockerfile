@@ -17,6 +17,7 @@ RUN python -m pip install --no-cache-dir --upgrade pip \
     && python -m pip install --no-cache-dir -r requirements.txt
 
 COPY main.py physics_solver.py universal_dispatcher.py ./
+COPY backend/report_generator.py ./backend/report_generator.py
 
 EXPOSE 8000
 

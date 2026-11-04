@@ -14,6 +14,7 @@ from typing import Any, Callable, Dict, Mapping
 from celery import Celery
 
 from physics_solver import solve_simulation
+from backend.report_generator import generate_academic_report
 
 
 PhysicsResult = Dict[str, Any]
@@ -169,7 +170,7 @@ def execute_simulation(data: Dict[str, Any]) -> PhysicsResult:
 
         elapsed_ms = round((perf_counter() - started) * 1000, 3)
         merged = result if isinstance(result, Mapping) else {}
-        return {
+        response = {
             "physics_type": physics_type,
             "recommended_solver": _recommended_engine(physics_type),
             "status": str(merged.get("status", "SOLVED_REALTIME")),
@@ -178,6 +179,8 @@ def execute_simulation(data: Dict[str, Any]) -> PhysicsResult:
             "vtk_data": [],
             "data": dict(merged),
         }
+        response["academic_report"] = generate_academic_report(response)
+        return response
     except Exception as exc:
         elapsed_ms = round((perf_counter() - started) * 1000, 3)
         return {

@@ -1,4 +1,4 @@
-import React, { useEffect, useRef } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 
 interface HeatmapProps {
   matrix: number[][]; // مصفوفة درجات الحرارة القادمة من خلفية بايثون
@@ -6,6 +6,9 @@ interface HeatmapProps {
 
 export const HeatmapCanvas: React.FC<HeatmapProps> = ({ matrix }) => {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const [temperatureRange, setTemperatureRange] = useState({ min: 0, max: 0 });
+
+  const paletteMid = (temperatureRange.min + temperatureRange.max) / 2;
 
   useEffect(() => {
     if (!matrix || matrix.length === 0) return;
@@ -32,6 +35,7 @@ export const HeatmapCanvas: React.FC<HeatmapProps> = ({ matrix }) => {
       }
     }
     if (!Number.isFinite(minT) || !Number.isFinite(maxT)) return;
+    setTemperatureRange({ min: minT, max: maxT });
     const range = maxT - minT || 1;
     ctx.clearRect(0, 0, canvas.width, canvas.height);
 
@@ -52,21 +56,39 @@ export const HeatmapCanvas: React.FC<HeatmapProps> = ({ matrix }) => {
   }, [matrix]);
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', marginTop: '20px' }}>
+    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
       <h4 style={{ color: '#e0e0e0', marginBottom: '10px', fontSize: '14px' }}>
         خريطة التوزيع الحراري المباشر (Thermal Contour)
       </h4>
-      <canvas
-        ref={canvasRef}
-        width={380}
-        height={380}
-        style={{
-          border: '2px solid #444',
-          borderRadius: '8px',
-          backgroundColor: '#111',
-          boxShadow: '0 4px 15px rgba(0,0,0,0.5)'
-        }}
-      />
+      <div style={{ display: 'flex', alignItems: 'stretch', gap: '14px' }}>
+        <canvas
+          ref={canvasRef}
+          width={380}
+          height={380}
+          style={{
+            border: '1px solid #334155',
+            borderRadius: '8px',
+            backgroundColor: '#111',
+            boxShadow: '0 4px 15px rgba(0,0,0,0.5)',
+            maxWidth: '100%',
+          }}
+        />
+        <div aria-label="Temperature color legend" style={{ display: 'flex', gap: '7px', height: 380 }}>
+          <div
+            style={{
+              width: 18,
+              borderRadius: 4,
+              border: '1px solid #475569',
+              background: 'linear-gradient(to top, hsl(240, 100%, 50%), hsl(120, 100%, 50%), hsl(0, 100%, 50%))',
+            }}
+          />
+          <div style={{ position: 'relative', width: 74, fontFamily: 'monospace', fontSize: 11, color: '#cbd5e1' }}>
+            <span style={{ position: 'absolute', top: -4 }}>{temperatureRange.max.toFixed(1)} deg C</span>
+            <span style={{ position: 'absolute', top: 'calc(50% - 7px)' }}>{paletteMid.toFixed(1)} deg C</span>
+            <span style={{ position: 'absolute', bottom: -4 }}>{temperatureRange.min.toFixed(1)} deg C</span>
+          </div>
+        </div>
+      </div>
     </div>
   );
 };
