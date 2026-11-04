@@ -22,6 +22,8 @@ pydantic>=2.7.0
 pydantic-settings>=2.2.0
 python-multipart>=0.0.9
 aiofiles>=23.2.1
+celery[redis]>=5.4.0
+redis>=5.0.0
 
 # --- الحسابات العلمية والمصفوفات الحتمية (Deterministic Scientific Computing & Numerics) ---
 numpy>=1.26.0

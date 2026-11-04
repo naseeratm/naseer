@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { HeatmapCanvas } from './HeatmapCanvas';
 import {
   Layers,
   Grid3X3,
@@ -39,6 +40,16 @@ import { ParametricSweepTool } from './components/ParametricSweepTool';
 
 export type TabType = 'report' | 'contours' | 'mesh' | 'validation' | 'tables' | 'overview';
 
+interface SimulationResults {
+  temperature_matrix?: number[][];
+  physics_type?: string;
+  classified_type?: string;
+  recommended_solver?: string;
+  solver_engine?: string;
+  process_time?: number;
+  process_time_ms?: number;
+}
+
 export default function App() {
   // Start with clean workspace (null) so previous research does NOT stick to the app!
   const [currentProject, setCurrentProject] = useState<ThesisProject | null>(null);
@@ -54,6 +65,50 @@ export default function App() {
   const [isAuditModalOpen, setIsAuditModalOpen] = useState<boolean>(false);
   const [isMeshGeneratorOpen, setIsMeshGeneratorOpen] = useState<boolean>(false);
   const [saveToast, setSaveToast] = useState<string | null>(null);
+  const [results, setResults] = useState<SimulationResults | null>(null);
+
+  useEffect(() => {
+    if (!currentProject || currentProject.field !== 'Thermal') {
+      setResults(null);
+      return;
+    }
+
+    const controller = new AbortController();
+
+    fetch('/api/run-simulation', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        simulation_type: '2D_thermal_steady_state',
+        thermal_conductivity: currentProject.material?.thermalConductivity,
+        boundary_conditions: {},
+        mesh_resolution: {},
+      }),
+      signal: controller.signal,
+    })
+      .then((response) => {
+        if (!response.ok) throw new Error(`Simulation request failed (${response.status})`);
+        return response.json();
+      })
+      .then((data) => {
+        const temperatureMatrix =
+          data?.temperature_matrix ??
+          data?.data?.temperature_matrix ??
+          data?.data?.solver_results?.temperature_matrix;
+        setResults({
+          ...data,
+          temperature_matrix: Array.isArray(temperatureMatrix) ? temperatureMatrix : undefined,
+        });
+      })
+      .catch((error) => {
+        if (error instanceof Error && error.name !== 'AbortError') {
+          setResults(null);
+          console.error('Failed to load temperature results:', error);
+        }
+      });
+
+    return () => controller.abort();
+  }, [currentProject]);
 
   // Cloud 400GB & ANSYS License Server Configuration
   const [cloudConfig, setCloudConfig] = useState<CloudServerConfig>(() => {
@@ -606,6 +661,44 @@ export default function App() {
                 <OverviewTab project={currentProject} />
               )}
             </div>
+            {(results?.physics_type ||
+              results?.classified_type ||
+              results?.recommended_solver ||
+              results?.solver_engine ||
+              results?.process_time !== undefined ||
+              results?.process_time_ms !== undefined) && (
+              <section
+                aria-label="Simulation status"
+                className="flex flex-wrap gap-3 rounded-xl border border-slate-800 bg-[#1e1e2e] p-4"
+              >
+                <div className="flex min-w-[200px] flex-1 items-center gap-2 rounded-lg border border-sky-500/30 bg-sky-500/10 px-3 py-2">
+                  <span className="text-lg">🧠</span>
+                  <span className="text-xs text-slate-400">Physics Detected</span>
+                  <strong className="ml-auto text-sm text-sky-300">
+                    {results.physics_type || results.classified_type || 'Unknown'}
+                  </strong>
+                </div>
+                <div className="flex min-w-[200px] flex-1 items-center gap-2 rounded-lg border border-violet-500/30 bg-violet-500/10 px-3 py-2">
+                  <span className="text-lg">⚙️</span>
+                  <span className="text-xs text-slate-400">Selected Engine</span>
+                  <strong className="ml-auto text-sm text-violet-300">
+                    {results.recommended_solver || results.solver_engine || 'Automatic fallback'}
+                  </strong>
+                </div>
+                <div className="flex min-w-[200px] flex-1 items-center gap-2 rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-3 py-2">
+                  <span className="text-lg">⏱️</span>
+                  <span className="text-xs text-slate-400">Processing Time</span>
+                  <strong className="ml-auto text-sm text-emerald-300">
+                    {typeof results.process_time === 'number'
+                      ? `${results.process_time.toFixed(2)}s`
+                      : typeof results.process_time_ms === 'number'
+                        ? `${(results.process_time_ms / 1000).toFixed(2)}s`
+                        : 'Unavailable'}
+                  </strong>
+                </div>
+              </section>
+            )}
+            {results?.temperature_matrix && <HeatmapCanvas matrix={results.temperature_matrix} />}
           </div>
         )}
       </main>

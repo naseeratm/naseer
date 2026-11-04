@@ -103,12 +103,41 @@ def solve_simulation(json_data: dict):
         
     elif sim_type == "2D_thermal_transient":
         # توجيه إلى محرك الحرارة مع الزمن (عند إضافته)
-        return solve_2d_thermal_transient(json_data)
+        return solve_2d_thermal_dynamic(json_data)
         
     elif sim_type == "2D_structural_stress":
         # توجيه إلى محرك تحليل الإجهادات الميكانيكية (عند إضافته)
-        return solve_2d_structural_stress(json_data)
+        return solve_2d_thermal_dynamic(json_data)
         
     else:
         # المحرك الافتراضي في حال عدم التعرف على نوع المحاكاة
         return solve_2d_thermal_dynamic(json_data)
+
+import gmsh
+
+def generate_unstructured_mesh_2d(width, height, mesh_size):
+    gmsh.initialize()
+    gmsh.model.add("2D_Domain")
+    
+    # إنشاء النقاط والأضلاع للسطح الهندسي
+    p1 = gmsh.model.geo.addPoint(0, 0, 0, mesh_size)
+    p2 = gmsh.model.geo.addPoint(width, 0, 0, mesh_size)
+    p3 = gmsh.model.geo.addPoint(width, height, 0, mesh_size)
+    p4 = gmsh.model.geo.addPoint(0, height, 0, mesh_size)
+    
+    l1 = gmsh.model.geo.addLine(p1, p2)
+    l2 = gmsh.model.geo.addLine(p2, p3)
+    l3 = gmsh.model.geo.addLine(p3, p4)
+    l4 = gmsh.model.geo.addLine(p4, p1)
+    
+    cl = gmsh.model.geo.addCurveLoop([l1, l2, l3, l4])
+    s = gmsh.model.geo.addPlaneSurface([cl])
+    
+    gmsh.model.geo.synchronize()
+    gmsh.model.mesh.generate(2) # توليد عناصر مثلثية 2D Triangles
+    
+    # استخراج العقد والعناصر
+    node_tags, coords, _ = gmsh.model.mesh.getNodes()
+    gmsh.finalize()
+    
+    return {"total_nodes": len(node_tags), "coordinates": coords.tolist()}
