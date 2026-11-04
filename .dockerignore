@@ -1,0 +1,12 @@
+.git
+.github
+.vscode
+node_modules
+dist
+backend/.venv
+backend/.venv312
+.venv
+.venv312
+__pycache__
+*.pyc
+*.pyo
