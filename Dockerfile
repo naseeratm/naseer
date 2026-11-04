@@ -2,7 +2,7 @@ FROM python:3.12-slim
 
 # تثبيت حزم النظام الرسومية والـ OpenGL المطلوبة لتشغيل gmsh
 RUN apt-get update && apt-get install -y \
-    libgl1-mesa-glx \
+    libgl1 \
     libglu1-mesa \
     libglib2.0-0 \
     libsm6 \
