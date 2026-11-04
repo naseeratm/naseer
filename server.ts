@@ -13,8 +13,30 @@ dotenv.config();
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
+function resolvePort(): number {
+  const portArgIndex = process.argv.indexOf('--port');
+  if (portArgIndex !== -1 && process.argv[portArgIndex + 1]) {
+    const val = parseInt(process.argv[portArgIndex + 1], 10);
+    if (!isNaN(val) && val > 0) return val;
+  }
+  if (process.env.PORT) {
+    const val = parseInt(process.env.PORT, 10);
+    if (!isNaN(val) && val > 0) return val;
+  }
+  return 3000;
+}
+
+function resolveHost(): string {
+  const hostArgIndex = process.argv.indexOf('--host');
+  if (hostArgIndex !== -1 && process.argv[hostArgIndex + 1]) {
+    return process.argv[hostArgIndex + 1];
+  }
+  return process.env.HOST || '0.0.0.0';
+}
+
+const PORT = resolvePort();
+const HOST = resolveHost();
 const app = express();
-const PORT = 3000;
 const PYTHON_PORT = process.env.PYTHON_PORT || '8001';
 const DEFAULT_PYTHON_URL = process.env.PYTHON_BACKEND_URL || `http://127.0.0.1:${PYTHON_PORT}`;
 let activeCloudUrl = DEFAULT_PYTHON_URL;
@@ -1003,6 +1025,26 @@ ensureLocalPythonBackend().catch((error) => {
   console.error('[Python Backend] Startup check failed:', error);
 });
 
-app.listen(PORT, '0.0.0.0', () => {
-  console.log(`[ANSYS Engineering WorkBench Server] Listening on http://0.0.0.0:${PORT}`);
+const server = app.listen(PORT, HOST, () => {
+  console.log(`[ANSYS Engineering WorkBench Server] Listening on http://${HOST}:${PORT}`);
+});
+
+server.on('error', (err: any) => {
+  if (err.code === 'EADDRINUSE') {
+    console.error(`[Server Error] Port ${PORT} is already in use. Retrying or shutting down...`);
+  } else {
+    console.error('[Server Error]', err);
+  }
+});
+
+process.on('SIGTERM', () => {
+  server.close(() => {
+    process.exit(0);
+  });
+});
+
+process.on('SIGINT', () => {
+  server.close(() => {
+    process.exit(0);
+  });
 });
