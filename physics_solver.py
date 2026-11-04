@@ -113,9 +113,12 @@ def solve_simulation(json_data: dict):
         # المحرك الافتراضي في حال عدم التعرف على نوع المحاكاة
         return solve_2d_thermal_dynamic(json_data)
 
-import gmsh
-
 def generate_unstructured_mesh_2d(width, height, mesh_size):
+    try:
+        import gmsh
+    except ImportError as exc:
+        raise RuntimeError("Gmsh Python package is unavailable in this runtime") from exc
+
     gmsh.initialize()
     gmsh.model.add("2D_Domain")
     
