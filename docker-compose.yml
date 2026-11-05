@@ -11,6 +11,8 @@ services:
         condition: service_healthy
     ports:
       - "8000:8000"
+    volumes:
+      - cae-jobs:/app/jobs
     restart: unless-stopped
 
   worker:
@@ -27,17 +29,6 @@ services:
     volumes:
       - cae-jobs:/app/jobs
     restart: unless-stopped
-
-    # OpenFOAM can be attached later either by mounting a solver installation:
-    # volumes:
-    #   - cae-jobs:/app/jobs
-    #   - ./solvers/openfoam:/opt/openfoam:ro
-    # Or by running an OpenFOAM image in a separate service and invoking it
-    # through Docker/OCI APIs from the worker in a later iteration.
-
-    # CalculiX can be attached similarly by mounting a CalculiX image/toolchain:
-    # volumes:
-    #   - ./solvers/calculix:/opt/calculix:ro
 
   redis:
     image: redis:7-alpine
