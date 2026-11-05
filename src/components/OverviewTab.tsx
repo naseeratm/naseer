@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { lazy, Suspense, useState, useEffect } from 'react';
 import {
   Layers,
   Settings,
@@ -32,14 +32,23 @@ import {
 } from 'lucide-react';
 import { ThesisProject } from '../types/thesis';
 import { EngineeringSchematicViewer } from './EngineeringSchematicViewer';
-import { EngineeringModelViewer3D } from './3D-Engineering-Model-Viewer';
 import { exportToOpenFoamScripts } from '../utils/exporter';
+
+const EngineeringModelViewer3D = lazy(() =>
+  import('./3D-Engineering-Model-Viewer').then((module) => ({
+    default: module.EngineeringModelViewer3D,
+  })),
+);
 
 interface OverviewTabProps {
   project: ThesisProject;
+  onRunSolver?: () => Promise<unknown>;
+  solverJobStatus?: 'idle' | 'queued' | 'running' | 'completed' | 'failed' | 'cancelled';
+  solverLogs?: string[];
+  onSolverFailed?: (message: string) => void;
 }
 
-export const OverviewTab: React.FC<OverviewTabProps> = ({ project }) => {
+export const OverviewTab: React.FC<OverviewTabProps> = ({ project, onRunSolver, solverJobStatus = 'idle', solverLogs = [], onSolverFailed }) => {
   const isFEA = project.field === 'FEA';
   const isThermal = project.field === 'Thermal';
   const isCFD = project.field === 'CFD';
@@ -47,8 +56,8 @@ export const OverviewTab: React.FC<OverviewTabProps> = ({ project }) => {
   // Sub-navigation view inside OverviewTab
   const [workbenchView, setWorkbenchView] = useState<'cases_matrix' | 'lhtes_charts' | 'schematic' | 'residuals' | 'console' | 'script' | 'parameters' | 'cad_schematic' | '3d_viewer'>('cases_matrix');
   const [isSolving, setIsSolving] = useState<boolean>(false);
-  const [solveProgress, setSolveProgress] = useState<number>(100);
-  const [currentIter, setCurrentIter] = useState<number>(project.solver?.iterations || (isFEA ? 150 : isThermal ? 350 : 1500));
+  const currentIter = project.residualsHistory?.at(-1)?.iteration ?? project.solver?.iterations ?? 0;
+  const [solveError, setSolveError] = useState<string | null>(null);
   const [copiedLog, setCopiedLog] = useState<boolean>(false);
   const [activeSchematicCell, setActiveSchematicCell] = useState<string>('wb_setup');
 
@@ -103,26 +112,19 @@ export const OverviewTab: React.FC<OverviewTabProps> = ({ project }) => {
   const yieldStrengthMpa = 420;
   const safetyFactor = Math.max(0.1, yieldStrengthMpa / Math.max(1, bendingStressMpa));
 
-  // Simulated live solve execution
-  const handleTriggerSolve = () => {
+  const handleTriggerSolve = async () => {
+    if (!onRunSolver) return;
     setIsSolving(true);
-    setSolveProgress(0);
-    setCurrentIter(0);
-
-    const targetIter = project.solver?.iterations || 1500;
-    const interval = setInterval(() => {
-      setSolveProgress((prev) => {
-        if (prev >= 100) {
-          clearInterval(interval);
-          setIsSolving(false);
-          setCurrentIter(targetIter);
-          return 100;
-        }
-        const next = prev + 10;
-        setCurrentIter(Math.round((next / 100) * targetIter));
-        return next;
-      });
-    }, 120);
+    setSolveError(null);
+    try {
+      await onRunSolver();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Solver execution failed';
+      setSolveError(message);
+      onSolverFailed?.(message);
+    } finally {
+      setIsSolving(false);
+    }
   };
 
   const handleCopyLog = () => {
@@ -135,18 +137,7 @@ export const OverviewTab: React.FC<OverviewTabProps> = ({ project }) => {
   };
 
   // Residuals history fallback
-  const residualsData = project.residualsHistory || [
-    { iteration: 1, continuity: 1.0, xVelocity: 0.85, yVelocity: 0.72, energy: 0.55 },
-    { iteration: 25, continuity: 0.42, xVelocity: 0.31, yVelocity: 0.28, energy: 0.18 },
-    { iteration: 75, continuity: 0.12, xVelocity: 0.082, yVelocity: 0.075, energy: 0.041 },
-    { iteration: 150, continuity: 0.035, xVelocity: 0.019, yVelocity: 0.016, energy: 0.0078 },
-    { iteration: 300, continuity: 0.0068, xVelocity: 0.0028, yVelocity: 0.0022, energy: 0.00085 },
-    { iteration: 500, continuity: 0.00092, xVelocity: 0.00031, yVelocity: 0.00024, energy: 0.000072 },
-    { iteration: 800, continuity: 0.000085, xVelocity: 0.000022, yVelocity: 0.000017, energy: 0.0000045 },
-    { iteration: 1100, continuity: 0.0000081, xVelocity: 0.0000018, yVelocity: 0.0000013, energy: 0.00000032 },
-    { iteration: 1400, continuity: 0.0000012, xVelocity: 0.00000035, yVelocity: 0.00000028, energy: 0.000000055 },
-    { iteration: 1500, continuity: 0.00000094, xVelocity: 0.00000017, yVelocity: 0.00000014, energy: 0.000000027 },
-  ];
+  const residualsData = project.residualsHistory || [];
 
   // Workbench components
   const workbenchCells = project.workbenchComponents || [
@@ -253,7 +244,11 @@ export const OverviewTab: React.FC<OverviewTabProps> = ({ project }) => {
                 <span className="text-slate-400">حالة المحلل:</span>
                 <span className="font-bold text-emerald-400 flex items-center gap-1">
                   <CheckCircle2 className="w-3.5 h-3.5" />
-                  {isSolving ? `جاري الحل والتكرار (${currentIter}/${project.solver?.iterations || 1500})...` : 'تم الحل والتقارب بنجاح'}
+                  {isSolving
+                    ? `جاري تنفيذ المهمة (${solverJobStatus})${currentIter ? ` — iteration ${currentIter}` : ''}`
+                    : project.residualsHistory?.length
+                      ? `اكتمل الحل — iteration ${currentIter}`
+                      : 'لم يتم تنفيذ حل بعد'}
                 </span>
               </div>
               <div className="hidden sm:flex items-center gap-2">
@@ -285,13 +280,9 @@ export const OverviewTab: React.FC<OverviewTabProps> = ({ project }) => {
             </div>
           </div>
 
-          {/* Progress bar when re-solving */}
-          {isSolving && (
-            <div className="mt-2 w-full bg-slate-950 rounded-full h-2 overflow-hidden border border-slate-800">
-              <div
-                className="bg-gradient-to-r from-sky-500 to-emerald-400 h-full transition-all duration-150"
-                style={{ width: `${solveProgress}%` }}
-              />
+          {solveError && (
+            <div className="mt-2 rounded-lg border border-red-500/40 bg-red-950/30 px-3 py-2 text-xs text-red-300">
+              فشل تشغيل المحلل: {solveError}
             </div>
           )}
 
@@ -649,7 +640,9 @@ export const OverviewTab: React.FC<OverviewTabProps> = ({ project }) => {
         {/* 3D Model Viewer View */}
         {workbenchView === '3d_viewer' && (
           <div className="p-4">
-            <EngineeringModelViewer3D project={project} />
+            <Suspense fallback={<div className="p-8 text-center text-slate-400">Loading 3D engine...</div>}>
+              <EngineeringModelViewer3D project={project} />
+            </Suspense>
           </div>
         )}
 
@@ -929,62 +922,20 @@ export const OverviewTab: React.FC<OverviewTabProps> = ({ project }) => {
                 </p>
               </div>
 
-              <div className="flex flex-wrap items-center gap-3 text-[11px] font-mono bg-slate-950 p-2 rounded-xl border border-slate-800">
-                {isThermal ? (
-                  <>
-                    <span className="flex items-center gap-1.5 text-rose-400">
-                      <span className="w-2.5 h-2.5 rounded-full bg-rose-500 inline-block" />
-                      Thermal Energy: 2.70e-08
-                    </span>
-                    <span className="flex items-center gap-1.5 text-amber-400">
-                      <span className="w-2.5 h-2.5 rounded-full bg-amber-500 inline-block" />
-                      Heat Flux RMS: 1.40e-07
-                    </span>
-                    <span className="flex items-center gap-1.5 text-sky-400">
-                      <span className="w-2.5 h-2.5 rounded-full bg-sky-500 inline-block" />
-                      Temp Residual: 9.20e-07
-                    </span>
-                  </>
-                ) : isFEA ? (
-                  <>
-                    <span className="flex items-center gap-1.5 text-rose-400">
-                      <span className="w-2.5 h-2.5 rounded-full bg-rose-500 inline-block" />
-                      Force Balance: 4.80e-06
-                    </span>
-                    <span className="flex items-center gap-1.5 text-emerald-400">
-                      <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 inline-block" />
-                      Displacement Norm: 1.20e-06
-                    </span>
-                    <span className="flex items-center gap-1.5 text-purple-400">
-                      <span className="w-2.5 h-2.5 rounded-full bg-purple-500 inline-block" />
-                      Strain Energy: 8.50e-07
-                    </span>
-                  </>
-                ) : (
-                  <>
-                    <span className="flex items-center gap-1.5 text-rose-400">
-                      <span className="w-2.5 h-2.5 rounded-full bg-rose-500 inline-block" />
-                      Continuity: 9.40e-07
-                    </span>
-                    <span className="flex items-center gap-1.5 text-emerald-400">
-                      <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 inline-block" />
-                      Momentum-X: 1.70e-07
-                    </span>
-                    <span className="flex items-center gap-1.5 text-sky-400">
-                      <span className="w-2.5 h-2.5 rounded-full bg-sky-500 inline-block" />
-                      Momentum-Y: 1.40e-07
-                    </span>
-                    <span className="flex items-center gap-1.5 text-purple-400">
-                      <span className="w-2.5 h-2.5 rounded-full bg-purple-500 inline-block" />
-                      Energy: 2.70e-08
-                    </span>
-                  </>
-                )}
-              </div>
+              {residualsData.length > 0 && (
+                <div className="flex flex-wrap items-center gap-3 text-[11px] font-mono bg-slate-950 p-2 rounded-xl border border-slate-800">
+                  <span className="text-rose-400">Residual: {residualsData.at(-1)?.continuity.toExponential(2)}</span>
+                </div>
+              )}
             </div>
 
             {/* SVG Residuals Plot */}
             <div className="bg-slate-950 p-4 rounded-xl border border-slate-800 overflow-x-auto">
+              {residualsData.length === 0 ? (
+                <div className="h-64 flex items-center justify-center text-sm text-slate-500">
+                  Run the solver to collect residual history.
+                </div>
+              ) : (
               <svg
                 viewBox="0 0 740 280"
                 className="w-full h-64 select-none font-mono text-[10px]"
@@ -1051,6 +1002,7 @@ export const OverviewTab: React.FC<OverviewTabProps> = ({ project }) => {
                   );
                 })()}
               </svg>
+              )}
             </div>
           </div>
         )}

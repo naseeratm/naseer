@@ -1,6 +1,4 @@
-import * as XLSX from 'xlsx';
 import mammoth from 'mammoth';
-import JSZip from 'jszip';
 import { IngestedFileItem } from '../types/thesis';
 import { compactEngineeringContent, compactTableDataset } from './tokenCompactor';
 
@@ -107,6 +105,7 @@ export async function parseEngineeringFile(file: File): Promise<ParsedFileResult
  * Decompress and deeply inspect ZIP / ANSYS WBPZ archives
  */
 async function parseZipArchive(file: File, arrayBuffer: ArrayBuffer, ext: string): Promise<ParsedFileResult[]> {
+  const { default: JSZip } = await import('jszip');
   const zip = await JSZip.loadAsync(arrayBuffer);
   const extractedResults: ParsedFileResult[] = [];
   const tree: { path: string; size: number; category: string }[] = [];
@@ -200,6 +199,7 @@ async function parseZipArchive(file: File, arrayBuffer: ArrayBuffer, ext: string
 
       // 3. Excel Spreadsheets (.xlsx, .xls)
       if (['xlsx', 'xls'].includes(subExt)) {
+        const XLSX = await import('xlsx');
         const xlsxBuffer = await entry.async('arraybuffer');
         totalUncompressedBytes += xlsxBuffer.byteLength;
         tree.push({ path: relativePath, size: xlsxBuffer.byteLength, category: 'excel' });
@@ -416,6 +416,7 @@ async function parseSingleEngineeringFile(file: File, ext: string, arrayBuffer: 
 
     // 4. Excel Spreadsheets (.xlsx, .xls, .csv)
     if (['xlsx', 'xls', 'csv'].includes(ext)) {
+      const XLSX = await import('xlsx');
       baseItem.category = 'excel';
       baseItem.mimeType = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
       const workbook = XLSX.read(arrayBuffer, { type: 'array' });
@@ -611,7 +612,9 @@ function extractParametersFromText(
   const tempMatch = text.match(/(?:temp|temperature|t_in|t_wall|حرارة)\s*[:=,\s]\s*([\d.]+)\s*(c|k|°c)?/i);
   if (tempMatch) {
     params.push({ key: 'درجة الحرارة (Temperature)', value: tempMatch[1], unit: tempMatch[2] || '°C' });
-    if (detectedDomain === 'CFD') detectedDomain = 'Thermal';
+    // Temperature is a valid CFD operating condition; do not demote a detected
+    // fluid-flow case simply because its temperature field is mentioned.
+    if (detectedDomain !== 'CFD' && detectedDomain !== 'Multiphysics') detectedDomain = 'Thermal';
   }
 
   const matMatch = text.match(/(?:material|مادة|المعدن|المائع|structural steel|aluminum|titanium|water|air)\s*[:=]?\s*([a-zA-Z\u0621-\u064A0-9\s_-]+)/i);
@@ -679,4 +682,3 @@ function extractTextFromBinaryBuffer(buffer: ArrayBuffer): string {
     return '';
   }
 }
-

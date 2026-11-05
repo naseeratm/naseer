@@ -862,7 +862,7 @@ app.post('/api/projects/:id/jobs', (req: Request, res: Response) => {
     caseId,
     solver,
     solverVersion,
-    status: 'completed',
+    status: 'running',
     startTime,
     endTime: new Date().toISOString(),
     executionDurationSec: isAnsys ? 4.8 : 1.4,
@@ -873,6 +873,14 @@ app.post('/api/projects/:id/jobs', (req: Request, res: Response) => {
   };
 
   jobsDb.set(jobId, jobRecord);
+  setTimeout(() => {
+    const activeJob = jobsDb.get(jobId);
+    if (activeJob?.status === 'running') {
+      activeJob.status = 'completed';
+      activeJob.endTime = new Date().toISOString();
+      jobsDb.set(jobId, activeJob);
+    }
+  }, 350);
   return res.json({ success: true, job: jobRecord });
 });
 

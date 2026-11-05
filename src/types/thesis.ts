@@ -186,6 +186,23 @@ export interface SimulationJobManifest {
   resultsSummary?: string;
 }
 
+export interface NormalizedSolverResult {
+  status: 'success';
+  physics: 'CFD' | 'FEA' | 'Thermal' | string;
+  solver: string;
+  simulationType?: string;
+  processTimeMs?: number;
+  converged?: boolean;
+  values: Record<string, number>;
+  fields: Record<string, unknown>;
+  residuals: { iteration: number; residual: number }[];
+  temperatureMatrix?: number[][];
+  stressMatrix?: number[][];
+  velocityMatrix?: number[][];
+  displacementMatrix?: number[][];
+  logs: string[];
+}
+
 export interface EngineeringAudit {
   auditId: string;
   timestamp: string;
@@ -242,6 +259,7 @@ export interface ThesisProject {
   fileSummary?: string;
   ingestedFilesInfo?: { name: string; category: string; summary: string }[];
   scriptExecutionLog?: string[];
+  normalizedSolverResult?: NormalizedSolverResult;
   residualsHistory?: { iteration: number; continuity: number; xVelocity: number; yVelocity: number; energy: number }[];
   detectedCommandsList?: { command: string; description: string; status: 'executed' | 'converged' }[];
   workbenchComponents?: {

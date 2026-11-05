@@ -11,6 +11,31 @@ const currentDir = typeof import.meta.dirname !== 'undefined'
 export default defineConfig(() => {
   return {
     plugins: [react(), tailwindcss()],
+    build: {
+      // Vendor bundles are intentionally lazy-loaded; keep warnings scoped to
+      // bundles that are genuinely larger than the application entry chunk.
+      chunkSizeWarningLimit: 850,
+      rolldownOptions: {
+        output: {
+          codeSplitting: {
+            groups: [
+              {
+                name: 'three-engine',
+                test: /node_modules\/(?:three)\//,
+              },
+              {
+                name: 'charts',
+                test: /node_modules\/(?:recharts|d3-|victory)/,
+              },
+              {
+                name: 'document-tools',
+                test: /node_modules\/(?:xlsx|jszip|mammoth)/,
+              },
+            ],
+          },
+        },
+      },
+    },
     resolve: {
       alias: {
         '@': path.resolve(currentDir, '.'),

@@ -36,6 +36,7 @@ import { MeshGenerativeTool } from './components/MeshGenerativeTool';
 import { NewProjectModal } from './components/NewProjectModal';
 import { MaterialsDatabaseModal } from './components/MaterialsDatabaseModal';
 import { ParametricSweepTool } from './components/ParametricSweepTool';
+import { normalizeSolverResponse } from './utils/normalizedSolverResults';
 
 
 export type TabType = 'report' | 'contours' | 'mesh' | 'validation' | 'tables' | 'overview';
@@ -71,54 +72,91 @@ export default function App() {
   const [isMeshGeneratorOpen, setIsMeshGeneratorOpen] = useState<boolean>(false);
   const [saveToast, setSaveToast] = useState<string | null>(null);
   const [results, setResults] = useState<SimulationResults | null>(null);
+  const [solverJobStatus, setSolverJobStatus] = useState<'idle' | 'queued' | 'running' | 'completed' | 'failed' | 'cancelled'>('idle');
+  const [solverLogs, setSolverLogs] = useState<string[]>([]);
 
-  useEffect(() => {
-    if (!currentProject || currentProject.field !== 'Thermal') {
-      setResults(null);
-      return;
+  const runActiveSolver = async (): Promise<unknown> => {
+    if (!currentProject) throw new Error('No active engineering project');
+    setSolverJobStatus('queued');
+    setSolverLogs([`[${new Date().toISOString()}] Job queued for ${currentProject.field}`]);
+
+    const simulationType =
+      currentProject.field === 'CFD' ? 'CFD_Incompressible' :
+      currentProject.field === 'FEA' ? 'Structural_Static' :
+      '2D_thermal_steady_state';
+
+    const jobResponse = await fetch(`/api/projects/${encodeURIComponent(currentProject.id)}/jobs`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ caseId: 'frontend-solve', solver: currentProject.activeSolverBadge || 'Python SciPy Benchmark' }),
+    });
+    const jobPayload = await jobResponse.json();
+    if (!jobResponse.ok || !jobPayload.success) throw new Error(jobPayload.error || 'Unable to create solver job');
+    const jobId = jobPayload.job.jobId as string;
+
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      const statusResponse = await fetch(`/api/jobs/${encodeURIComponent(jobId)}`);
+      const statusPayload = await statusResponse.json();
+      if (!statusResponse.ok) throw new Error(statusPayload.error || 'Unable to read solver job');
+      const job = statusPayload.job;
+      setSolverJobStatus(job.status);
+      setSolverLogs(Array.isArray(job.logLines) ? job.logLines : []);
+      if (job.status === 'completed' || job.status === 'failed' || job.status === 'cancelled') {
+        if (job.status !== 'completed') throw new Error(job.error || job.resultsSummary || `Solver job ${job.status}`);
+        break;
+      }
+      await new Promise(resolve => setTimeout(resolve, 250));
     }
 
-    const controller = new AbortController();
-
-    fetch('/api/run-simulation', {
+    setSolverJobStatus('running');
+    const response = await fetch('/api/run-simulation', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        simulation_type: '2D_thermal_steady_state',
-        thermal_conductivity: currentProject.material?.thermalConductivity,
+        execution_mode: 'direct',
+        simulation_type: simulationType,
+        velocity: 1.0,
+        displacement: 0.001,
+        domain: { width_x: 1, height_y: 1 },
+        material_properties: {
+          thermal_conductivity_k: currentProject.material?.thermalConductivity ?? 200,
+        },
+        mesh_settings: { mesh_size: 0.1 },
         boundary_conditions: {},
-        mesh_resolution: {},
       }),
-      signal: controller.signal,
-    })
-      .then((response) => {
-        if (!response.ok) throw new Error(`Simulation request failed (${response.status})`);
-        return response.json();
-      })
-      .then((data) => {
-        const temperatureMatrix =
-          data?.temperature_matrix ??
-          data?.data?.temperature_matrix ??
-          data?.data?.solver_results?.temperature_matrix;
-        const solverData =
-          (data?.data?.solver_results as SimulationResults | undefined) ??
-          (data?.data as SimulationResults | undefined) ??
-          {};
-        setResults({
-          ...data,
-          ...solverData,
-          temperature_matrix: Array.isArray(temperatureMatrix) ? temperatureMatrix : undefined,
-        });
-      })
-      .catch((error) => {
-        if (error instanceof Error && error.name !== 'AbortError') {
-          setResults(null);
-          console.error('Failed to load temperature results:', error);
-        }
-      });
+    });
+    const payload = await response.json();
+    if (!response.ok || payload.status === 'error') {
+      throw new Error(payload.error || payload.errorMessage || `Solver request failed (${response.status})`);
+    }
 
-    return () => controller.abort();
-  }, [currentProject]);
+    const solverData = payload?.data?.solver_results ?? payload?.data ?? payload;
+    setResults({
+      ...payload,
+      ...solverData,
+      temperature_matrix: Array.isArray(solverData?.temperature_matrix)
+        ? solverData.temperature_matrix
+        : undefined,
+    });
+    setSaveToast(`Solver completed: ${payload.solver || payload.recommended_solver || simulationType}`);
+    const normalized = normalizeSolverResponse(payload, currentProject);
+    normalized.logs = solverLogs;
+    const residualsHistory = normalized.residuals.map(point => ({
+      iteration: point.iteration,
+      continuity: point.residual,
+      xVelocity: point.residual,
+      yVelocity: point.residual,
+      energy: point.residual,
+    }));
+    setCurrentProject(project => project ? {
+      ...project,
+      normalizedSolverResult: normalized,
+      residualsHistory,
+      scriptExecutionLog: [...(project.scriptExecutionLog || []), ...solverLogs],
+    } : project);
+    setSolverJobStatus('completed');
+    return payload;
+  };
 
   // Cloud 400GB & ANSYS License Server Configuration
   const [cloudConfig, setCloudConfig] = useState<CloudServerConfig>(() => {
@@ -668,7 +706,13 @@ export default function App() {
               )}
 
               {activeTab === 'overview' && (
-                <OverviewTab project={currentProject} />
+                <OverviewTab
+                  project={currentProject}
+                  onRunSolver={runActiveSolver}
+                  solverJobStatus={solverJobStatus}
+                  solverLogs={solverLogs}
+                  onSolverFailed={() => setSolverJobStatus('failed')}
+                />
               )}
             </div>
             {results?.temperature_matrix && (
