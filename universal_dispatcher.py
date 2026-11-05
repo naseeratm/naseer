@@ -203,6 +203,36 @@ def _numeric_field_stats(text: str) -> Dict[str, Any]:
     return {"kind": "unknown", "minimum": None, "maximum": None, "mean": None, "values": []}
 
 
+def temperature_to_kelvin(data: Mapping[str, Any], default: float = 298.15) -> float:
+    """Normalize a simulation temperature to an absolute Kelvin value."""
+    boundary_conditions = data.get("boundary_conditions")
+    boundary_conditions = boundary_conditions if isinstance(boundary_conditions, Mapping) else {}
+    raw_temperature = data.get(
+        "temperature",
+        data.get("temperature_k", boundary_conditions.get("temperature", default)),
+    )
+    try:
+        temperature = float(raw_temperature)
+    except (TypeError, ValueError):
+        temperature = default
+
+    unit = str(
+        data.get("temperature_unit", boundary_conditions.get("temperature_unit", ""))
+    ).lower().replace("-", "_").replace(" ", "")
+    explicitly_kelvin = unit in {"k", "kelvin", "celsius_k"}
+
+    if explicitly_kelvin:
+        temperature_kelvin = temperature
+    elif unit in {"c", "degc", "celsius"}:
+        temperature_kelvin = temperature + 273.15
+    elif temperature < 100.0:
+        temperature_kelvin = temperature + 273.15
+    else:
+        temperature_kelvin = temperature
+
+    return temperature_kelvin if temperature_kelvin > 0.0 else default
+
+
 def parse_openfoam_fields(case_dir: Path) -> Dict[str, Dict[str, Any]]:
     """Read latest time U/p dictionaries and normalize their basic statistics."""
     time_dirs = [p for p in case_dir.iterdir() if p.is_dir() and re.fullmatch(r"(?:\d+(?:\.\d*)?)", p.name)]
@@ -327,55 +357,116 @@ def call_openfoam_solver(data: Mapping[str, Any]) -> PhysicsResult:
     (case_dir / "system" / "controlDict").write_text(
         'FoamFile { version 2.0; format ascii; class dictionary; object controlDict; }\n'
         f"application {Path(executable).stem};\nstartFrom startTime;\nstartTime 0;\nstopAt endTime;\n"
-        "endTime 1;\ndeltaT 0.001;\nwriteInterval 1;\npurgeWrite 0;\nwriteFormat ascii;\n"
+        + (
+            "endTime 1000;\ndeltaT 1;\nwriteInterval 100;\npurgeWrite 0;\nwriteFormat ascii;\n"
+            if compressible else
+            "endTime 1;\ndeltaT 0.001;\nwriteInterval 1;\npurgeWrite 0;\nwriteFormat ascii;\n"
+        )
+        +
         "writePrecision 8;\ntimeFormat general;\ntimePrecision 8;\nrunTimeModifiable true;",
         encoding="utf-8",
+    )
+    div_schemes = (
+        'divSchemes { default Gauss linear; div(phi,U) Gauss upwind; div(phi,h) Gauss upwind; div(phi,K) Gauss upwind; div(phid,p) Gauss upwind; '
+        '"div(((rho*nuEff)*dev2(T(grad(U)))))" Gauss linear; }'
+        if compressible else
+        "divSchemes { default Gauss linear; }"
     )
     (case_dir / "system" / "fvSchemes").write_text(
         'FoamFile { version 2.0; format ascii; class dictionary; object fvSchemes; }\n'
         "ddtSchemes { default Euler; }\n"
         "gradSchemes { default Gauss linear; }\n"
-        "divSchemes { default Gauss linear; }\n"
-        "laplacianSchemes { default Gauss linear corrected; }\n"
-        "interpolationSchemes { default linear; }\n"
-        "snGradSchemes { default corrected; }",
+        + div_schemes + "\n"
+        + "laplacianSchemes { default Gauss linear corrected; }\n"
+        + "interpolationSchemes { default linear; }\n"
+        + "snGradSchemes { default corrected; }",
         encoding="utf-8",
+    )
+    pressure_solver = (
+        "solvers { p { solver GAMG; smoother GaussSeidel; tolerance 1e-7; relTol 0.01; }\n"
+        if compressible else
+        "solvers { p { solver PCG; preconditioner DIC; tolerance 1e-6; relTol 0; }\n"
     )
     (case_dir / "system" / "fvSolution").write_text(
         'FoamFile { version 2.0; format ascii; class dictionary; object fvSolution; }\n'
-        "solvers { p { solver PCG; preconditioner DIC; tolerance 1e-6; relTol 0; }\n"
-        "pFinal { $p; relTol 0; }\n"
-        "U { solver PBiCG; preconditioner DILU; tolerance 1e-6; relTol 0; }\n"
-        "UFinal { $U; tolerance 1e-6; relTol 0; }\n"
-        "rho { solver PCG; preconditioner DIC; tolerance 1e-6; relTol 0; }\n"
-        "rhoFinal { $rho; relTol 0; }\n"
-        "e { solver smoothSolver; smoother symGaussSeidel; tolerance 1e-7; relTol 0.01; }\n"
-        "eFinal { $e; relTol 0; }\n"
-        "h { solver PBiCG; preconditioner DILU; tolerance 1e-7; relTol 0; }\n"
-        "hFinal { $h; relTol 0; } }\n"
-        "PISO { nCorrectors 2; nNonOrthogonalCorrectors 0; pRefCell 0; pRefValue 0; }\n"
-        "PIMPLE { nCorrectors 2; nNonOrthogonalCorrectors 0; pRefCell 0; pRefValue 0; }\n"
-        "SIMPLE { nNonOrthogonalCorrectors 0; residualControl { p 1e-4; U 1e-5; e 1e-5; } }\n"
-        "relaxationFactors { fields { rho 0.7; p 0.3; } equations { rho 0.7; U 0.7; e 0.7; h 0.7; } }",
+        + pressure_solver
+        + (
+            "pFinal { $p; relTol 0; }\n"
+            if compressible else
+            "pFinal { $p; relTol 0; }\n"
+        )
+        + (
+            "U { solver smoothSolver; smoother symGaussSeidel; tolerance 1e-7; relTol 0.1; }\n"
+            if compressible else
+            "U { solver PBiCG; preconditioner DILU; tolerance 1e-6; relTol 0; }\n"
+        )
+        + (
+            "UFinal { $U; relTol 0; }\n"
+            if compressible else
+            "UFinal { $U; tolerance 1e-6; relTol 0; }\n"
+        )
+        + "rho { solver PCG; preconditioner DIC; tolerance 1e-6; relTol 0; }\n"
+        + "rhoFinal { solver PCG; preconditioner DIC; tolerance 1e-7; relTol 0; }\n"
+        + "h { solver smoothSolver; smoother symGaussSeidel; tolerance 1e-7; relTol 0.1; }\n"
+        + (
+            "hFinal { $h; relTol 0; } }\n"
+            if compressible else
+            "hFinal { $h; relTol 0; } }\n"
+        )
+        + (
+            "PISO { nCorrectors 2; nNonOrthogonalCorrectors 0; pRefCell 0; pRefValue 101325; }\n"
+            "PIMPLE { nCorrectors 2; nNonOrthogonalCorrectors 0; pRefCell 0; pRefValue 101325; }\n"
+            if compressible else
+            "PISO { nCorrectors 2; nNonOrthogonalCorrectors 0; pRefCell 0; pRefValue 0; }\n"
+            "PIMPLE { nCorrectors 2; nNonOrthogonalCorrectors 0; pRefCell 0; pRefValue 0; }\n"
+        )
+        + (
+            "SIMPLE { nNonOrthogonalCorrectors 2; consistent yes; residualControl { p 1e-4; U 1e-5; h 1e-5; } }\n"
+            "relaxationFactors { fields { rho 0.3; p 0.1; } equations { rho 0.3; U 0.3; h 0.3; T 0.3; \"rho.*\" 0.3; } }"
+            if compressible else
+            "SIMPLE { nNonOrthogonalCorrectors 0; residualControl { p 1e-4; U 1e-5; e 1e-5; } }\n"
+            "relaxationFactors { fields { rho 0.7; p 0.3; } equations { rho 0.7; U 0.7; e 0.7; h 0.7; } }"
+        ),
         encoding="utf-8",
     )
+    if compressible:
+        (case_dir / "system" / "fvOptions").write_text(
+            'FoamFile { version 2.0; format ascii; class dictionary; object fvOptions; }\n'
+            "limitTemperature1\n"
+            "{\n"
+            "    type limitTemperature;\n"
+            "    active true;\n"
+            "    selectionMode all;\n"
+            "    min 200;\n"
+            "    max 3000;\n"
+            "}\n",
+            encoding="utf-8",
+        )
     raw_bc = data.get("boundary_conditions", {})
     boundary_conditions = raw_bc if isinstance(raw_bc, Mapping) else {}
     velocity = float(data.get("velocity", boundary_conditions.get("velocity", boundary_conditions.get("inlet_velocity_mps", 1.0))))
     pressure = float(data.get("pressure", boundary_conditions.get("pressure", 101325.0 if compressible else 0.0)))
+    temperature_kelvin = temperature_to_kelvin(data)
+    cp = 1004.0
+    specific_gas_constant = 8314.46261815324 / 28.96
+    enthalpy = cp * temperature_kelvin
     (case_dir / "0" / "U").write_text(
         'FoamFile { version 2.0; format ascii; class volVectorField; object U; }\n'
         "dimensions [0 1 -1 0 0 0 0];\ninternalField uniform (0 0 0);\n"
         "boundaryField {\n"
         f" inlet {{ type fixedValue; value uniform ({velocity} 0 0); }}\n"
-        " outlet { type inletOutlet; inletValue uniform (0 0 0); value uniform (0 0 0); }\n"
-        " walls { type noSlip; }\n"
+        + (
+            " outlet { type pressureInletOutletVelocity; value uniform (0 0 0); }\n"
+            if compressible else
+            " outlet { type inletOutlet; inletValue uniform (0 0 0); value uniform (0 0 0); }\n"
+        )
+        + " walls { type noSlip; }\n"
         " frontAndBack { type empty; }\n"
         "}",
         encoding="utf-8",
     )
     p_header = (
-        "dimensions [1 -1 -2 0 0 0 0];\ninternalField uniform 101325;\n"
+        f"dimensions [1 -1 -2 0 0 0 0];\ninternalField uniform {pressure:.8g};\n"
         if compressible else
         "dimensions [0 2 -2 0 0 0 0];\ninternalField uniform 0;\n"
     )
@@ -384,7 +475,11 @@ def call_openfoam_solver(data: Mapping[str, Any]) -> PhysicsResult:
         + p_header
         + "boundaryField {\n"
         + " inlet { type zeroGradient; }\n"
-        + f" outlet {{ type fixedValue; value uniform {pressure if compressible else pressure}; }}\n"
+        + (
+            f" outlet {{ type waveTransmissive; gamma 1.4; inletOutlet false; lInf 1; value uniform {pressure:.8g}; }}\n"
+            if compressible else
+            f" outlet {{ type fixedValue; value uniform {pressure:.8g}; }}\n"
+        )
         + " walls { type zeroGradient; }\n"
         + " frontAndBack { type empty; }\n"
         + "}",
@@ -393,14 +488,14 @@ def call_openfoam_solver(data: Mapping[str, Any]) -> PhysicsResult:
     if compressible:
         (case_dir / "0" / "T").write_text(
             'FoamFile { version 2.0; format ascii; class volScalarField; object T; }\n'
-            "dimensions [0 0 0 1 0 0 0];\ninternalField uniform 300;\n"
-            "boundaryField { inlet { type fixedValue; value uniform 300; } outlet { type fixedValue; value uniform 300; } walls { type fixedValue; value uniform 300; } frontAndBack { type empty; } }",
+            f"dimensions [0 0 0 1 0 0 0];\ninternalField uniform {temperature_kelvin:.8g};\n"
+            f"boundaryField {{ inlet {{ type fixedValue; value uniform {temperature_kelvin:.8g}; }} outlet {{ type inletOutlet; inletValue uniform {temperature_kelvin:.8g}; value uniform {temperature_kelvin:.8g}; }} walls {{ type fixedValue; value uniform {temperature_kelvin:.8g}; }} frontAndBack {{ type empty; }} }}",
             encoding="utf-8",
         )
-        (case_dir / "0" / "e").write_text(
-            'FoamFile { version 2.0; format ascii; class volScalarField; object e; }\n'
-            "dimensions [0 2 -2 0 0 0 0];\ninternalField uniform 215100;\n"
-            "boundaryField { inlet { type fixedValue; value uniform 215100; } outlet { type fixedValue; value uniform 215100; } walls { type fixedValue; value uniform 215100; } frontAndBack { type empty; } }",
+        (case_dir / "0" / "h").write_text(
+            'FoamFile { version 2.0; format ascii; class volScalarField; object h; }\n'
+            f"dimensions [0 2 -2 0 0 0 0];\ninternalField uniform {enthalpy:.8g};\n"
+            f"boundaryField {{ inlet {{ type fixedValue; value uniform {enthalpy:.8g}; }} outlet {{ type inletOutlet; inletValue uniform {enthalpy:.8g}; value uniform {enthalpy:.8g}; }} walls {{ type fixedValue; value uniform {enthalpy:.8g}; }} frontAndBack {{ type empty; }} }}",
             encoding="utf-8",
         )
         (case_dir / "constant" / "turbulenceProperties").write_text(
@@ -410,8 +505,8 @@ def call_openfoam_solver(data: Mapping[str, Any]) -> PhysicsResult:
         )
         (case_dir / "constant" / "thermophysicalProperties").write_text(
             'FoamFile { version 2.0; format ascii; class dictionary; object thermophysicalProperties; }\n'
-            "thermoType { type hePsiThermo; mixture pureMixture; transport const; thermo hConst; equationOfState perfectGas; specie specie; energy sensibleInternalEnergy; }\n"
-            "mixture { specie { molWeight 28.96; } thermodynamics { Cp 1004; Hf 0; } transport { mu 1.8e-5; Pr 0.7; } }\np 101325;\nT 300;\n",
+            "thermoType { type heRhoThermo; mixture pureMixture; transport const; thermo hConst; equationOfState perfectGas; specie specie; energy sensibleEnthalpy; }\n"
+            f"mixture {{ specie {{ molWeight 28.96; }} thermodynamics {{ Cp {cp:.8g}; Hf 0; }} transport {{ mu 1.8e-5; Pr 0.7; }} }}\np {pressure:.8g};\nT {temperature_kelvin:.8g};\n",
             encoding="utf-8",
         )
 
@@ -552,6 +647,21 @@ def _parse_calculix_dat_stress(path: Path) -> list[dict[str, Any]]:
 def call_openfoam_compressible_solver(data: Mapping[str, Any]) -> PhysicsResult:
     """Explicit compressible route, separate from incompressible OpenFOAM."""
     payload = dict(data)
+    boundary_conditions = payload.get("boundary_conditions", {})
+    boundary_conditions = boundary_conditions if isinstance(boundary_conditions, Mapping) else {}
+    velocity = float(payload.get(
+        "velocity",
+        boundary_conditions.get("velocity", boundary_conditions.get("inlet_velocity_mps", 1.0)),
+    ))
+    mach_number = float(payload.get("mach_number", velocity / 343.0))
+    if mach_number < 0.3:
+        payload["simulation_type"] = "CFD_Incompressible"
+        payload["solver_route_reason"] = "low_mach_safe_incompressible"
+        payload["requested_physics_type"] = "CFD_Compressible"
+        payload["routed_mach_number"] = mach_number
+        payload["pressure_incompressible_routing"] = True
+        return call_openfoam_solver(payload)
+
     payload["simulation_type"] = "CFD_Compressible"
     return call_openfoam_solver(payload)
 
