@@ -1108,31 +1108,7 @@ export function generateLocalEngineeringProject(
         qualityAssessment: 'ممتازة ومطابقة لمعايير ASME V&V 20-2009',
       },
     },
-    jobsHistory: [
-      {
-        jobId: `job_${Date.now()}_local_py`,
-        projectId: 'local_deterministic_project',
-        caseId: 'Case-01',
-        solver: 'Python SciPy Benchmark',
-        solverVersion: 'Python 3.12 (SciPy / NumPy Solvers)',
-        status: 'completed',
-        startTime: new Date().toISOString(),
-        endTime: new Date().toISOString(),
-        executionDurationSec: 3.2,
-        boundaryChecksum: 'sha256:88e09f182c162dae8371190bc983',
-        outputChecksum: 'sha256:32c918bb019488aefc29184ba761',
-        logLines: [
-          'Python Scientific Benchmark Engine launched',
-          `Parsed input file: ${filename}`,
-          `Material assigned: ${material.name}`,
-          'Boundary constraints applied and validated',
-          'Navier-Stokes / Elasticity matrix equations solved via SciPy Sparse Solvers',
-          'Residuals converged to 9.4e-07 < 1.0e-06 target',
-          'Extraction of contour field data and ASME V&V 20 metrics completed successfully',
-        ],
-        resultsSummary: 'تم الحل عبر محرك بايثون البديل كمعيار مرجعي حتمي دقيق (Python Benchmark Solver).',
-      },
-    ],
+    jobsHistory: [],
     cadSpecs: isFEA
       ? {
           shell: `عنصر إنشائي صلب (العرض × الارتفاع × الطول)`,

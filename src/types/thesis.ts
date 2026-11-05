@@ -182,6 +182,8 @@ export interface SimulationJobManifest {
   boundaryChecksum: string;
   outputChecksum: string;
   logLines: string[];
+  logs?: string[];
+  artifacts?: Array<Record<string, unknown>>;
   errorCode?: string;
   resultsSummary?: string;
 }

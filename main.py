@@ -12,6 +12,7 @@ from universal_dispatcher import (
     classify_and_route_simulation,
     execute_simulation,
 )
+from cae_repository import JobRepository
 
 app = FastAPI()
 
@@ -26,6 +27,7 @@ TASK_STATES = {
 }
 RESULT_EXPIRES_SECONDS = int(os.getenv("CAE_RESULT_EXPIRES_SECONDS", "86400"))
 JOBS_ROOT = Path(os.getenv("CAE_JOBS_ROOT", "/app/jobs")).resolve()
+job_repository = JobRepository()
 
 
 def _task_meta(task: AsyncResult) -> dict[str, Any]:
@@ -98,10 +100,14 @@ async def run_simulation(request: Request):
     # thermal jobs, while the full Docker stack uses queued workers by default.
     execution_mode = str(data.pop("execution_mode", "async")).lower()
     if execution_mode in {"direct", "sync", "synchronous"}:
-        return execute_simulation(data)
+        result = execute_simulation(data)
+        return result
 
     try:
-        return classify_and_route_simulation(data)
+        submitted = classify_and_route_simulation(data)
+        task_id = submitted["task_id"]
+        job_repository.create(task_id, data)
+        return submitted
     except Exception as exc:
         # Broker outages must not turn a valid thermal job into an API 500.
         # Fall back to the deterministic local solver and report the fallback.
@@ -116,7 +122,18 @@ async def run_simulation(request: Request):
 @app.get("/api/tasks/{task_id}")
 async def task_status(task_id: str):
     task = AsyncResult(task_id, app=celery_app)
-    return _normalized_task(task_id, task)
+    payload = _normalized_task(task_id, task)
+    status = payload["status"]
+    persisted = job_repository.update(
+        task_id,
+        status=status,
+        progress=int(payload.get("progress", 0)),
+        logs=payload.get("logs", []),
+        artifacts=payload.get("artifacts", []),
+        result=payload.get("result"),
+        error=payload.get("error"),
+    )
+    return persisted or payload
 
 
 @app.get("/api/task-status/{task_id}")
@@ -133,7 +150,8 @@ async def task_logs(task_id: str):
     logs = meta.get("logs") or result_logs or []
     if isinstance(logs, str):
         logs = [logs]
-    return {"task_id": task_id, "status": _normalized_task(task_id, task)["status"], "logs": logs}
+    persisted = job_repository.update(task_id, status=_normalized_task(task_id, task)["status"], logs=logs)
+    return {"task_id": task_id, "status": _normalized_task(task_id, task)["status"], "logs": logs, "job": persisted}
 
 
 @app.post("/api/tasks/{task_id}/cancel")
@@ -144,7 +162,36 @@ async def cancel_task(
 ):
     task = AsyncResult(task_id, app=celery_app)
     task.revoke(terminate=terminate, signal=signal if terminate else None)
+    job_repository.update(task_id, status="CANCELLED", logs=["Job explicitly cancelled by user"])
     return {"task_id": task_id, "status": "CANCELLED", "revoked": True, "terminate": terminate}
+
+
+@app.get("/api/jobs")
+async def list_jobs(project_id: str | None = Query(None)):
+    return {"success": True, "jobs": job_repository.list(project_id)}
+
+
+@app.get("/api/jobs/{task_id}")
+async def job_status_alias(task_id: str):
+    return await task_status(task_id)
+
+
+@app.get("/api/jobs/{task_id}/logs")
+async def job_logs_alias(task_id: str):
+    return await task_logs(task_id)
+
+
+@app.post("/api/jobs/{task_id}/cancel")
+async def job_cancel_alias(task_id: str, terminate: bool = Query(False), signal: str = Query("SIGTERM")):
+    return await cancel_task(task_id, terminate, signal)
+
+
+@app.get("/api/jobs/{task_id}/artifacts")
+async def job_artifacts(task_id: str):
+    job = job_repository.get(task_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Job not found")
+    return {"task_id": task_id, "status": job["status"], "artifacts": job["artifacts"]}
 
 
 app.add_api_route(

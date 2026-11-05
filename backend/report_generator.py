@@ -22,17 +22,30 @@ def _nested_solver_data(output: Mapping[str, Any]) -> Mapping[str, Any]:
     return output
 
 
-def _number(value: Any, default: float) -> float:
+def _optional_number(value: Any) -> float | None:
     try:
         number = float(value)
-        return number if isfinite(number) else default
+        return number if isfinite(number) else None
     except (TypeError, ValueError):
-        return default
+        return None
 
 
-def _format_number(value: Any, decimals: int = 4) -> str:
-    number = _number(value, 0.0)
+def _format_optional_number(value: Any, decimals: int = 4) -> str:
+    number = _optional_number(value)
+    if number is None:
+        return "not available"
     return f"{number:.{decimals}f}"
+
+
+def _format_measurement(value: float | None, unit: str, decimals: int = 4) -> str:
+    if value is None:
+        return f"not available ({unit})"
+    return f"{value:.{decimals}g} {unit}"
+
+
+def _format_metric(value: Any, suffix: str = "", decimals: int = 4) -> str:
+    formatted = _format_optional_number(value, decimals)
+    return formatted if formatted == "not available" else formatted + suffix
 
 
 def generate_academic_report(solver_output: Mapping[str, Any]) -> dict[str, Any]:
@@ -55,16 +68,13 @@ def generate_academic_report(solver_output: Mapping[str, Any]) -> dict[str, Any]
         else {}
     )
 
-    conductivity = _number(
-        data.get("thermal_conductivity", data.get("thermal_conductivity_k", material.get("thermal_conductivity_k", 200.0))),
-        200.0,
-    )
-    convection = _number(boundary_conditions.get("convection_coefficient", boundary_conditions.get("h", 10.0)), 10.0)
-    length_x = _number(data.get("length_x", data.get("Lx", 1.0)), 1.0)
-    length_y = _number(data.get("length_y", data.get("Ly", 1.0)), 1.0)
-    left_temperature = _number(boundary_conditions.get("left_temperature", 100.0), 100.0)
-    right_temperature = _number(boundary_conditions.get("right_temperature", 20.0), 20.0)
-    r_squared = _number(data.get("r_squared", 0.999), 0.999)
+    conductivity = _optional_number(data.get("thermal_conductivity", data.get("thermal_conductivity_k", material.get("thermal_conductivity_k"))))
+    convection = _optional_number(boundary_conditions.get("convection_coefficient", boundary_conditions.get("h")))
+    length_x = _optional_number(data.get("length_x", data.get("Lx")))
+    length_y = _optional_number(data.get("length_y", data.get("Ly")))
+    left_temperature = _optional_number(boundary_conditions.get("left_temperature"))
+    right_temperature = _optional_number(boundary_conditions.get("right_temperature"))
+    r_squared = _optional_number(data.get("r_squared"))
 
     physics_type = str(output.get("physics_type", data.get("physics_type", "Steady 2D Thermal")))
     solver_engine = str(output.get("recommended_solver", data.get("solver_engine", "Sparse deterministic thermal solver")))
@@ -75,9 +85,9 @@ def generate_academic_report(solver_output: Mapping[str, Any]) -> dict[str, Any]
             "| {mesh} | {cells} | {value} | {error} | {gci} |".format(
                 mesh=row.get("mesh", f"L{index + 1}") if isinstance(row, Mapping) else f"L{index + 1}",
                 cells=row.get("cells", row.get("elements", "-")) if isinstance(row, Mapping) else "-",
-                value=_format_number(row.get("key_result_value", row.get("value", 0.0))) if isinstance(row, Mapping) else "-",
-                error=_format_number(row.get("relative_error_percent", row.get("percentage_error", 0.0)), 3) + "%" if isinstance(row, Mapping) else "-",
-                gci=_format_number(row.get("gci_percent", row.get("gci", 0.0)), 3) + "%" if isinstance(row, Mapping) else "-",
+                value=_format_optional_number(row.get("key_result_value", row.get("value"))) if isinstance(row, Mapping) else "-",
+                error=_format_metric(row.get("relative_error_percent", row.get("percentage_error")), "%", 3) if isinstance(row, Mapping) else "-",
+                gci=_format_metric(row.get("gci_percent", row.get("gci")), "%", 3) if isinstance(row, Mapping) else "-",
             )
             for index, row in enumerate(convergence_rows[:3])
         )
@@ -93,11 +103,12 @@ def generate_academic_report(solver_output: Mapping[str, Any]) -> dict[str, Any]
             "title": "1. Boundary Conditions and Physical Parameters",
             "content": (
                 "The steady two-dimensional thermal model uses a constant isotropic thermal conductivity "
-                f"k = {conductivity:.4g} W/(m.K). Convective transfer is represented by "
-                f"h = {convection:.4g} W/(m2.K). The rectangular domain spans "
-                f"Lx = {length_x:.4g} m and Ly = {length_y:.4g} m.\n\n"
+                f"k = {_format_measurement(conductivity, 'W/(m.K)', 4)}. Convective transfer is represented by "
+                f"h = {_format_measurement(convection, 'W/(m2.K)', 4)}. The rectangular domain spans "
+                f"Lx = {_format_measurement(length_x, 'm', 4)} and Ly = {_format_measurement(length_y, 'm', 4)}.\n\n"
                 f"Prescribed-temperature boundaries (Dirichlet, T = T_s) include the left wall at "
-                f"{left_temperature:.2f} deg C and the right wall at {right_temperature:.2f} deg C. "
+                f"{_format_measurement(left_temperature, 'deg C', 2)} and the right wall at "
+                f"{_format_measurement(right_temperature, 'deg C', 2)}. "
                 "Insulated boundaries (Neumann, -k grad(T) . n = 0) enforce zero normal conductive flux. "
                 "Convective boundaries (Robin, -k grad(T) . n = h(T - T_inf)) couple conduction in the wall "
                 "to the ambient fluid temperature. A heat-flux boundary is additionally modeled where required "
@@ -135,7 +146,7 @@ def generate_academic_report(solver_output: Mapping[str, Any]) -> dict[str, Any]
                 "The numerical temperature field is compared pointwise with an analytical exact solution for "
                 "the benchmark geometry and boundary conditions. Agreement is quantified by absolute and "
                 "normalized errors, coefficient of determination R^2, and mesh-limit trends. "
-                f"The current coefficient of determination is R^2 = {r_squared:.6f}. "
+                f"The current coefficient of determination is R^2 = {_format_optional_number(r_squared, 6)}. "
                 "Assessment follows the principles of ASME V&V 20-2009, separating numerical error estimates "
                 "from modeling uncertainty and reporting correction-method limitations, discretization "
                 "uncertainties, solution verification, and validation against the applicable exact benchmark."

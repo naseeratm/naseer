@@ -99,8 +99,9 @@ export default function App() {
       const statusPayload = await statusResponse.json();
       if (!statusResponse.ok) throw new Error(statusPayload.error || 'Unable to read solver job');
       const job = statusPayload.job;
-      setSolverJobStatus(job.status);
-      setSolverLogs(Array.isArray(job.logLines) ? job.logLines : []);
+      const normalizedStatus = String(job.status || 'queued').toLowerCase();
+      setSolverJobStatus(normalizedStatus as typeof solverJobStatus);
+      setSolverLogs(Array.isArray(job.logLines) ? job.logLines : (Array.isArray(job.logs) ? job.logs : []));
       if (job.status === 'completed' || job.status === 'failed' || job.status === 'cancelled') {
         if (job.status !== 'completed') throw new Error(job.error || job.resultsSummary || `Solver job ${job.status}`);
         break;

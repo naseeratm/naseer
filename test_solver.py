@@ -1,5 +1,6 @@
 import unittest
 from physics_solver import solve_2d_thermal_dynamic
+from backend.report_generator import generate_academic_report
 
 class TestPhysicsEngine(unittest.TestCase):
 
@@ -24,6 +25,19 @@ class TestPhysicsEngine(unittest.TestCase):
         self.assertAlmostEqual(results["calculated_heat_flux"], 20000.0, places=1)
         
         print("\n[SUCCESS] جميع الفحوصات الفيزيائية مطابقة للحلول التحليلية بنسبة 100%.")
+
+    def test_missing_solver_values_do_not_use_report_defaults(self):
+        report = generate_academic_report({"data": {}})
+        text = "\n".join(
+            section["content"] if isinstance(section["content"], str) else "".join(section["content"])
+            for section in report["sections"]
+        )
+        self.assertIn("not available", text)
+        self.assertNotIn("0.999000", text)
+
+    def test_missing_thermal_inputs_raise_instead_of_fabricating_values(self):
+        with self.assertRaisesRegex(ValueError, "Thermal domain"):
+            solve_2d_thermal_dynamic({})
 
 if __name__ == "__main__":
     unittest.main()

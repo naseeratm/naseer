@@ -24,6 +24,7 @@ from celery import Celery
 
 from physics_solver import solve_simulation
 from backend.report_generator import generate_academic_report
+from backend.result_schema import canonicalize_result
 
 
 PhysicsResult = Dict[str, Any]
@@ -245,7 +246,7 @@ def call_openfoam_solver(data: Mapping[str, Any]) -> PhysicsResult:
     physics_type = classify_physics(data)
     compressible = physics_type == "CFD_Compressible"
     candidates = (
-        ("rhoPimpleFoam", "rhoSimpleFoam", "sonicFoam") if compressible
+        ("rhoSimpleFoam", "rhoPimpleFoam", "sonicFoam") if compressible
         else ("icoFoam", "simpleFoam", "pimpleFoam")
     )
     resolved = {name: shutil.which(name) for name in candidates}
@@ -271,6 +272,22 @@ def call_openfoam_solver(data: Mapping[str, Any]) -> PhysicsResult:
         "FoamFile { version 2.0; format ascii; class dictionary; location \"constant\"; object transportProperties; }\n"
         "transportModel Newtonian;\n"
         "nu [0 2 -1 0 0 0 0] 1e-3;\n",
+        encoding="utf-8",
+    )
+    (case_dir / "0" / "rho").write_text(
+        'FoamFile { version 2.0; format ascii; class volScalarField; object rho; }\n'
+        "dimensions [1 -3 0 0 0 0 0];\ninternalField uniform 1.176;\n"
+        "boundaryField {\n"
+        + (
+            " inlet { type fixedValue; value uniform 1.176; }\n"
+            " outlet { type zeroGradient; }\n"
+            if compressible else
+            " inlet { type calculated; value uniform 1.176; }\n"
+            " outlet { type calculated; value uniform 1.176; }\n"
+        )
+        + " walls { type calculated; value uniform 1.176; }\n"
+        + " frontAndBack { type empty; }\n"
+        + "}",
         encoding="utf-8",
     )
     (case_dir / "constant" / "turbulenceProperties").write_text(
@@ -332,17 +349,20 @@ def call_openfoam_solver(data: Mapping[str, Any]) -> PhysicsResult:
         "UFinal { $U; tolerance 1e-6; relTol 0; }\n"
         "rho { solver PCG; preconditioner DIC; tolerance 1e-6; relTol 0; }\n"
         "rhoFinal { $rho; relTol 0; }\n"
+        "e { solver smoothSolver; smoother symGaussSeidel; tolerance 1e-7; relTol 0.01; }\n"
+        "eFinal { $e; relTol 0; }\n"
         "h { solver PBiCG; preconditioner DILU; tolerance 1e-7; relTol 0; }\n"
         "hFinal { $h; relTol 0; } }\n"
         "PISO { nCorrectors 2; nNonOrthogonalCorrectors 0; pRefCell 0; pRefValue 0; }\n"
         "PIMPLE { nCorrectors 2; nNonOrthogonalCorrectors 0; pRefCell 0; pRefValue 0; }\n"
-        "SIMPLE { nNonOrthogonalCorrectors 0; residualControl { p 1e-4; U 1e-5; } }",
+        "SIMPLE { nNonOrthogonalCorrectors 0; residualControl { p 1e-4; U 1e-5; e 1e-5; } }\n"
+        "relaxationFactors { fields { rho 0.7; p 0.3; } equations { rho 0.7; U 0.7; e 0.7; h 0.7; } }",
         encoding="utf-8",
     )
     raw_bc = data.get("boundary_conditions", {})
     boundary_conditions = raw_bc if isinstance(raw_bc, Mapping) else {}
     velocity = float(data.get("velocity", boundary_conditions.get("velocity", boundary_conditions.get("inlet_velocity_mps", 1.0))))
-    pressure = float(data.get("pressure", boundary_conditions.get("pressure", 100000.0 if compressible else 0.0)))
+    pressure = float(data.get("pressure", boundary_conditions.get("pressure", 101325.0 if compressible else 0.0)))
     (case_dir / "0" / "U").write_text(
         'FoamFile { version 2.0; format ascii; class volVectorField; object U; }\n'
         "dimensions [0 1 -1 0 0 0 0];\ninternalField uniform (0 0 0);\n"
@@ -355,7 +375,7 @@ def call_openfoam_solver(data: Mapping[str, Any]) -> PhysicsResult:
         encoding="utf-8",
     )
     p_header = (
-        "dimensions [1 -1 -2 0 0 0 0];\ninternalField uniform 100000;\n"
+        "dimensions [1 -1 -2 0 0 0 0];\ninternalField uniform 101325;\n"
         if compressible else
         "dimensions [0 2 -2 0 0 0 0];\ninternalField uniform 0;\n"
     )
@@ -374,7 +394,13 @@ def call_openfoam_solver(data: Mapping[str, Any]) -> PhysicsResult:
         (case_dir / "0" / "T").write_text(
             'FoamFile { version 2.0; format ascii; class volScalarField; object T; }\n'
             "dimensions [0 0 0 1 0 0 0];\ninternalField uniform 300;\n"
-            "boundaryField { inlet { type fixedValue; value uniform 300; } outlet { type inletOutlet; inletValue uniform 300; value uniform 300; } walls { type zeroGradient; } frontAndBack { type empty; } }",
+            "boundaryField { inlet { type fixedValue; value uniform 300; } outlet { type fixedValue; value uniform 300; } walls { type fixedValue; value uniform 300; } frontAndBack { type empty; } }",
+            encoding="utf-8",
+        )
+        (case_dir / "0" / "e").write_text(
+            'FoamFile { version 2.0; format ascii; class volScalarField; object e; }\n'
+            "dimensions [0 2 -2 0 0 0 0];\ninternalField uniform 215100;\n"
+            "boundaryField { inlet { type fixedValue; value uniform 215100; } outlet { type fixedValue; value uniform 215100; } walls { type fixedValue; value uniform 215100; } frontAndBack { type empty; } }",
             encoding="utf-8",
         )
         (case_dir / "constant" / "turbulenceProperties").write_text(
@@ -384,8 +410,8 @@ def call_openfoam_solver(data: Mapping[str, Any]) -> PhysicsResult:
         )
         (case_dir / "constant" / "thermophysicalProperties").write_text(
             'FoamFile { version 2.0; format ascii; class dictionary; object thermophysicalProperties; }\n'
-            "thermoType { type hePsiThermo; mixture pureMixture; transport const; thermo hConst; equationOfState perfectGas; specie specie; energy sensibleEnthalpy; }\n"
-            "mixture { specie { molWeight 28.96; } thermodynamics { Cp 1004; Hf 0; } transport { mu 1.8e-5; Pr 0.7; } }\np 100000;\nT 300;\n",
+            "thermoType { type hePsiThermo; mixture pureMixture; transport const; thermo hConst; equationOfState perfectGas; specie specie; energy sensibleInternalEnergy; }\n"
+            "mixture { specie { molWeight 28.96; } thermodynamics { Cp 1004; Hf 0; } transport { mu 1.8e-5; Pr 0.7; } }\np 101325;\nT 300;\n",
             encoding="utf-8",
         )
 
@@ -429,7 +455,7 @@ def call_openfoam_solver(data: Mapping[str, Any]) -> PhysicsResult:
     velocity_path = case_dir / "velocity.json"
     pressure_path.write_text(json.dumps(fields.get("pressure", {}), indent=2), encoding="utf-8")
     velocity_path.write_text(json.dumps(fields.get("velocity", {}), indent=2), encoding="utf-8")
-    return {
+    result = {
         "status": "SOLVED_REALTIME",
         "solver": "OpenFOAM",
         "solver_variant": "compressible" if compressible else "incompressible",
@@ -450,6 +476,9 @@ def call_openfoam_solver(data: Mapping[str, Any]) -> PhysicsResult:
         "velocity": fields.get("velocity", {}),
         "input": dict(data),
     }
+    result["units"] = {"pressure": "Pa", "velocity": "m/s", "residual": "dimensionless"}
+    result["artifacts"]["mesh_metadata"] = str(case_dir / "mesh_metadata.json")
+    return canonicalize_result(result, physics_type=physics_type, input_data=data, solver="OpenFOAM")
 
 
 def _numbered_dat_rows(path: Path, heading_tokens: tuple[str, ...], column_count: int):
@@ -711,7 +740,7 @@ def call_calculix_solver(data: Mapping[str, Any]) -> PhysicsResult:
             f"CalculiX execution failed: {exc.stderr[-4000:] or exc.stdout[-4000:]}"
         ) from exc
 
-    return {
+    result = {
         "status": "SOLVED_REALTIME",
         "solver": "CalculiX",
         "executable": ccx,
@@ -725,6 +754,23 @@ def call_calculix_solver(data: Mapping[str, Any]) -> PhysicsResult:
         "stdout": result.stdout[-4000:],
         "input": dict(data),
     }
+    result["units"] = {
+        "displacement": "m",
+        "stress": "Pa",
+        "reaction": "N",
+        "von_mises": "Pa",
+    }
+    result["artifacts"] = {
+        "input_deck": str(inp),
+        "dat_output": str(case_dir / "model.dat"),
+        "case_directory": str(case_dir),
+    }
+    result["convergence"] = {
+        "converged": (case_dir / "model.dat").exists(),
+        "status": "completed" if (case_dir / "model.dat").exists() else "not_reported",
+        "residuals": {},
+    }
+    return canonicalize_result(result, physics_type=classify_physics(data), input_data=data, solver="CalculiX")
 
 
 def call_gmsh_mesher(data: Mapping[str, Any]) -> PhysicsResult:
@@ -775,10 +821,15 @@ def execute_simulation(data: Dict[str, Any]) -> PhysicsResult:
             "data": dict(merged),
         }
         response["academic_report"] = generate_academic_report(response)
-        return response
+        return canonicalize_result(
+            response,
+            physics_type=physics_type,
+            input_data=data,
+            solver=merged.get("solver") or merged.get("solver_type"),
+        )
     except Exception as exc:
         elapsed_ms = round((perf_counter() - started) * 1000, 3)
-        return {
+        return canonicalize_result({
             "physics_type": "Thermal_Transient",
             "recommended_solver": _recommended_engine("Thermal_Transient"),
             "status": "error",
@@ -787,7 +838,7 @@ def execute_simulation(data: Dict[str, Any]) -> PhysicsResult:
             "vtk_data": [],
             "data": {},
             "error": f"Universal dispatcher failed: {exc}",
-        }
+        }, physics_type="Thermal_Transient", input_data=data, solver="unknown")
 
 
 @celery_app.task(

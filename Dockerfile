@@ -28,7 +28,7 @@ ENV PATH="/opt/venv/bin:$PATH"
 COPY docker-requirements.txt ./requirements.txt
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY main.py physics_solver.py universal_dispatcher.py ./
-COPY backend/report_generator.py ./backend/report_generator.py
+COPY main.py physics_solver.py universal_dispatcher.py cae_repository.py ./
+COPY backend/ ./backend/
 
 CMD ["/opt/venv/bin/uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]

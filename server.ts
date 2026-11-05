@@ -7,6 +7,7 @@ import os from 'os';
 import dotenv from 'dotenv';
 import { GoogleGenAI } from '@google/genai';
 import fs from 'fs';
+import { JobRepository, type JobRecord } from './job_repository.js';
 
 dotenv.config();
 
@@ -704,24 +705,8 @@ Provide an authoritative, mathematically rigorous answer in clear Arabic with st
 // Section 14: Core Academic & Engineering API Endpoints (Specification-Compliant)
 // ==============================================================================
 
-interface JobRecord {
-  jobId: string;
-  projectId: string;
-  caseId: string;
-  solver: string;
-  solverVersion: string;
-  status: 'queued' | 'running' | 'completed' | 'failed' | 'cancelled';
-  startTime: string;
-  endTime?: string;
-  executionDurationSec: number;
-  boundaryChecksum: string;
-  outputChecksum: string;
-  logLines: string[];
-  resultsSummary?: string;
-}
-
 const projectsDb = new Map<string, any>();
-const jobsDb = new Map<string, JobRecord>();
+const jobsRepository = new JobRepository();
 
 // 1. POST /api/projects - Create or initialize project manifest
 app.post('/api/projects', (req: Request, res: Response) => {
@@ -836,7 +821,7 @@ app.post('/api/projects/:id/mesh', (req: Request, res: Response) => {
 });
 
 // 5. POST /api/projects/:id/jobs - Launch simulation job (ANSYS APDL or Python Benchmark)
-app.post('/api/projects/:id/jobs', (req: Request, res: Response) => {
+app.post('/api/projects/:id/jobs', async (req: Request, res: Response) => {
   const { caseId = 'Case-01', solver = 'ANSYS Mechanical APDL' } = req.body || {};
   const jobId = `job_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
   const startTime = new Date().toISOString();
@@ -845,15 +830,8 @@ app.post('/api/projects/:id/jobs', (req: Request, res: Response) => {
   const solverVersion = isAnsys ? 'ANSYS 2024 R2 Mechanical APDL' : 'Python 3.12 (SciPy/NumPy Solvers)';
 
   const logLines = [
-    `[${startTime}] Initializing execution job ${jobId} for ${caseId}...`,
-    `[${startTime}] Selected Solver Engine: ${solverVersion}`,
-    `[${startTime}] Loading material properties & constitutive equations...`,
-    `[${startTime}] Applying boundary constraints & load vectors...`,
-    `[${startTime}] Assembling global stiffness matrix and force vectors...`,
-    `[${startTime}] Running sparse matrix solver / iterative convergence...`,
-    `[${startTime}] Residuals converged below tolerance 1.0e-06.`,
-    `[${startTime}] Extracting Von Mises stress, strain fields, and displacements...`,
-    `[${startTime}] Job finished successfully. Checksum validated.`
+    `[${startTime}] Job ${jobId} created and queued.`,
+    `[${startTime}] Selected solver: ${solverVersion}`,
   ];
 
   const jobRecord: JobRecord = {
@@ -862,31 +840,56 @@ app.post('/api/projects/:id/jobs', (req: Request, res: Response) => {
     caseId,
     solver,
     solverVersion,
-    status: 'running',
+    status: 'queued',
+    progress: 0,
     startTime,
-    endTime: new Date().toISOString(),
-    executionDurationSec: isAnsys ? 4.8 : 1.4,
-    boundaryChecksum: 'sha256:7f83b1657ff1fc53b92dc18148a1d65dfc2d4b1fa3d677284addd200126d9069',
-    outputChecksum: 'sha256:1a8565a9d214a3857d45763079b76c8cb81a2da38e211756540b61f9d5be3e0c',
+    executionDurationSec: 0,
     logLines,
-    resultsSummary: `تم إكمال حل الحالة ${caseId} بنجاح عبر محرك (${solverVersion}) مع تحقيق تقارب حتمي للنتائج.`
+    artifacts: [],
   };
-
-  jobsDb.set(jobId, jobRecord);
-  setTimeout(() => {
-    const activeJob = jobsDb.get(jobId);
-    if (activeJob?.status === 'running') {
-      activeJob.status = 'completed';
-      activeJob.endTime = new Date().toISOString();
-      jobsDb.set(jobId, activeJob);
+  jobsRepository.create(jobRecord);
+  void (async () => {
+    const running = jobsRepository.get(jobId)!;
+    running.status = 'running';
+    running.progress = 5;
+    running.logLines.push(`[${new Date().toISOString()}] Dispatching job to the physics backend.`);
+    jobsRepository.update(running);
+    try {
+      const response = await fetch(`${activeCloudUrl}/api/run-simulation`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ execution_mode: 'direct', ...req.body }),
+      });
+      const payload = await response.json();
+      const active = jobsRepository.get(jobId)!;
+      active.progress = 100;
+      active.executionDurationSec = Math.max(0, (Date.now() - Date.parse(startTime)) / 1000);
+      active.logLines.push(`[${new Date().toISOString()}] Physics backend execution finished.`);
+      if (!response.ok || payload.status === 'error') {
+        active.status = 'failed';
+        active.error = payload.error || payload.errorMessage || `Solver returned HTTP ${response.status}`;
+      } else {
+        active.status = 'completed';
+        active.endTime = new Date().toISOString();
+        active.resultsSummary = typeof payload.result_summary === 'string' ? payload.result_summary : undefined;
+        active.artifacts = Array.isArray(payload.artifacts) ? payload.artifacts : [];
+      }
+      jobsRepository.update(active);
+    } catch (error: any) {
+      const active = jobsRepository.get(jobId)!;
+      active.status = 'failed';
+      active.error = error?.message || String(error);
+      active.endTime = new Date().toISOString();
+      active.logLines.push(`[${active.endTime}] Execution could not reach the physics backend.`);
+      jobsRepository.update(active);
     }
-  }, 350);
-  return res.json({ success: true, job: jobRecord });
+  })();
+  return res.status(202).json({ success: true, job: jobRecord });
 });
 
 // 6. GET /api/jobs/:id - Query job execution status and logs
 app.get('/api/jobs/:id', (req: Request, res: Response) => {
-  const job = jobsDb.get(req.params.id);
+  const job = jobsRepository.get(req.params.id);
   if (!job) {
     return res.status(404).json({ success: false, error: 'المهمة غير مسجلة في النظام' });
   }
@@ -895,14 +898,49 @@ app.get('/api/jobs/:id', (req: Request, res: Response) => {
 
 // 7. POST /api/jobs/:id/cancel - Cancel active job
 app.post('/api/jobs/:id/cancel', (req: Request, res: Response) => {
-  const job = jobsDb.get(req.params.id);
+  const job = jobsRepository.get(req.params.id);
   if (!job) {
     return res.status(404).json({ success: false, error: 'المهمة غير موجودة للإلغاء' });
   }
+  if (['completed', 'failed', 'cancelled'].includes(job.status)) {
+    return res.status(409).json({ success: false, error: 'المهمة في حالة نهائية ولا يمكن إلغاؤها', job });
+  }
   job.status = 'cancelled';
+  job.progress = 0;
+  job.endTime = new Date().toISOString();
   job.logLines.push(`[${new Date().toISOString()}] Job explicitly cancelled by user.`);
-  jobsDb.set(req.params.id, job);
+  jobsRepository.update(job);
   return res.json({ success: true, message: 'تم إيقاف المهمة بنجاح', job });
+});
+
+app.get('/api/jobs/:id/logs', (req: Request, res: Response) => {
+  const job = jobsRepository.get(req.params.id);
+  if (!job) return res.status(404).json({ success: false, error: 'المهمة غير موجودة' });
+  return res.json({ task_id: req.params.id, jobId: req.params.id, status: job.status, logs: job.logLines });
+});
+
+app.get('/api/jobs/:id/artifacts', (req: Request, res: Response) => {
+  const job = jobsRepository.get(req.params.id);
+  if (!job) return res.status(404).json({ success: false, error: 'المهمة غير موجودة' });
+  return res.json({ task_id: req.params.id, jobId: req.params.id, artifacts: job.artifacts });
+});
+
+app.get('/api/jobs/:id/artifacts/:index', (req: Request, res: Response) => {
+  const job = jobsRepository.get(req.params.id);
+  const artifact = job?.artifacts[Number(req.params.index)];
+  if (!job || !artifact) return res.status(404).json({ success: false, error: 'Artifact not found' });
+  const artifactPath = typeof artifact === 'string' ? artifact : String(artifact.path || artifact.file_path || artifact.download_path || '');
+  if (!artifactPath || artifactPath.includes('://')) return res.status(404).json({ success: false, error: 'Artifact is not locally downloadable' });
+  const resolved = path.resolve(artifactPath);
+  const jobsRoot = path.resolve(process.env.CAE_JOBS_ROOT || path.resolve(process.cwd(), 'jobs'));
+  if (!resolved.startsWith(jobsRoot + path.sep) || !fs.existsSync(resolved) || !fs.statSync(resolved).isFile()) {
+    return res.status(404).json({ success: false, error: 'Artifact file is unavailable' });
+  }
+  return res.download(resolved, path.basename(resolved));
+});
+
+app.get('/api/projects/:id/jobs', (req: Request, res: Response) => {
+  return res.json({ success: true, jobs: jobsRepository.list(req.params.id) });
 });
 
 // 8. POST /api/projects/:id/validate - Run ASME V&V 20 Analytical & Experimental Validation

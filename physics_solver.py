@@ -5,11 +5,17 @@ from scipy.sparse.linalg import spsolve
 def solve_2d_thermal_dynamic(json_data):
     # 1. استخراج الأبعاد والخصائص من ملف المدخلات
     domain = json_data.get("domain", {})
-    Lx = float(domain.get("width_x", 1.0))
-    Ly = float(domain.get("height_y", 1.0))
+    try:
+        Lx = float(domain["width_x"])
+        Ly = float(domain["height_y"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ValueError("Thermal domain requires numeric width_x and height_y") from exc
     
     mat = json_data.get("material_properties", {})
-    k = float(mat.get("thermal_conductivity_k", 200.0))
+    try:
+        k = float(mat["thermal_conductivity_k"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ValueError("Thermal material requires thermal_conductivity_k in W/(m K)") from exc
     
     mesh = json_data.get("mesh_settings", {})
     dx = float(mesh.get("mesh_size", 0.1))
@@ -21,8 +27,11 @@ def solve_2d_thermal_dynamic(json_data):
     
     # 2. استخراج الشروط الحدودية
     bcs = json_data.get("boundary_conditions", {})
-    T_left = float(bcs.get("left_edge_x0", {}).get("value", 100.0))
-    T_right = float(bcs.get("right_edge_x1", {}).get("value", 0.0))
+    try:
+        T_left = float(bcs["left_edge_x0"]["value"])
+        T_right = float(bcs["right_edge_x1"]["value"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ValueError("Thermal boundary conditions require left_edge_x0 and right_edge_x1 values in degC") from exc
     h_conv = float(bcs.get("convection", {}).get("h_coefficient", 0.0))
     T_inf = float(bcs.get("convection", {}).get("T_ambient", 25.0))
     
@@ -77,6 +86,9 @@ def solve_2d_thermal_dynamic(json_data):
     center_temp = float(T_grid[Ny // 2, Nx // 2])
     heat_flux = float(k * (T_left - T_right) / Lx)
     
+    residual = float(np.max(np.abs(K_csr @ T_solution - F)))
+    residual_scale = max(float(np.max(np.abs(F))), 1.0)
+    relative_residual = residual / residual_scale
     return {
         "status": "SOLVED_REALTIME",
         "solver_type": "Deterministic 2D Finite Difference / FEA",
@@ -85,7 +97,21 @@ def solve_2d_thermal_dynamic(json_data):
         "material_k": k,
         "center_temperature": round(center_temp, 2),
         "calculated_heat_flux": round(heat_flux, 2),
-        "temperature_matrix": T_grid.tolist()
+        "temperature_matrix": T_grid.tolist(),
+        "units": {
+            "temperature": "degC",
+            "heat_flux": "W/m2",
+            "thermal_conductivity": "W/(m K)",
+        },
+        "convergence": {
+            "converged": relative_residual <= 1e-10,
+            "status": "converged" if relative_residual <= 1e-10 else "not_converged",
+            "relative_residual": relative_residual,
+            "absolute_residual": residual,
+        },
+        "errors": [],
+        "artifacts": {},
+        "provenance": {"source": "api_input", "method": "direct sparse solve"},
     }
 
 
