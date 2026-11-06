@@ -33,4 +33,14 @@
   .print\:hidden {
     display: none !important;
   }
+  /* The studio shell is clipped to the viewport on screen; let documents flow across pages when printing. */
+  .studio-root,
+  .print-reset {
+    position: static !important;
+    display: block !important;
+    width: auto !important;
+    height: auto !important;
+    min-height: 0 !important;
+    overflow: visible !important;
+  }
 }

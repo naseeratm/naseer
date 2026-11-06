@@ -13,8 +13,92 @@ from universal_dispatcher import (
     call_openfoam_solver,
     call_openfoam_compressible_solver,
     temperature_to_kelvin,
+    verify_openfoam_convergence,
 )
 
+
+def _fake_openfoam_run(solver_output: str, write_time_directory: bool = True):
+    def fake_run(command, cwd, **_kwargs):
+        if write_time_directory and not str(command[0]).endswith("blockMesh"):
+            (Path(cwd) / "100").mkdir(exist_ok=True)
+        output = "" if str(command[0]).endswith("blockMesh") else solver_output
+        return subprocess.CompletedProcess(command, 0, stdout=output, stderr="")
+    return fake_run
+
+
+class TestOpenFOAMVerificationGate(unittest.TestCase):
+    def _case(self, log: str, time_dirs=("0",)) -> Path:
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        case = Path(directory.name)
+        (case / "solver.log").write_text(log, encoding="utf-8")
+        for name in time_dirs:
+            (case / name).mkdir()
+        return case
+
+    def test_clean_log_with_time_steps_is_valid(self):
+        case = self._case("Time = 100\nSmoothSolver: Solving for Ux, Initial residual = 1e-3\nEnd\n", ("0", "100"))
+        self.assertEqual(verify_openfoam_convergence(case, "rhoSimpleFoam"), {"valid": True, "error": None})
+
+    def test_failure_markers_are_rejected(self):
+        for marker in ("Floating point exception", "--> FOAM FATAL ERROR", "SIGFPE", "Initial residual = nan", "p = NaN"):
+            with self.subTest(marker=marker):
+                case = self._case(f"Time = 1\n{marker}\n", ("0", "1"))
+                result = verify_openfoam_convergence(case, "rhoSimpleFoam")
+                self.assertFalse(result["valid"])
+                self.assertTrue(result["error"])
+
+    def test_only_initial_directory_is_rejected(self):
+        result = verify_openfoam_convergence(self._case("Time = 0\nEnd\n"), "rhoSimpleFoam")
+        self.assertFalse(result["valid"])
+        self.assertIn("time-step", result["error"])
+
+    def test_missing_log_is_rejected(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            (Path(temporary) / "100").mkdir()
+            self.assertFalse(verify_openfoam_convergence(Path(temporary), "rhoSimpleFoam")["valid"])
+
+    def _run_compressible(self, solver_output: str, write_time_directory: bool = True):
+        with tempfile.TemporaryDirectory() as temporary:
+            case_root = Path(temporary) / "jobs"
+            case_root.mkdir()
+            with patch.dict(os.environ, {"OPENFOAM_CASE_ROOT": str(case_root)}), \
+                    patch("universal_dispatcher.shutil.which", side_effect=lambda name: f"/usr/bin/{name}"), \
+                    patch("universal_dispatcher.subprocess.run", side_effect=_fake_openfoam_run(solver_output, write_time_directory)):
+                try:
+                    outcome = call_openfoam_solver({"simulation_type": "CFD_Compressible", "velocity": 120.0, "pressure": 101325.0})
+                    error = None
+                except RuntimeError as exc:
+                    outcome, error = None, exc
+            case = next(case_root.glob("openfoam-*")) if case_root.exists() and list(case_root.glob("openfoam-*")) else None
+            files = {}
+            if case:
+                for relative in ("system/fvSolution", "0/p", "0/U"):
+                    files[relative] = (case / relative).read_text(encoding="utf-8")
+            return outcome, error, files
+
+    def test_diverged_run_is_rejected_by_gate(self):
+        _, error, _ = self._run_compressible("Time = 5\nFloating point exception\n")
+        self.assertIsNotNone(error)
+        self.assertIn("Floating point exception", str(error))
+
+    def test_run_without_time_steps_is_rejected_by_gate(self):
+        _, error, _ = self._run_compressible("Time = 0\nEnd\n", write_time_directory=False)
+        self.assertIsNotNone(error)
+        self.assertIn("time-step", str(error))
+
+    def test_compressible_case_files_are_stable(self):
+        outcome, error, files = self._run_compressible("Time = 100\nEnd\n")
+        self.assertIsNone(error)
+        self.assertNotEqual(outcome["status"], "error")
+        fv_solution = files["system/fvSolution"]
+        self.assertRegex(fv_solution, r"p \{ solver GAMG;")
+        self.assertNotIn("DILU", fv_solution)
+        self.assertIn("U { solver smoothSolver; smoother symGaussSeidel;", fv_solution)
+        self.assertIn("h { solver smoothSolver; smoother symGaussSeidel;", fv_solution)
+        self.assertIn("type waveTransmissive;", files["0/p"])
+        self.assertIn("type inletOutlet;", files["0/U"])
+        self.assertNotIn("pressureInletOutletVelocity", files["0/U"])
 
 class TestOpenFOAMIntegration(unittest.TestCase):
     def test_temperature_is_normalized_to_kelvin(self):

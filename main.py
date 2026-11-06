@@ -1,248 +1,220 @@
 import os
-import json
-from pathlib import Path
-from typing import Any
-
-from fastapi import FastAPI, HTTPException, Request, Query
+import math
+from enum import Enum
+from typing import Optional
+import uuid
+from fastapi import FastAPI, HTTPException, Request, status
+from fastapi.responses import JSONResponse
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.exceptions import RequestValidationError
+from json import JSONDecodeError
+from pydantic import BaseModel, Field, ValidationInfo, field_validator, model_validator
 import uvicorn
-from celery.result import AsyncResult
-from fastapi.responses import FileResponse, Response
-from universal_dispatcher import (
-    celery_app,
-    classify_and_route_simulation,
-    execute_simulation,
-)
+
+from universal_dispatcher import execute_simulation, celery_app
 from cae_repository import JobRepository
 
-app = FastAPI()
-
-TASK_STATES = {
-    "PENDING": "QUEUED",
-    "RECEIVED": "QUEUED",
-    "STARTED": "RUNNING",
-    "RETRY": "RETRYING",
-    "REVOKED": "CANCELLED",
-    "SUCCESS": "COMPLETED",
-    "FAILURE": "FAILED",
-}
-RESULT_EXPIRES_SECONDS = int(os.getenv("CAE_RESULT_EXPIRES_SECONDS", "86400"))
-JOBS_ROOT = Path(os.getenv("CAE_JOBS_ROOT", "/app/jobs")).resolve()
 job_repository = JobRepository()
 
+app = FastAPI(title="NASEER CAE Engine API")
 
-def _task_meta(task: AsyncResult) -> dict[str, Any]:
-    if isinstance(task.info, dict):
-        return task.info
-    return {}
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
+# ---------------------------------------------------------
+# 1. Pydantic Models for Input Validation (صمام أمان المدخلات)
+# ---------------------------------------------------------
+class PhysicsType(str, Enum):
+    CFD_INCOMPRESSIBLE = "CFD_Incompressible"
+    CFD_COMPRESSIBLE = "CFD_Compressible"
+    STRUCTURAL_STATIC = "Structural_Static"
+    STRUCTURAL_DYNAMIC = "Structural_Dynamic"
+    THERMAL_TRANSIENT = "Thermal_Transient"
 
-def _safe_artifact(path_value: Any) -> Path | None:
-    if not isinstance(path_value, (str, os.PathLike)):
-        return None
-    candidate = Path(path_value)
-    if not candidate.is_absolute():
-        candidate = JOBS_ROOT / candidate
-    candidate = candidate.resolve()
-    try:
-        candidate.relative_to(JOBS_ROOT)
-    except (ValueError, RuntimeError):
-        return None
-    return candidate if candidate.is_file() else None
+class ExecutionMode(str, Enum):
+    DIRECT = "direct"
+    CELERY = "celery"
 
+class SimulationRequest(BaseModel):
+    simulation_type: PhysicsType
+    execution_mode: ExecutionMode = ExecutionMode.CELERY
+    velocity: Optional[float] = Field(default=1.0, description="Velocity in m/s")
+    temperature: Optional[float] = Field(default=293.15, description="Temperature value")
+    temperature_unit: Optional[str] = Field(default="K", pattern="^(K|C|F)$")
+    pressure: Optional[float] = Field(default=101325.0, description="Absolute pressure in Pa")
+    displacement: Optional[float] = Field(default=0.0, description="Structural displacement in meters")
+    mesh_size: Optional[float] = Field(default=0.1, gt=0.0, description="Characteristic mesh size")
+    width_x: Optional[float] = Field(default=1.0, description="Domain width in meters")
+    height_y: Optional[float] = Field(default=1.0, description="Domain height in meters")
+    thermal_conductivity_k: Optional[float] = Field(default=400.0, description="Thermal conductivity in W/(m K); 400 is copper")
+    # Boundary temperatures are expressed in `temperature_unit` when sent; the defaults below are in Kelvin.
+    bc_left_temp: Optional[float] = Field(default=373.15, description="Left edge (x = 0) temperature")
+    bc_right_temp: Optional[float] = Field(default=293.15, description="Right edge (x = width) temperature")
+    bc_top_temp: Optional[float] = Field(default=293.15, description="Top edge (y = height) temperature")
+    bc_bottom_temp: Optional[float] = Field(default=293.15, description="Bottom edge (y = 0) temperature")
 
-def _normalized_task(task_id: str, task: AsyncResult) -> dict[str, Any]:
-    raw_state = task.state or "PENDING"
-    status = TASK_STATES.get(raw_state, raw_state.lower())
-    meta = _task_meta(task)
-    progress = meta.get("progress")
-    if progress is None:
-        if task.successful():
-            progress = 100
-        elif status == "QUEUED":
-            progress = 0
-        elif status == "FAILED":
-            progress = 0
-        else:
-            progress = 50
+    @field_validator(
+        "velocity", "pressure", "displacement", "temperature", "width_x", "height_y",
+        "thermal_conductivity_k", "bc_left_temp", "bc_right_temp", "bc_top_temp", "bc_bottom_temp",
+    )
+    @classmethod
+    def validate_finite_numbers(cls, value: Optional[float], info: ValidationInfo) -> Optional[float]:
+        if value is not None:
+            if isinstance(value, bool) or math.isnan(value) or math.isinf(value):
+                raise ValueError("Numeric fields must be finite numbers.")
+            if info.field_name in ("width_x", "height_y") and value <= 0.0:
+                raise ValueError(f"{info.field_name} must be strictly greater than 0 (meters).")
+            if info.field_name == "thermal_conductivity_k" and value <= 0.0:
+                raise ValueError("thermal_conductivity_k must be strictly greater than 0 W/(m K).")
+        return value
 
-    payload: dict[str, Any] = {
-        "task_id": task_id,
-        "status": status,
-        "state": raw_state,
-        "ready": task.ready(),
-        "progress": progress,
-        "meta": meta or None,
-        "result_expires_seconds": RESULT_EXPIRES_SECONDS,
-    }
-    if task.successful():
-        payload["result"] = task.result
-        if isinstance(task.result, dict):
-            payload["artifacts"] = task.result.get("artifacts", [])
-    elif task.failed():
-        payload["error"] = str(task.result)
-        payload["traceback"] = getattr(task, "traceback", None)
-        payload["logs"] = meta.get("logs", [])
-    else:
-        payload["logs"] = meta.get("logs", [])
-        if raw_state == "REVOKED":
-            payload["status"] = "CANCELLED"
-    return payload
+    @model_validator(mode="after")
+    def normalize_and_validate_physics(self) -> "SimulationRequest":
+        # تحويل الحرارة إلى كلفن والتأكد من النطاق الفيزيائي
+        unit = self.temperature_unit
 
+        def to_kelvin(value: float) -> float:
+            if unit == "C":
+                return value + 273.15
+            if unit == "F":
+                return (value - 32) * 5 / 9 + 273.15
+            return value
+
+        if self.temperature is not None:
+            t_kelvin = to_kelvin(self.temperature)
+            if t_kelvin < 50.0 or t_kelvin > 5000.0:
+                raise ValueError(f"Normalized temperature ({t_kelvin:.2f} K) outside physical bounds [50K, 5000K].")
+            self.temperature = t_kelvin
+            self.temperature_unit = "K"
+
+        # Only values supplied by the client are in `temperature_unit`; untouched defaults are already Kelvin.
+        for name in ("bc_left_temp", "bc_right_temp", "bc_top_temp", "bc_bottom_temp"):
+            value = getattr(self, name)
+            if value is None or name not in self.model_fields_set:
+                continue
+            t_kelvin = to_kelvin(value)
+            if t_kelvin < 50.0 or t_kelvin > 5000.0:
+                raise ValueError(f"{name} ({t_kelvin:.2f} K after normalization) outside physical bounds [50K, 5000K].")
+            setattr(self, name, t_kelvin)
+        self.temperature_unit = "K"
+
+        # اشتراط ضغط موجب للجريان الانضغاطي
+        if self.simulation_type == PhysicsType.CFD_COMPRESSIBLE:
+            if self.pressure is None or self.pressure <= 0.0:
+                raise ValueError("Compressible CFD requires a strictly positive absolute pressure (Pa).")
+        return self
+
+    def to_solver_payload(self) -> dict:
+        """Dump the request and expose the settings in the nested shapes the solvers read."""
+        payload = self.model_dump(mode="json")
+        # An explicit null from the client must not reach the solvers, so fall back to the declared defaults.
+        def or_default(name: str, default: float) -> float:
+            value = getattr(self, name)
+            return value if value is not None else default
+
+        width_x = or_default("width_x", 1.0)
+        height_y = or_default("height_y", 1.0)
+        mesh_size = or_default("mesh_size", 0.1)
+        conductivity = or_default("thermal_conductivity_k", 400.0)
+        payload.update({
+            "width_x": width_x, "height_y": height_y, "mesh_size": mesh_size,
+            "thermal_conductivity_k": conductivity,
+        })
+        payload["domain"] = {"width_x": width_x, "height_y": height_y}
+        payload["mesh_settings"] = {"mesh_size": mesh_size}
+        payload["material_properties"] = {"thermal_conductivity_k": conductivity}
+
+        # The SciPy thermal solver works in degC, while the request is normalized to Kelvin.
+        def celsius(name: str, default_kelvin: float) -> dict:
+            return {"value": or_default(name, default_kelvin) - 273.15}
+
+        payload["boundary_conditions"] = {
+            "left_edge_x0": celsius("bc_left_temp", 373.15),
+            "right_edge_x1": celsius("bc_right_temp", 293.15),
+            "top_edge_y1": celsius("bc_top_temp", 293.15),
+            "bottom_edge_y0": celsius("bc_bottom_temp", 293.15),
+        }
+        return payload
+
+# ---------------------------------------------------------
+# 2. Exception Handlers (إدارة الأخطاء وتوحيد الردود)
+# ---------------------------------------------------------
+@app.exception_handler(JSONDecodeError)
+async def json_decode_error_handler(request: Request, exc: JSONDecodeError):
+    return JSONResponse(
+        status_code=status.HTTP_400_BAD_REQUEST,
+        content={"success": False, "code": "INVALID_JSON", "error": f"Malformed JSON request at line {exc.lineno}"}
+    )
+
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    # exc.errors() may embed raw exceptions (ctx) that are not JSON serializable, so only safe fields are returned.
+    details = [
+        {"loc": list(error.get("loc", ())), "msg": str(error.get("msg", "")), "type": str(error.get("type", ""))}
+        for error in exc.errors()
+    ]
+    return JSONResponse(
+        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+        content={"success": False, "code": "INVALID_REQUEST", "details": details}
+    )
+
+# ---------------------------------------------------------
+# 3. API Routes (المسارات الموحدة)
+# ---------------------------------------------------------
 @app.get("/api/health")
-def health_check():
-    return {"status": "ONLINE", "message": "Physics Engine & Dispatcher Ready"}
+async def health_check():
+    return {"status": "ONLINE", "service": "NASEER_CAE_API"}
 
 @app.post("/api/run-simulation")
-async def run_simulation(request: Request):
-    data = await request.json()
-
-    # Keep synchronous execution available for local development and simple
-    # thermal jobs, while the full Docker stack uses queued workers by default.
-    execution_mode = str(data.pop("execution_mode", "async")).lower()
-    if execution_mode in {"direct", "sync", "synchronous"}:
-        result = execute_simulation(data)
-        return result
-
-    try:
-        submitted = classify_and_route_simulation(data)
-        task_id = submitted["task_id"]
-        job_repository.create(task_id, data)
-        return submitted
-    except Exception as exc:
-        # Broker outages must not turn a valid thermal job into an API 500.
-        # Fall back to the deterministic local solver and report the fallback.
-        fallback = execute_simulation(data)
-        fallback["execution_mode"] = "direct_fallback"
-        fallback["broker_warning"] = (
-            f"Celery queue unavailable; executed locally: {exc}"
-        )
-        return fallback
-
-
-@app.get("/api/tasks/{task_id}")
-async def task_status(task_id: str):
-    task = AsyncResult(task_id, app=celery_app)
-    payload = _normalized_task(task_id, task)
-    status = payload["status"]
-    persisted = job_repository.update(
-        task_id,
-        status=status,
-        progress=int(payload.get("progress", 0)),
-        logs=payload.get("logs", []),
-        artifacts=payload.get("artifacts", []),
-        result=payload.get("result"),
-        error=payload.get("error"),
-    )
-    return persisted or payload
-
-
-@app.get("/api/task-status/{task_id}")
-async def task_status_poll(task_id: str):
-    """Polling alias with the Docker API contract."""
-    return await task_status(task_id)
-
-
-@app.get("/api/tasks/{task_id}/logs")
-async def task_logs(task_id: str):
-    task = AsyncResult(task_id, app=celery_app)
-    meta = _task_meta(task)
-    result_logs = task.result.get("logs", []) if task.successful() and isinstance(task.result, dict) else []
-    logs = meta.get("logs") or result_logs or []
-    if isinstance(logs, str):
-        logs = [logs]
-    persisted = job_repository.update(task_id, status=_normalized_task(task_id, task)["status"], logs=logs)
-    return {"task_id": task_id, "status": _normalized_task(task_id, task)["status"], "logs": logs, "job": persisted}
-
-
-@app.post("/api/tasks/{task_id}/cancel")
-async def cancel_task(
-    task_id: str,
-    terminate: bool = Query(False),
-    signal: str = Query("SIGTERM"),
-):
-    task = AsyncResult(task_id, app=celery_app)
-    task.revoke(terminate=terminate, signal=signal if terminate else None)
-    job_repository.update(task_id, status="CANCELLED", logs=["Job explicitly cancelled by user"])
-    return {"task_id": task_id, "status": "CANCELLED", "revoked": True, "terminate": terminate}
-
-
-@app.get("/api/jobs")
-async def list_jobs(project_id: str | None = Query(None)):
-    return {"success": True, "jobs": job_repository.list(project_id)}
-
+async def run_simulation(request: SimulationRequest):
+    payload = request.to_solver_payload()
+    
+    if payload["execution_mode"] == "celery":
+        task_id = str(uuid.uuid4())
+        try:
+            # Register the job first so the worker can always update an existing record.
+            job_repository.create(task_id, payload)
+            celery_app.send_task(
+                "universal_dispatcher.run_simulation",
+                args=[payload],
+                kwargs={},
+                task_id=task_id,
+            )
+            return JSONResponse(
+                status_code=status.HTTP_202_ACCEPTED,
+                content={"success": True, "task_id": task_id, "status": "QUEUED"}
+            )
+        except Exception as e:
+            job_repository.update(task_id, status="FAILED", error=str(e))
+            return JSONResponse(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                content={"success": False, "code": "BROKER_UNAVAILABLE", "error": str(e)}
+            )
+    else:
+        # التشغيل المباشر لأغراض التطوير
+        result = execute_simulation(payload)
+        if result.get("status") == "error":
+            return JSONResponse(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                content={"success": False, "code": "SIMULATION_FAILED", "error": result.get("error"), "result": result}
+            )
+        return {"success": True, "result": result}
 
 @app.get("/api/jobs/{task_id}")
-async def job_status_alias(task_id: str):
-    return await task_status(task_id)
-
-
-@app.get("/api/jobs/{task_id}/logs")
-async def job_logs_alias(task_id: str):
-    return await task_logs(task_id)
-
-
-@app.post("/api/jobs/{task_id}/cancel")
-async def job_cancel_alias(task_id: str, terminate: bool = Query(False), signal: str = Query("SIGTERM")):
-    return await cancel_task(task_id, terminate, signal)
-
-
-@app.get("/api/jobs/{task_id}/artifacts")
-async def job_artifacts(task_id: str):
+async def get_job_status(task_id: str):
+    # التحقق من وجود المهمة فعلياً في المستودع
     job = job_repository.get(task_id)
-    if job is None:
-        raise HTTPException(status_code=404, detail="Job not found")
-    return {"task_id": task_id, "status": job["status"], "artifacts": job["artifacts"]}
-
-
-app.add_api_route(
-    "/api/tasks/{task_id}/revoke", cancel_task, methods=["POST"], include_in_schema=False
-)
-
-
-@app.get("/api/tasks/{task_id}/result/download")
-async def download_task_result(task_id: str):
-    task = AsyncResult(task_id, app=celery_app)
-    if not task.ready():
-        raise HTTPException(status_code=409, detail="Task result is not ready")
-    if task.failed():
-        raise HTTPException(status_code=404, detail="Task failed and has no result")
-
-    result = task.result
-    candidates: list[Any] = []
-    if isinstance(result, dict):
-        for key in ("artifact", "result_file", "download_path", "output_file"):
-            if result.get(key):
-                candidates.append(result[key])
-        candidates.extend(result.get("artifacts", []) if isinstance(result.get("artifacts"), list) else [])
-
-    for candidate in candidates:
-        if isinstance(candidate, dict):
-            candidate = candidate.get("path") or candidate.get("file_path")
-        artifact = _safe_artifact(candidate)
-        if artifact:
-            return FileResponse(
-                artifact,
-                filename=artifact.name,
-                media_type="application/octet-stream",
-                headers={"Content-Disposition": f'attachment; filename="{artifact.name}"'},
-            )
-
-    body = json.dumps(result, ensure_ascii=False, indent=2).encode("utf-8")
-    return Response(
-        content=body,
-        media_type="application/json",
-        headers={"Content-Disposition": f'attachment; filename="task-{task_id}.json"'},
-    )
-
-
-# Compatibility aliases used by clients that shorten the result path.
-app.add_api_route(
-    "/api/tasks/{task_id}/result", download_task_result, methods=["GET"], include_in_schema=False
-)
-app.add_api_route(
-    "/api/tasks/{task_id}/download", download_task_result, methods=["GET"], include_in_schema=False
-)
-
+    if not job:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"success": False, "code": "JOB_NOT_FOUND", "error": f"Job {task_id} does not exist."}
+        )
+    return job
 
 if __name__ == "__main__":
-    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=False)
+    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)

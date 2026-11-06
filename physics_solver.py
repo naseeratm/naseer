@@ -34,6 +34,19 @@ def solve_2d_thermal_dynamic(json_data):
         raise ValueError("Thermal boundary conditions require left_edge_x0 and right_edge_x1 values in degC") from exc
     h_conv = float(bcs.get("convection", {}).get("h_coefficient", 0.0))
     T_inf = float(bcs.get("convection", {}).get("T_ambient", 25.0))
+
+    # Optional fixed-temperature top/bottom edges; without a value the edge stays insulated (or convective at the top).
+    def optional_edge_temperature(name):
+        edge = bcs.get(name)
+        if not isinstance(edge, dict) or edge.get("value") is None:
+            return None
+        try:
+            return float(edge["value"])
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"Thermal boundary condition {name} must be a numeric temperature in degC") from exc
+
+    T_bottom = optional_edge_temperature("bottom_edge_y0")
+    T_top = optional_edge_temperature("top_edge_y1")
     
     # 3. بناء مصفوفة النظام الخطي (Global Sparse Matrix)
     K = lil_matrix((N_total, N_total))
@@ -54,13 +67,21 @@ def solve_2d_thermal_dynamic(json_data):
             elif i == Nx - 1:
                 K[idx, idx] = 1.0
                 F[idx] = T_right
-            # الحد السفلي (عزل حراري)
+            # الحد السفلي (عزل حراري ما لم تُحدد درجة حرارة)
             elif j == 0:
+                if T_bottom is not None:
+                    K[idx, idx] = 1.0
+                    F[idx] = T_bottom
+                    continue
                 K[idx, idx] = 1.0
                 K[idx, get_node_index(i, 1)] = -1.0
                 F[idx] = 0.0
-            # الحد العلوي (عزل حراري)
+            # الحد العلوي (عزل حراري ما لم تُحدد درجة حرارة)
             elif j == Ny - 1:
+                if T_top is not None:
+                    K[idx, idx] = 1.0
+                    F[idx] = T_top
+                    continue
                 if h_conv > 0 and i not in (0, Nx - 1):
                     K[idx, idx] = (k / dy) + h_conv
                     K[idx, get_node_index(i, Ny - 2)] = -k / dy

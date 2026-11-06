@@ -7,7 +7,6 @@ import os from 'os';
 import dotenv from 'dotenv';
 import { GoogleGenAI } from '@google/genai';
 import fs from 'fs';
-import { JobRepository, type JobRecord } from './job_repository.js';
 
 dotenv.config();
 
@@ -53,6 +52,50 @@ let activeLicenseConfig = {
 // Integrated CAE & Physics Backend Ready natively on Node.js
 console.log(`[Integrated CAE & Physics & ANSYS Bridge Backend active on port ${PORT}]`);
 
+
+// Canonical job authority: FastAPI owns all simulation jobs. These routes are a strict
+// reverse proxy and are mounted before the body parsers so the raw request body is forwarded untouched.
+const FASTAPI_URL = (process.env.FASTAPI_URL || 'http://localhost:8000').replace(/\/+$/, '');
+const HOP_BY_HOP_HEADERS = new Set([
+  'connection', 'keep-alive', 'proxy-authenticate', 'proxy-authorization', 'te',
+  'trailer', 'transfer-encoding', 'upgrade', 'host', 'content-length', 'content-encoding',
+]);
+
+async function proxyToFastApi(req: Request, res: Response) {
+  try {
+    const headers: Record<string, string> = {};
+    for (const [name, value] of Object.entries(req.headers)) {
+      if (value === undefined || HOP_BY_HOP_HEADERS.has(name.toLowerCase())) continue;
+      headers[name] = Array.isArray(value) ? value.join(', ') : value;
+    }
+
+    let body: Buffer | undefined;
+    if (req.method !== 'GET' && req.method !== 'HEAD') {
+      const chunks: Buffer[] = [];
+      for await (const chunk of req) chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+      if (chunks.length > 0) body = Buffer.concat(chunks);
+    }
+
+    const upstream = await fetch(`${FASTAPI_URL}${req.originalUrl}`, {
+      method: req.method,
+      headers,
+      body: body ? new Uint8Array(body) : undefined,
+    });
+
+    upstream.headers.forEach((value, name) => {
+      if (!HOP_BY_HOP_HEADERS.has(name.toLowerCase())) res.setHeader(name, value);
+    });
+    return res.status(upstream.status).send(Buffer.from(await upstream.arrayBuffer()));
+  } catch (err: any) {
+    return res.status(502).json({
+      success: false,
+      code: 'BACKEND_UNAVAILABLE',
+      error: `Unable to reach the FastAPI backend at ${FASTAPI_URL}: ${err?.message || String(err)}`,
+    });
+  }
+}
+
+app.use(['/api/run-simulation', '/api/jobs'], proxyToFastApi);
 
 app.use(express.json({ limit: '100mb' }));
 app.use(express.urlencoded({ extended: true, limit: '100mb' }));
@@ -397,26 +440,6 @@ app.post('/api/license/test', async (req: Request, res: Response) => {
   }
 });
 
-// Run Simulation via Cloud / Python Solver
-app.post('/api/run-simulation', async (req: Request, res: Response) => {
-  try {
-    const targetUrl = activeCloudUrl;
-    const pyRes = await fetch(`${targetUrl}/api/run-simulation`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(req.body),
-    });
-    const data = await pyRes.json();
-    return res.status(pyRes.status).json(data);
-  } catch (err: any) {
-    return res.status(502).json({
-      status: 'error',
-      errorMessage: `تعذر الاتصال بمحرك بايثون الفيزيائي على (${activeCloudUrl})`,
-      detail: err?.message,
-    });
-  }
-});
-
 // Upload and Parse Engineering Model File via Cloud / Python Parser
 app.post('/api/upload-model', async (req: Request, res: Response) => {
   try {
@@ -706,7 +729,6 @@ Provide an authoritative, mathematically rigorous answer in clear Arabic with st
 // ==============================================================================
 
 const projectsDb = new Map<string, any>();
-const jobsRepository = new JobRepository();
 
 // 1. POST /api/projects - Create or initialize project manifest
 app.post('/api/projects', (req: Request, res: Response) => {
@@ -818,129 +840,6 @@ app.post('/api/projects/:id/mesh', (req: Request, res: Response) => {
   };
 
   return res.json({ success: true, meshStudy: meshStudyResult });
-});
-
-// 5. POST /api/projects/:id/jobs - Launch simulation job (ANSYS APDL or Python Benchmark)
-app.post('/api/projects/:id/jobs', async (req: Request, res: Response) => {
-  const { caseId = 'Case-01', solver = 'ANSYS Mechanical APDL' } = req.body || {};
-  const jobId = `job_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
-  const startTime = new Date().toISOString();
-
-  const isAnsys = solver.includes('ANSYS') || solver.includes('MAPDL');
-  const solverVersion = isAnsys ? 'ANSYS 2024 R2 Mechanical APDL' : 'Python 3.12 (SciPy/NumPy Solvers)';
-
-  const logLines = [
-    `[${startTime}] Job ${jobId} created and queued.`,
-    `[${startTime}] Selected solver: ${solverVersion}`,
-  ];
-
-  const jobRecord: JobRecord = {
-    jobId,
-    projectId: req.params.id,
-    caseId,
-    solver,
-    solverVersion,
-    status: 'queued',
-    progress: 0,
-    startTime,
-    executionDurationSec: 0,
-    logLines,
-    artifacts: [],
-  };
-  jobsRepository.create(jobRecord);
-  void (async () => {
-    const running = jobsRepository.get(jobId)!;
-    running.status = 'running';
-    running.progress = 5;
-    running.logLines.push(`[${new Date().toISOString()}] Dispatching job to the physics backend.`);
-    jobsRepository.update(running);
-    try {
-      const response = await fetch(`${activeCloudUrl}/api/run-simulation`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ execution_mode: 'direct', ...req.body }),
-      });
-      const payload = await response.json();
-      const active = jobsRepository.get(jobId)!;
-      active.progress = 100;
-      active.executionDurationSec = Math.max(0, (Date.now() - Date.parse(startTime)) / 1000);
-      active.logLines.push(`[${new Date().toISOString()}] Physics backend execution finished.`);
-      if (!response.ok || payload.status === 'error') {
-        active.status = 'failed';
-        active.error = payload.error || payload.errorMessage || `Solver returned HTTP ${response.status}`;
-      } else {
-        active.status = 'completed';
-        active.endTime = new Date().toISOString();
-        active.resultsSummary = typeof payload.result_summary === 'string' ? payload.result_summary : undefined;
-        active.artifacts = Array.isArray(payload.artifacts) ? payload.artifacts : [];
-      }
-      jobsRepository.update(active);
-    } catch (error: any) {
-      const active = jobsRepository.get(jobId)!;
-      active.status = 'failed';
-      active.error = error?.message || String(error);
-      active.endTime = new Date().toISOString();
-      active.logLines.push(`[${active.endTime}] Execution could not reach the physics backend.`);
-      jobsRepository.update(active);
-    }
-  })();
-  return res.status(202).json({ success: true, job: jobRecord });
-});
-
-// 6. GET /api/jobs/:id - Query job execution status and logs
-app.get('/api/jobs/:id', (req: Request, res: Response) => {
-  const job = jobsRepository.get(req.params.id);
-  if (!job) {
-    return res.status(404).json({ success: false, error: 'المهمة غير مسجلة في النظام' });
-  }
-  return res.json({ success: true, job });
-});
-
-// 7. POST /api/jobs/:id/cancel - Cancel active job
-app.post('/api/jobs/:id/cancel', (req: Request, res: Response) => {
-  const job = jobsRepository.get(req.params.id);
-  if (!job) {
-    return res.status(404).json({ success: false, error: 'المهمة غير موجودة للإلغاء' });
-  }
-  if (['completed', 'failed', 'cancelled'].includes(job.status)) {
-    return res.status(409).json({ success: false, error: 'المهمة في حالة نهائية ولا يمكن إلغاؤها', job });
-  }
-  job.status = 'cancelled';
-  job.progress = 0;
-  job.endTime = new Date().toISOString();
-  job.logLines.push(`[${new Date().toISOString()}] Job explicitly cancelled by user.`);
-  jobsRepository.update(job);
-  return res.json({ success: true, message: 'تم إيقاف المهمة بنجاح', job });
-});
-
-app.get('/api/jobs/:id/logs', (req: Request, res: Response) => {
-  const job = jobsRepository.get(req.params.id);
-  if (!job) return res.status(404).json({ success: false, error: 'المهمة غير موجودة' });
-  return res.json({ task_id: req.params.id, jobId: req.params.id, status: job.status, logs: job.logLines });
-});
-
-app.get('/api/jobs/:id/artifacts', (req: Request, res: Response) => {
-  const job = jobsRepository.get(req.params.id);
-  if (!job) return res.status(404).json({ success: false, error: 'المهمة غير موجودة' });
-  return res.json({ task_id: req.params.id, jobId: req.params.id, artifacts: job.artifacts });
-});
-
-app.get('/api/jobs/:id/artifacts/:index', (req: Request, res: Response) => {
-  const job = jobsRepository.get(req.params.id);
-  const artifact = job?.artifacts[Number(req.params.index)];
-  if (!job || !artifact) return res.status(404).json({ success: false, error: 'Artifact not found' });
-  const artifactPath = typeof artifact === 'string' ? artifact : String(artifact.path || artifact.file_path || artifact.download_path || '');
-  if (!artifactPath || artifactPath.includes('://')) return res.status(404).json({ success: false, error: 'Artifact is not locally downloadable' });
-  const resolved = path.resolve(artifactPath);
-  const jobsRoot = path.resolve(process.env.CAE_JOBS_ROOT || path.resolve(process.cwd(), 'jobs'));
-  if (!resolved.startsWith(jobsRoot + path.sep) || !fs.existsSync(resolved) || !fs.statSync(resolved).isFile()) {
-    return res.status(404).json({ success: false, error: 'Artifact file is unavailable' });
-  }
-  return res.download(resolved, path.basename(resolved));
-});
-
-app.get('/api/projects/:id/jobs', (req: Request, res: Response) => {
-  return res.json({ success: true, jobs: jobsRepository.list(req.params.id) });
 });
 
 // 8. POST /api/projects/:id/validate - Run ASME V&V 20 Analytical & Experimental Validation

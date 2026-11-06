@@ -29,6 +29,10 @@ from backend.result_schema import canonicalize_result
 
 PhysicsResult = Dict[str, Any]
 
+
+class OpenFOAMVerificationError(RuntimeError):
+    """Raised when the OpenFOAM verification gate rejects a finished solver run."""
+
 REDIS_URL = __import__("os").getenv("CELERY_BROKER_URL", "redis://redis:6379/0")
 celery_app = Celery(
     "universal_cae",
@@ -106,7 +110,10 @@ def classify_physics(input_data: Mapping[str, Any]) -> str:
         return "Structural_Static"
     if explicit_type == "structural_dynamic":
         return "Structural_Dynamic"
-
+    if explicit_type == "thermal_transient":
+        return "Thermal_Transient"
+    if explicit_type == "thermal_radiation":
+        return "Thermal_Radiation"
     has_cfd = any(token in text for token in (
         "velocity", "velocity_inlet", "cfd", "navier", "airfoil", "fluid", "incompressible",
         "mach", "compressible", "aerodynamics", "pressure based",
@@ -259,6 +266,50 @@ def parse_openfoam_fields(case_dir: Path) -> Dict[str, Dict[str, Any]]:
                 **_numeric_field_stats(content),
             }
     return fields
+
+
+_OPENFOAM_FAILURE_PATTERNS = (
+    ("Floating point exception", re.compile(r"Floating point exception", re.I)),
+    ("FatalError", re.compile(r"FatalError|FOAM FATAL (?:IO )?ERROR")),
+    ("SIGFPE", re.compile(r"SIGFPE")),
+    ("NaN", re.compile(r"(?<![A-Za-z0-9_])-?nan(?![A-Za-z0-9_])", re.I)),
+)
+
+
+def _is_solution_time_directory(path: Path) -> bool:
+    if not path.is_dir():
+        return False
+    try:
+        return float(path.name) > 0.0
+    except ValueError:
+        return False
+
+
+def verify_openfoam_convergence(case_dir: Path, solver_name: str) -> dict:
+    """Strict post-run gate: a case is valid only if its log is clean and time steps were written."""
+    case_dir = Path(case_dir)
+    log_path = case_dir / "solver.log"
+    if not log_path.is_file():
+        return {"valid": False, "error": f"{solver_name}: solver.log was not produced; the solver did not run."}
+
+    log_text = log_path.read_text(encoding="utf-8", errors="replace")
+    for label, pattern in _OPENFOAM_FAILURE_PATTERNS:
+        match = pattern.search(log_text)
+        if match:
+            line_start = log_text.rfind("\n", 0, match.start()) + 1
+            line_end = log_text.find("\n", match.end())
+            context = log_text[line_start:line_end if line_end != -1 else None].strip()[:300]
+            return {
+                "valid": False,
+                "error": f"{solver_name} diverged or crashed ({label} detected in solver.log): {context}",
+            }
+
+    if not any(_is_solution_time_directory(entry) for entry in case_dir.iterdir()):
+        return {
+            "valid": False,
+            "error": f"{solver_name} produced no time-step directories beyond the initial '0/' folder.",
+        }
+    return {"valid": True, "error": None}
 
 
 def _write_block_mesh_boundary_summary(case_dir: Path, nx: int, ny: int, nz: int,
@@ -456,7 +507,7 @@ def call_openfoam_solver(data: Mapping[str, Any]) -> PhysicsResult:
         "boundaryField {\n"
         f" inlet {{ type fixedValue; value uniform ({velocity} 0 0); }}\n"
         + (
-            " outlet { type pressureInletOutletVelocity; value uniform (0 0 0); }\n"
+            " outlet { type inletOutlet; inletValue uniform (0 0 0); value uniform (0 0 0); }\n"
             if compressible else
             " outlet { type inletOutlet; inletValue uniform (0 0 0); value uniform (0 0 0); }\n"
         )
@@ -476,7 +527,7 @@ def call_openfoam_solver(data: Mapping[str, Any]) -> PhysicsResult:
         + "boundaryField {\n"
         + " inlet { type zeroGradient; }\n"
         + (
-            f" outlet {{ type waveTransmissive; gamma 1.4; inletOutlet false; lInf 1; value uniform {pressure:.8g}; }}\n"
+            f" outlet {{ type waveTransmissive; phi phi; rho rho; psi thermo:psi; gamma 1.4; fieldInf {pressure:.8g}; lInf 1; value uniform {pressure:.8g}; }}\n"
             if compressible else
             f" outlet {{ type fixedValue; value uniform {pressure:.8g}; }}\n"
         )
@@ -523,11 +574,16 @@ def call_openfoam_solver(data: Mapping[str, Any]) -> PhysicsResult:
     def run(command: list[str]) -> subprocess.CompletedProcess[str]:
         result = subprocess.run(
             command, cwd=case_dir, env=environment, text=True,
-            capture_output=True, timeout=120, check=True,
+            capture_output=True, timeout=120, check=False,
         )
+        # The log is written before any failure is raised so the verification gate always has evidence.
         with (case_dir / "solver.log").open("a", encoding="utf-8") as stream:
-            stream.write(result.stdout)
-            stream.write(result.stderr)
+            stream.write(result.stdout or "")
+            stream.write(result.stderr or "")
+        if result.returncode != 0:
+            raise subprocess.CalledProcessError(
+                result.returncode, command, output=result.stdout, stderr=result.stderr,
+            )
         return result
 
     try:
@@ -536,8 +592,13 @@ def call_openfoam_solver(data: Mapping[str, Any]) -> PhysicsResult:
         run([executable])
     except subprocess.CalledProcessError as exc:
         raise RuntimeError(
-            f"OpenFOAM execution failed: {exc.stderr[-4000:] or exc.stdout[-4000:]}"
+            f"OpenFOAM execution failed: {(exc.stderr or exc.stdout or '')[-4000:]}"
         ) from exc
+
+    solver_name = Path(executable).stem
+    verification = verify_openfoam_convergence(case_dir, solver_name)
+    if not verification["valid"]:
+        raise OpenFOAMVerificationError(verification["error"])
 
     log = ""
     for name in ("solver.log", "openfoam.log"):
@@ -939,6 +1000,9 @@ def execute_simulation(data: Dict[str, Any]) -> PhysicsResult:
         )
     except Exception as exc:
         elapsed_ms = round((perf_counter() - started) * 1000, 3)
+        failure: Dict[str, Any] = {}
+        if isinstance(exc, OpenFOAMVerificationError):
+            failure["errors"] = [{"code": "OPENFOAM_VERIFICATION_FAILED", "message": str(exc)}]
         return canonicalize_result({
             "physics_type": "Thermal_Transient",
             "recommended_solver": _recommended_engine("Thermal_Transient"),
@@ -947,8 +1011,35 @@ def execute_simulation(data: Dict[str, Any]) -> PhysicsResult:
             "process_time": round(elapsed_ms / 1000, 3),
             "vtk_data": [],
             "data": {},
-            "error": f"Universal dispatcher failed: {exc}",
+            "error": str(exc) if isinstance(exc, OpenFOAMVerificationError) else f"Universal dispatcher failed: {exc}",
+            **failure,
         }, physics_type="Thermal_Transient", input_data=data, solver="unknown")
+
+
+_JOB_REPOSITORY: Optional[Any] = None
+
+
+def _job_repository() -> Optional[Any]:
+    global _JOB_REPOSITORY
+    if _JOB_REPOSITORY is None:
+        try:
+            from cae_repository import JobRepository
+            _JOB_REPOSITORY = JobRepository()
+        except Exception:
+            return None
+    return _JOB_REPOSITORY
+
+
+def _record_job_state(task_id: Optional[str], status: str, **fields: Any) -> None:
+    """Persist job state in the canonical repository; persistence problems must not mask solver results."""
+    if not task_id:
+        return
+    repository = _job_repository()
+    if repository is not None:
+        try:
+            repository.update(task_id, status=status, **fields)
+        except Exception:
+            pass
 
 
 @celery_app.task(
@@ -963,6 +1054,8 @@ def execute_simulation(data: Dict[str, Any]) -> PhysicsResult:
 def run_simulation_task(self, data: Dict[str, Any]) -> PhysicsResult:
     """Execute simulation work outside the FastAPI process."""
     physics_type = classify_physics(data)
+    task_id = getattr(self.request, "id", None)
+    _record_job_state(task_id, "RUNNING", progress=10)
     _task_progress(
         self, 10, "Preparing simulation input",
         physics_type=physics_type,
@@ -970,6 +1063,12 @@ def run_simulation_task(self, data: Dict[str, Any]) -> PhysicsResult:
     )
     _task_progress(self, 35, "Routing simulation to solver", physics_type=physics_type)
     result = execute_simulation(data)
+    if isinstance(result, dict) and (result.get("status") == "error" or result.get("error")):
+        # Verification or solver failures must never be reported as COMPLETED.
+        message = str(result.get("error") or "Simulation failed")
+        result["logs"] = result.get("logs", ["Preparing simulation input", "Routing simulation to solver", message])
+        _record_job_state(task_id, "FAILED", progress=100, logs=result["logs"], result=result, error=message)
+        return result
     if isinstance(result, dict):
         result["task_progress"] = 100
         result["logs"] = result.get("logs", [
@@ -978,4 +1077,8 @@ def run_simulation_task(self, data: Dict[str, Any]) -> PhysicsResult:
             "Simulation completed",
         ])
     _task_progress(self, 100, "Simulation completed", physics_type=physics_type)
+    _record_job_state(
+        task_id, "COMPLETED", progress=100,
+        logs=result.get("logs") if isinstance(result, dict) else None, result=result,
+    )
     return result

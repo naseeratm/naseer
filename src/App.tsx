@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { HeatmapCanvas } from './HeatmapCanvas';
 import {
   Layers,
@@ -10,15 +10,39 @@ import {
   Sparkles,
   Cpu,
   Key,
-  Shield,
   Upload,
   RotateCcw,
   FolderOpen,
   Save,
   Check,
+  X,
+  PlusCircle,
+  Database,
+  Sliders,
+  Cloud,
+  Printer,
+  FileSpreadsheet,
+  FileCode,
+  Globe,
+  Shield,
 } from 'lucide-react';
 import { ThesisProject, ApiKeyItem, EngineMode, CloudServerConfig } from './types/thesis';
-import { Navbar } from './components/Navbar';
+import { StudioHeader, HeaderMenuGroup } from './components/StudioHeader';
+import { SimulationTree, TreeAction } from './components/SimulationTree';
+import { ViewportCanvas } from './components/ViewportCanvas';
+import { PropertiesPanel, PanelDocument } from './components/PropertiesPanel';
+import { SolverConsole } from './components/SolverConsole';
+import {
+  ConsoleIssue,
+  ConsoleTab,
+  DEFAULT_SIMULATION_INPUTS,
+  JobStatus,
+  SimulationInputs,
+  WorkflowStep,
+  buildSimulationRequest,
+  defaultSimulationTypeForField,
+} from './types/studio';
+import { exportToWordDocument, exportToCSV, exportToLatex, exportToJournalHTML } from './utils/exporter';
 import { CleanWorkspaceHome } from './components/CleanWorkspaceHome';
 import { OverviewTab } from './components/OverviewTab';
 import { MeshStudyTab } from './components/MeshStudyTab';
@@ -56,6 +80,13 @@ interface SimulationResults {
   calculated_heat_flux?: number;
 }
 
+class SimulationCancelledError extends Error {
+  constructor() {
+    super('Simulation cancelled by user');
+    this.name = 'SimulationCancelledError';
+  }
+}
+
 export default function App() {
   // Start with clean workspace (null) so previous research does NOT stick to the app!
   const [currentProject, setCurrentProject] = useState<ThesisProject | null>(null);
@@ -72,65 +103,117 @@ export default function App() {
   const [isMeshGeneratorOpen, setIsMeshGeneratorOpen] = useState<boolean>(false);
   const [saveToast, setSaveToast] = useState<string | null>(null);
   const [results, setResults] = useState<SimulationResults | null>(null);
-  const [solverJobStatus, setSolverJobStatus] = useState<'idle' | 'queued' | 'running' | 'completed' | 'failed' | 'cancelled'>('idle');
+  const [solverJobStatus, setSolverJobStatus] = useState<JobStatus>('idle');
   const [solverLogs, setSolverLogs] = useState<string[]>([]);
+  const [solverProgress, setSolverProgress] = useState<number | null>(null);
+  const [simulationInputs, setSimulationInputs] = useState<SimulationInputs>(DEFAULT_SIMULATION_INPUTS);
+  const [activeStep, setActiveStep] = useState<WorkflowStep>('geometry');
+  const [documentOpen, setDocumentOpen] = useState<boolean>(false);
+  const [consoleTab, setConsoleTab] = useState<ConsoleTab>('logs');
+  const [consoleIssues, setConsoleIssues] = useState<ConsoleIssue[]>([]);
 
-  const runActiveSolver = async (): Promise<unknown> => {
+  // Every run (and every cancel) bumps this id; a polling loop stops as soon as its own id is stale.
+  const runIdRef = useRef(0);
+  const issueIdRef = useRef(0);
+  const isSolverRunning = solverJobStatus === 'queued' || solverJobStatus === 'running';
+
+  // Builds a readable message from the unified FastAPI error shapes:
+  // { success:false, code, error }, { detail: { code, error } } and { code:'INVALID_REQUEST', details:[...] }.
+  const extractApiError = (body: any, fallback: string): string => {
+    const source = body?.detail && typeof body.detail === 'object' && !Array.isArray(body.detail) ? body.detail : body;
+    const code = typeof source?.code === 'string' ? source.code : undefined;
+    let message: string | undefined;
+    if (typeof source?.error === 'string') message = source.error;
+    else if (Array.isArray(source?.details)) {
+      message = source.details
+        .map((d: any) => {
+          const path = Array.isArray(d?.loc) ? d.loc.filter((p: unknown) => p !== 'body').join('.') : '';
+          return `${path ? `${path}: ` : ''}${d?.msg ?? JSON.stringify(d)}`;
+        })
+        .join('; ');
+    } else if (typeof body?.detail === 'string') message = body.detail;
+    else if (Array.isArray(body?.detail)) message = body.detail.map((d: any) => d?.msg ?? JSON.stringify(d)).join('; ');
+    message = message || fallback;
+    return code ? `[${code}] ${message}` : message;
+  };
+
+  const readJson = async (response: Response): Promise<any> => {
+    try {
+      return await response.json();
+    } catch {
+      return null;
+    }
+  };
+
+  const handleRunSimulation = async (): Promise<unknown> => {
     if (!currentProject) throw new Error('No active engineering project');
+    const runId = ++runIdRef.current;
+    const assertActive = () => {
+      if (runIdRef.current !== runId) throw new SimulationCancelledError();
+    };
+
+    // Validate the form before touching any state so malformed input never leaves a stale job status.
+    const requestBody = buildSimulationRequest(simulationInputs);
+    const simulationType = String(requestBody.simulation_type);
+    const isDirect = requestBody.execution_mode === 'direct';
+
     setSolverJobStatus('queued');
-    setSolverLogs([`[${new Date().toISOString()}] Job queued for ${currentProject.field}`]);
+    setSolverProgress(null);
+    let latestLogs = [`[${new Date().toISOString()}] Submitting ${currentProject.field} simulation (${simulationType}, ${String(requestBody.execution_mode)})`];
+    setSolverLogs(latestLogs);
 
-    const simulationType =
-      currentProject.field === 'CFD' ? 'CFD_Incompressible' :
-      currentProject.field === 'FEA' ? 'Structural_Static' :
-      '2D_thermal_steady_state';
-
-    const jobResponse = await fetch(`/api/projects/${encodeURIComponent(currentProject.id)}/jobs`, {
+    const submitResponse = await fetch('/api/run-simulation', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ caseId: 'frontend-solve', solver: currentProject.activeSolverBadge || 'Python SciPy Benchmark' }),
+      body: JSON.stringify(requestBody),
     });
-    const jobPayload = await jobResponse.json();
-    if (!jobResponse.ok || !jobPayload.success) throw new Error(jobPayload.error || 'Unable to create solver job');
-    const jobId = jobPayload.job.jobId as string;
+    const submitPayload = await readJson(submitResponse);
+    assertActive();
+    if (!submitResponse.ok || submitPayload?.success === false) {
+      throw new Error(extractApiError(submitPayload, `Simulation request failed (${submitResponse.status})`));
+    }
 
-    for (let attempt = 0; attempt < 20; attempt += 1) {
-      const statusResponse = await fetch(`/api/jobs/${encodeURIComponent(jobId)}`);
-      const statusPayload = await statusResponse.json();
-      if (!statusResponse.ok) throw new Error(statusPayload.error || 'Unable to read solver job');
-      const job = statusPayload.job;
-      const normalizedStatus = String(job.status || 'queued').toLowerCase();
-      setSolverJobStatus(normalizedStatus as typeof solverJobStatus);
-      setSolverLogs(Array.isArray(job.logLines) ? job.logLines : (Array.isArray(job.logs) ? job.logs : []));
-      if (job.status === 'completed' || job.status === 'failed' || job.status === 'cancelled') {
-        if (job.status !== 'completed') throw new Error(job.error || job.resultsSummary || `Solver job ${job.status}`);
-        break;
+    let job: any;
+    if (isDirect) {
+      // Direct execution answers synchronously with { success, result } and has no task to poll.
+      job = { status: 'COMPLETED', result: submitPayload?.result, logs: [] };
+      latestLogs = [...latestLogs, `[${new Date().toISOString()}] Direct execution completed`];
+      setSolverLogs(latestLogs);
+    } else {
+      const taskId = submitPayload?.task_id as string | undefined;
+      if (!taskId) throw new Error('Simulation backend did not return a task_id');
+
+      for (;;) {
+        const statusResponse = await fetch(`/api/jobs/${encodeURIComponent(taskId)}`);
+        const statusPayload = await readJson(statusResponse);
+        assertActive();
+        if (!statusResponse.ok) {
+          throw new Error(extractApiError(statusPayload, `Unable to read job ${taskId} (${statusResponse.status})`));
+        }
+        job = statusPayload;
+        const jobStatus = String(job?.status ?? 'QUEUED').toUpperCase();
+        setSolverJobStatus(
+          jobStatus === 'RUNNING' ? 'running' :
+          jobStatus === 'COMPLETED' ? 'completed' :
+          jobStatus === 'FAILED' ? 'failed' :
+          jobStatus === 'CANCELLED' ? 'cancelled' :
+          'queued'
+        );
+        if (typeof job?.progress === 'number') setSolverProgress(job.progress);
+        if (Array.isArray(job?.logs)) {
+          latestLogs = job.logs.map(String);
+          setSolverLogs(latestLogs);
+        }
+        if (jobStatus === 'COMPLETED') break;
+        if (jobStatus === 'FAILED' || jobStatus === 'CANCELLED') {
+          throw new Error(extractApiError(job, `Solver job ${jobStatus.toLowerCase()}`));
+        }
+        await new Promise(resolve => setTimeout(resolve, 1500));
+        assertActive();
       }
-      await new Promise(resolve => setTimeout(resolve, 250));
     }
 
-    setSolverJobStatus('running');
-    const response = await fetch('/api/run-simulation', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        execution_mode: 'direct',
-        simulation_type: simulationType,
-        velocity: 1.0,
-        displacement: 0.001,
-        domain: { width_x: 1, height_y: 1 },
-        material_properties: {
-          thermal_conductivity_k: currentProject.material?.thermalConductivity ?? 200,
-        },
-        mesh_settings: { mesh_size: 0.1 },
-        boundary_conditions: {},
-      }),
-    });
-    const payload = await response.json();
-    if (!response.ok || payload.status === 'error') {
-      throw new Error(payload.error || payload.errorMessage || `Solver request failed (${response.status})`);
-    }
-
+    const payload = job.result && typeof job.result === 'object' ? job.result : {};
     const solverData = payload?.data?.solver_results ?? payload?.data ?? payload;
     setResults({
       ...payload,
@@ -141,7 +224,7 @@ export default function App() {
     });
     setSaveToast(`Solver completed: ${payload.solver || payload.recommended_solver || simulationType}`);
     const normalized = normalizeSolverResponse(payload, currentProject);
-    normalized.logs = solverLogs;
+    normalized.logs = latestLogs;
     const residualsHistory = normalized.residuals.map(point => ({
       iteration: point.iteration,
       continuity: point.residual,
@@ -153,11 +236,59 @@ export default function App() {
       ...project,
       normalizedSolverResult: normalized,
       residualsHistory,
-      scriptExecutionLog: [...(project.scriptExecutionLog || []), ...solverLogs],
+      scriptExecutionLog: [...(project.scriptExecutionLog || []), ...latestLogs],
     } : project);
     setSolverJobStatus('completed');
+    setSolverProgress(100);
     return payload;
   };
+
+  const recordIssue = (message: string, severity: ConsoleIssue['severity'] = 'error') => {
+    issueIdRef.current += 1;
+    const issue: ConsoleIssue = {
+      id: issueIdRef.current,
+      time: new Date().toLocaleTimeString([], { hour12: false }),
+      severity,
+      message,
+    };
+    setConsoleIssues(previous => [...previous, issue]);
+  };
+
+  // Shared entry point for the header button and the legacy solver workbench: tracks UI state and re-throws.
+  const runSimulation = async (): Promise<unknown> => {
+    if (isSolverRunning) return undefined;
+    setConsoleTab('logs');
+    try {
+      const payload = await handleRunSimulation();
+      setActiveStep('post');
+      return payload;
+    } catch (error) {
+      if (error instanceof SimulationCancelledError) throw error;
+      const message = error instanceof Error ? error.message : 'Solver execution failed';
+      setSolverJobStatus('failed');
+      setSolverLogs(previous => [...previous, `[${new Date().toISOString()}] ERROR: ${message}`]);
+      recordIssue(message);
+      setConsoleTab('errors');
+      throw error;
+    }
+  };
+
+  const cancelSimulation = () => {
+    if (!isSolverRunning) return;
+    runIdRef.current += 1;
+    setSolverJobStatus('cancelled');
+    setSolverLogs(previous => [...previous, `[${new Date().toISOString()}] Polling stopped: simulation cancelled by user`]);
+    recordIssue('Simulation cancelled by user. The backend job may still finish; its result is ignored.', 'warning');
+  };
+
+  // Stop any active polling loop when the app unmounts.
+  useEffect(() => () => { runIdRef.current += 1; }, []);
+
+  useEffect(() => {
+    setDocumentOpen(false);
+    setActiveStep('geometry');
+    setSimulationInputs(previous => ({ ...previous, simulationType: defaultSimulationTypeForField(currentProject?.field) }));
+  }, [currentProject?.id]);
 
   // Cloud 400GB & ANSYS License Server Configuration
   const [cloudConfig, setCloudConfig] = useState<CloudServerConfig>(() => {
@@ -317,47 +448,6 @@ export default function App() {
   }, [cloudConfig]);
 
 
-  const tabs: { id: TabType; label: string; icon: React.ReactNode; badge?: string }[] = currentProject
-    ? [
-        {
-          id: 'overview',
-          label: 'محطة نمذجة وحل ANSYS Workbench (Project Schematic & Solver)',
-          icon: <Layers className="w-4 h-4 text-sky-400" />,
-          badge: currentProject.field,
-        },
-        {
-          id: 'contours',
-          label: 'حقول الكونتورات والمتجهات (2D/3D Fields)',
-          icon: <Palette className="w-4 h-4 text-amber-400" />,
-          badge: `${currentProject.contours.length} حقول`,
-        },
-        {
-          id: 'mesh',
-          label: 'شبكات الميش ومؤشر روتش (Mesh & GCI)',
-          icon: <Grid3X3 className="w-4 h-4 text-emerald-400" />,
-          badge: `GCI ${currentProject.meshStudy.meshLevels[2]?.gciPercent}%`,
-        },
-        {
-          id: 'validation',
-          label: 'التحقق والمعايرة (ASME V&V 20)',
-          icon: <ShieldCheck className="w-4 h-4 text-indigo-400" />,
-          badge: `R² ${currentProject.validation.rSquared}`,
-        },
-        {
-          id: 'tables',
-          label: 'مصفوفات وجداول النتائج (Data Matrices)',
-          icon: <TableIcon className="w-4 h-4 text-purple-400" />,
-          badge: `${currentProject.thesisTables.length} جداول`,
-        },
-        {
-          id: 'report',
-          label: 'التقرير الهندسي المعتمد (Certified Report)',
-          icon: <FileText className="w-4 h-4 text-slate-300" />,
-          badge: 'التقرير الشامل',
-        },
-      ]
-    : [];
-
   const handleStartProject = (newProject: ThesisProject) => {
     setCurrentProject(newProject);
     setActiveTab('overview');
@@ -507,9 +597,14 @@ export default function App() {
     setTimeout(() => setSaveToast(null), 3500);
   };
 
+  const openDocument = (doc: PanelDocument) => {
+    setActiveTab(doc);
+    setDocumentOpen(true);
+  };
+
   const handlePrint = () => {
-    if (activeTab !== 'report') {
-      setActiveTab('report');
+    if (!documentOpen || activeTab !== 'report') {
+      openDocument('report');
       setTimeout(() => {
         window.print();
       }, 350);
@@ -518,37 +613,138 @@ export default function App() {
     }
   };
 
+  const selectStep = (step: WorkflowStep) => {
+    setActiveStep(step);
+    setDocumentOpen(false);
+  };
+
+  const showToast = (message: string, duration = 3000) => {
+    setSaveToast(message);
+    setTimeout(() => setSaveToast(null), duration);
+  };
+
+  const hasProject = currentProject !== null;
+  const stepActions: Record<WorkflowStep, TreeAction[]> = {
+    geometry: [
+      { id: 'import', label: 'Import Model', icon: <Upload className="h-3.5 w-3.5" />, onClick: () => setIsUploadModalOpen(true) },
+    ],
+    mesh: [
+      { id: 'generator', label: 'Mesh Generator', icon: <Grid3X3 className="h-3.5 w-3.5" />, onClick: () => setIsMeshGeneratorOpen(true) },
+      { id: 'study', label: 'Mesh Study (GCI)', icon: <Layers className="h-3.5 w-3.5" />, onClick: () => openDocument('mesh') },
+    ],
+    physics: [
+      { id: 'setup', label: 'Solver Setup', icon: <Cpu className="h-3.5 w-3.5" />, onClick: () => openDocument('overview') },
+      { id: 'materials', label: 'Materials Database', icon: <Database className="h-3.5 w-3.5" />, onClick: () => setIsMaterialsModalOpen(true) },
+      { id: 'sweep', label: 'Parametric Sweep', icon: <Sliders className="h-3.5 w-3.5" />, onClick: () => setIsParametricSweepOpen(true) },
+    ],
+    copilot: [
+      { id: 'consultant', label: 'Open AI Copilot', icon: <Sparkles className="h-3.5 w-3.5" />, onClick: () => setIsAssistantOpen(true) },
+    ],
+    post: [
+      { id: 'contours', label: 'Contours & Vectors', icon: <Palette className="h-3.5 w-3.5" />, onClick: () => openDocument('contours') },
+      { id: 'validation', label: 'Validation', icon: <ShieldCheck className="h-3.5 w-3.5" />, onClick: () => openDocument('validation') },
+      { id: 'tables', label: 'Data Tables', icon: <TableIcon className="h-3.5 w-3.5" />, onClick: () => openDocument('tables') },
+      { id: 'report', label: 'Certified Report', icon: <FileText className="h-3.5 w-3.5" />, onClick: () => openDocument('report') },
+    ],
+  };
+
+  const menuGroups: HeaderMenuGroup[] = [
+    {
+      id: 'project',
+      label: 'Project',
+      items: [
+        { id: 'new', label: 'New Project…', icon: <PlusCircle className="h-3.5 w-3.5" />, onClick: () => setIsNewProjectModalOpen(true) },
+        { id: 'library', label: `Open from Library (${allAvailableProjects.length})`, icon: <FolderOpen className="h-3.5 w-3.5" />, onClick: () => setIsProjectsLibraryOpen(true) },
+        { id: 'import', label: 'Import Files…', icon: <Upload className="h-3.5 w-3.5" />, onClick: () => setIsUploadModalOpen(true) },
+        { id: 'save', label: 'Save to Library', icon: <Save className="h-3.5 w-3.5" />, onClick: handleSaveCurrentProject, disabled: !hasProject },
+        {
+          id: 'close',
+          label: 'Close Project',
+          icon: <RotateCcw className="h-3.5 w-3.5" />,
+          onClick: () => setCurrentProject(null),
+          disabled: !hasProject,
+        },
+      ],
+    },
+    {
+      id: 'tools',
+      label: 'Tools',
+      items: [
+        { id: 'mesh', label: 'Mesh Generator', icon: <Grid3X3 className="h-3.5 w-3.5" />, onClick: () => setIsMeshGeneratorOpen(true) },
+        { id: 'materials', label: 'Materials Database', icon: <Database className="h-3.5 w-3.5" />, onClick: () => setIsMaterialsModalOpen(true), disabled: !hasProject },
+        { id: 'sweep', label: 'Parametric Sweep', icon: <Sliders className="h-3.5 w-3.5" />, onClick: () => setIsParametricSweepOpen(true), disabled: !hasProject },
+        { id: 'assistant', label: 'AI Copilot', icon: <Sparkles className="h-3.5 w-3.5" />, onClick: () => setIsAssistantOpen(true), disabled: !hasProject },
+      ],
+    },
+    {
+      id: 'export',
+      label: 'Export',
+      items: [
+        { id: 'word', label: 'Word Document', icon: <FileText className="h-3.5 w-3.5" />, onClick: () => currentProject && exportToWordDocument(currentProject), disabled: !hasProject },
+        { id: 'html', label: 'Journal HTML', icon: <Globe className="h-3.5 w-3.5" />, onClick: () => currentProject && exportToJournalHTML(currentProject), disabled: !hasProject },
+        { id: 'latex', label: 'LaTeX', icon: <FileCode className="h-3.5 w-3.5" />, onClick: () => currentProject && exportToLatex(currentProject), disabled: !hasProject },
+        { id: 'csv', label: 'CSV Data', icon: <FileSpreadsheet className="h-3.5 w-3.5" />, onClick: () => currentProject && exportToCSV(currentProject), disabled: !hasProject },
+        { id: 'print', label: 'Print Report', icon: <Printer className="h-3.5 w-3.5" />, onClick: handlePrint, disabled: !hasProject },
+      ],
+    },
+    {
+      id: 'settings',
+      label: 'Settings',
+      items: [
+        { id: 'keys', label: 'API Keys & Engine Mode', icon: <Key className="h-3.5 w-3.5" />, onClick: () => setIsKeyPoolModalOpen(true) },
+        { id: 'cloud', label: 'Cloud Server & Licensing', icon: <Cloud className="h-3.5 w-3.5" />, onClick: () => setIsCloudModalOpen(true) },
+        { id: 'audit', label: 'Technical Audit Report', icon: <Shield className="h-3.5 w-3.5" />, onClick: () => setIsAuditModalOpen(true) },
+      ],
+    },
+  ];
+
+  const documentTitles: Record<TabType, string> = {
+    overview: 'Solver Setup Workbench',
+    contours: 'Contours & Vectors',
+    mesh: 'Mesh Study (GCI)',
+    validation: 'Validation (ASME V&V 20)',
+    tables: 'Data Tables',
+    report: 'Certified Engineering Report',
+  };
+
+  const viewportTitles: Record<WorkflowStep, string> = {
+    geometry: 'Geometry',
+    mesh: 'Mesh preview',
+    physics: 'Physics setup',
+    copilot: 'AI Copilot',
+    post: 'Results',
+  };
+
   return (
-    <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col font-['Cairo',sans-serif] selection:bg-sky-500/30 selection:text-sky-200">
-      {/* Top Navbar */}
-      <Navbar
-        currentProject={currentProject}
-        onResetToCleanWorkspace={() => {
-          setCurrentProject(null);
-          setSaveToast('تمت تهيئة وفورمات مساحة العمل بنجاح (Pristine Clean Workspace).');
-          setTimeout(() => setSaveToast(null), 3000);
-        }}
-        onOpenNewProjectWizard={() => setIsNewProjectModalOpen(true)}
-        onOpenMaterialsModal={() => setIsMaterialsModalOpen(true)}
-        onOpenParametricSweep={() => setIsParametricSweepOpen(true)}
-        onOpenProjectsLibrary={() => setIsProjectsLibraryOpen(true)}
-        onOpenUploadModal={() => setIsUploadModalOpen(true)}
-        onOpenAssistant={() => setIsAssistantOpen(true)}
-        onOpenKeyPoolModal={() => setIsKeyPoolModalOpen(true)}
-        onOpenCloudModal={() => setIsCloudModalOpen(true)}
-        onOpenAuditModal={() => setIsAuditModalOpen(true)}
-        onOpenMeshGenerator={() => setIsMeshGeneratorOpen(true)}
-        onPrintReport={handlePrint}
-        engineMode={engineMode}
-        apiKeys={apiKeys}
-        cloudConfig={cloudConfig}
-        savedProjectsCount={allAvailableProjects.length}
+    <div
+      dir="ltr"
+      className="studio-root flex h-screen w-screen flex-col overflow-hidden bg-slate-950 font-['Inter','Cairo',sans-serif] text-slate-100 selection:bg-sky-500/30 selection:text-sky-100"
+    >
+      <StudioHeader
+        projectTitle={currentProject?.title}
+        status={solverJobStatus}
+        progress={solverProgress}
+        canRun={hasProject}
+        runDisabledReason="Open or create a project to run a simulation"
+        engineLabel={`Engine: ${engineMode === 'pure_local' ? 'Local' : engineMode === 'turbo_offline' ? 'Turbo offline' : 'Hybrid'} · ${apiKeys.filter((key) => key.status === 'active').length} keys`}
+        menuGroups={menuGroups}
+        onRun={() => { runSimulation().catch(() => {}); }}
+        onCancel={cancelSimulation}
+        onHome={() => setCurrentProject(null)}
       />
 
-      {/* Main Container */}
-      <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-6 space-y-6">
-        {/* If no project is currently loaded: render the Pristine Clean Workspace Studio */}
+      <div className="print-reset flex min-h-0 flex-1">
+        <SimulationTree
+          activeStep={activeStep}
+          hasProject={hasProject}
+          jobStatus={solverJobStatus}
+          actions={stepActions}
+          onSelectStep={selectStep}
+        />
+
+        <main className="print-reset flex min-w-0 flex-1 flex-col">
         {!currentProject ? (
+          <div dir="rtl" className="min-h-0 flex-1 overflow-y-auto bg-slate-950 px-6 py-6">
           <CleanWorkspaceHome
             onStartProject={handleStartProject}
             apiKeys={apiKeys}
@@ -566,271 +762,112 @@ export default function App() {
               setTimeout(() => setSaveToast(null), 3000);
             }}
           />
+          </div>
         ) : (
-          /* Active Simulation Session Workspace */
-          <div className="space-y-6 animate-in fade-in duration-200">
-            {/* Active Simulation Session Header Bar */}
-            <div className="bg-slate-900/80 border border-slate-800 rounded-2xl p-4 shadow-xl text-xs space-y-3 print:hidden">
-              <div className="flex flex-wrap items-center justify-between gap-3">
-                <div className="flex items-center gap-3">
-                  <div className="w-3 h-3 rounded-full bg-emerald-400 animate-pulse shadow-md shadow-emerald-400/50" />
-                  <div className="flex items-center gap-2">
-                    <span className="font-bold text-slate-100 text-sm">
-                      {currentProject.title}
-                    </span>
-                    <span className="px-2 py-0.5 rounded bg-sky-500/10 text-sky-400 border border-sky-500/20 font-mono text-[11px]">
-                      {currentProject.field} · {currentProject.softwareType}
-                    </span>
-                  </div>
-                </div>
-
-                <div className="flex items-center gap-2 flex-wrap">
-                  <button
-                    onClick={() => setIsProjectsLibraryOpen(true)}
-                    className="px-3 py-1.5 rounded-xl bg-amber-500/15 hover:bg-amber-500/25 text-amber-300 border border-amber-500/30 flex items-center gap-1.5 transition-colors font-bold text-xs"
-                    title="استدعاء أو تبديل إلى مشروع بحثي سابق من المكتبة"
-                  >
-                    <FolderOpen className="w-3.5 h-3.5 text-amber-400" />
-                    <span>استدعاء بحث سابق</span>
-                  </button>
-
-                  <button
-                    onClick={handleSaveCurrentProject}
-                    className="px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 flex items-center gap-1.5 transition-colors font-semibold text-xs"
-                    title="حفظ التعديلات في مكتبة المشاريع السابقة"
-                  >
-                    <Save className="w-3.5 h-3.5 text-emerald-400" />
-                    <span>حفظ في المكتبة</span>
-                  </button>
-
-                  <button
-                    onClick={() => setCurrentProject(null)}
-                    className="px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 flex items-center gap-1.5 transition-colors font-medium text-xs"
-                    title="إغلاق هذا المشروع والعودة لبيئة العمل الصافية لعمل جديد"
-                  >
-                    <RotateCcw className="w-3.5 h-3.5 text-sky-400" />
-                    <span>إغلاق وجلسة جديدة</span>
-                  </button>
-
-                  <button
-                    onClick={() => setIsUploadModalOpen(true)}
-                    className="px-3.5 py-1.5 rounded-xl bg-gradient-to-r from-sky-500 to-indigo-600 hover:from-sky-400 hover:to-indigo-500 text-white font-bold text-xs shadow-md shadow-sky-500/20 active:scale-95 transition-all flex items-center gap-1.5"
-                  >
-                    <Upload className="w-3.5 h-3.5" />
-                    <span>استيراد ملفات إضافية</span>
-                  </button>
-                </div>
-              </div>
-
-              <div className="flex flex-wrap items-center justify-between text-[11px] text-slate-400 pt-2 border-t border-slate-800/80 gap-2">
-                <div className="flex items-center gap-3">
-                  <span className="flex items-center gap-1">
-                    <Cpu className="w-3.5 h-3.5 text-emerald-400" />
-                    المحرك النشط:{' '}
-                    <strong className="text-emerald-300">
-                      {engineMode === 'pure_local' ? 'المحرك الفيزيائي المحلي 100%' : 'الوضع الهجين الفائق'}
-                    </strong>
-                  </span>
-                  <span>·</span>
-                  <span className="flex items-center gap-1">
-                    <Shield className="w-3.5 h-3.5 text-sky-400" />
-                    حالة النظام:{' '}
-                    <strong className="text-sky-300">جاهز ومستقر (Zero-Downtime)</strong>
-                  </span>
-                </div>
-                {currentProject.directivesApplied && (
-                  <div className="text-amber-300/90 truncate max-w-md">
-                    التوجيهات المطبقة: {currentProject.directivesApplied}
-                  </div>
-                )}
-              </div>
-            </div>
-
-            {/* Tab Navigation Bar */}
-            <div className="bg-slate-900/90 p-1.5 rounded-2xl border border-slate-800 shadow-xl overflow-x-auto flex gap-1.5 no-scrollbar print:hidden">
-              {tabs.map((tab) => {
-                const isActive = activeTab === tab.id;
-                return (
-                  <button
-                    key={tab.id}
-                    onClick={() => setActiveTab(tab.id)}
-                    className={`flex items-center gap-2 px-3.5 sm:px-4 py-2.5 rounded-xl text-xs sm:text-sm font-bold transition-all whitespace-nowrap ${
-                      isActive
-                        ? 'bg-gradient-to-r from-sky-500 to-indigo-600 text-white shadow-lg shadow-sky-500/20'
-                        : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/60'
-                    }`}
-                  >
-                    {tab.icon}
-                    <span>{tab.label}</span>
-                    {tab.badge && (
-                      <span
-                        className={`text-[10px] px-1.5 py-0.5 rounded-md font-mono ${
-                          isActive ? 'bg-white/20 text-white' : 'bg-slate-800 text-slate-400'
-                        }`}
-                      >
-                        {tab.badge}
-                      </span>
-                    )}
-                  </button>
-                );
-              })}
-            </div>
-
-            {/* Active Tab Content Display */}
-            <div className="pb-12">
-              {activeTab === 'report' && (
-                <ThesisReportTab project={currentProject} onPrint={handlePrint} />
-              )}
-
-              {activeTab === 'contours' && (
-                <ContoursTab contours={currentProject.contours} />
-              )}
-
-              {activeTab === 'mesh' && (
-                <MeshStudyTab
-                  meshStudy={currentProject.meshStudy}
-                  softwareType={currentProject.softwareType}
-                  onOpenMeshGenerator={() => setIsMeshGeneratorOpen(true)}
-                />
-              )}
-
-              {activeTab === 'validation' && (
-                <ValidationTab
-                  validation={currentProject.validation}
-                  field={currentProject.field}
-                  project={currentProject}
-                />
-              )}
-
-              {activeTab === 'tables' && (
-                <TablesTab tables={currentProject.thesisTables} />
-              )}
-
-              {activeTab === 'overview' && (
-                <OverviewTab
-                  project={currentProject}
-                  onRunSolver={runActiveSolver}
-                  solverJobStatus={solverJobStatus}
-                  solverLogs={solverLogs}
-                  onSolverFailed={() => setSolverJobStatus('failed')}
-                />
-              )}
-            </div>
-            {results?.temperature_matrix && (
-              <section className="grid grid-cols-12 gap-4 rounded-2xl border border-slate-800 bg-slate-900/40 p-4">
-                <aside className="col-span-12 space-y-3 rounded-xl border border-slate-800 bg-[#141421] p-4 lg:col-span-2">
-                  <div className="flex items-center gap-2 text-xs font-bold uppercase tracking-wider text-sky-300">
-                    <Upload className="h-4 w-4" /> Input Panel
-                  </div>
-                  <p className="text-xs text-slate-400">CAD and analysis inputs</p>
-                  <button
-                    onClick={() => setIsUploadModalOpen(true)}
-                    className="w-full rounded-lg border border-sky-500/30 bg-sky-500/10 px-3 py-2 text-xs font-semibold text-sky-300 hover:bg-sky-500/20"
-                  >
-                    Import Engineering Model
-                  </button>
-                  <dl className="space-y-2 text-xs">
-                    <div><dt className="text-slate-500">Domain</dt><dd className="text-slate-200">{currentProject.field}</dd></div>
-                    <div><dt className="text-slate-500">Solver</dt><dd className="text-slate-200">{currentProject.softwareType}</dd></div>
-                  </dl>
-                </aside>
-
-                <div className="col-span-12 flex flex-col items-center justify-center rounded-xl border border-slate-800 bg-[#11111b] p-3 lg:col-span-7">
-                  <HeatmapCanvas matrix={results.temperature_matrix} />
-                  {(results.physics_type ||
-                    results.classified_type ||
-                    results.recommended_solver ||
-                    results.solver_engine ||
-                    results.process_time !== undefined ||
-                    results.process_time_ms !== undefined) && (
-                    <section
-                      aria-label="Simulation status"
-                      className="mt-4 grid w-full grid-cols-1 gap-3 rounded-xl border border-slate-800 bg-[#1e1e2e] p-3 md:grid-cols-3"
-                    >
-                      <div className="flex min-h-16 items-center gap-2 rounded-lg border border-sky-500/30 bg-sky-500/10 px-3 py-2">
-                        <span className="text-lg">🧠</span>
-                        <span className="text-xs text-slate-400">Physics Type</span>
-                        <strong className="ml-auto text-sm text-sky-300">
-                          {results.physics_type || results.classified_type || 'Unknown'}
-                        </strong>
-                      </div>
-                      <div className="flex min-h-16 items-center gap-2 rounded-lg border border-violet-500/30 bg-violet-500/10 px-3 py-2">
-                        <span className="text-lg">⚙️</span>
-                        <span className="text-xs text-slate-400">Solver Engine</span>
-                        <strong className="ml-auto text-sm text-violet-300">
-                          {results.recommended_solver || results.solver_engine || 'Automatic fallback'}
-                        </strong>
-                      </div>
-                      <div className="flex min-h-16 items-center gap-2 rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-3 py-2">
-                        <span className="text-lg">⏱️</span>
-                        <span className="text-xs text-slate-400">Process Time</span>
-                        <strong className="ml-auto text-sm text-emerald-300">
-                          {typeof results.process_time === 'number'
-                            ? `${results.process_time.toFixed(2)}s`
-                            : typeof results.process_time_ms === 'number'
-                              ? `${(results.process_time_ms / 1000).toFixed(2)}s`
-                              : 'Unavailable'}
-                        </strong>
-                      </div>
-                    </section>
+          <>
+            <ViewportCanvas
+              title={viewportTitles[activeStep]}
+              subtitle={`${currentProject.title} · ${currentProject.field}`}
+              showMeshOverlay={activeStep === 'mesh'}
+              overlay={
+                <>
+                  {activeStep === 'post' && solverJobStatus === 'completed' && !results?.temperature_matrix && (
+                    <div className="pointer-events-none absolute bottom-9 left-1/2 z-10 -translate-x-1/2 rounded border border-emerald-500/30 bg-slate-900/90 px-3 py-1.5 text-[11px] text-emerald-200 shadow-lg">
+                      Solve completed — no 2D scalar field was returned. See the Results Summary and Result Views.
+                    </div>
                   )}
-                </div>
+                  {documentOpen && (
+                    <div className="print-reset absolute inset-0 z-20 flex flex-col bg-slate-950">
+                      <div className="flex h-9 shrink-0 items-center justify-between border-b border-slate-800 bg-slate-900 px-3 print:hidden">
+                        <span className="text-[12px] font-semibold text-slate-200">{documentTitles[activeTab]}</span>
+                        <button
+                          onClick={() => setDocumentOpen(false)}
+                          className="flex h-6 items-center gap-1 rounded border border-slate-700 px-2 text-[11px] text-slate-300 hover:bg-slate-800 hover:text-white"
+                        >
+                          <X className="h-3.5 w-3.5" />
+                          Back to viewport
+                        </button>
+                      </div>
+                      <div dir="rtl" className="print-reset min-h-0 flex-1 overflow-y-auto p-5">
+                        {activeTab === 'report' && (
+                          <ThesisReportTab project={currentProject} onPrint={handlePrint} />
+                        )}
 
-                <aside className="col-span-12 rounded-xl border border-slate-800 bg-[#141421] p-4 lg:col-span-3">
-                  <div className="mb-3 text-xs font-bold uppercase tracking-wider text-emerald-300">Results</div>
-                  <dl className="grid grid-cols-2 gap-2 lg:grid-cols-1">
-                    <div className="rounded-lg bg-slate-900/80 p-3">
-                      <dt className="text-[11px] text-slate-500">Max temperature</dt>
-                      <dd className="mt-1 text-lg font-semibold text-red-300">
-                        {typeof results.max_temperature === 'number' ? `${results.max_temperature.toFixed(1)} °C` : 'Calculated'}
-                      </dd>
+                        {activeTab === 'contours' && (
+                          <ContoursTab contours={currentProject.contours} />
+                        )}
+
+                        {activeTab === 'mesh' && (
+                          <MeshStudyTab
+                            meshStudy={currentProject.meshStudy}
+                            softwareType={currentProject.softwareType}
+                            onOpenMeshGenerator={() => setIsMeshGeneratorOpen(true)}
+                          />
+                        )}
+
+                        {activeTab === 'validation' && (
+                          <ValidationTab
+                            validation={currentProject.validation}
+                            field={currentProject.field}
+                            project={currentProject}
+                          />
+                        )}
+
+                        {activeTab === 'tables' && (
+                          <TablesTab tables={currentProject.thesisTables} />
+                        )}
+
+                        {activeTab === 'overview' && (
+                          <OverviewTab
+                            project={currentProject}
+                            onRunSolver={runSimulation}
+                            solverJobStatus={solverJobStatus}
+                            solverLogs={solverLogs}
+                            onSolverFailed={() => setSolverJobStatus(status => (status === 'cancelled' ? status : 'failed'))}
+                          />
+                        )}
+                      </div>
                     </div>
-                    <div className="rounded-lg bg-slate-900/80 p-3">
-                      <dt className="text-[11px] text-slate-500">Center temperature</dt>
-                      <dd className="mt-1 text-lg font-semibold text-sky-300">
-                        {typeof results.center_temperature === 'number' ? `${results.center_temperature.toFixed(1)} °C` : 'Calculated'}
-                      </dd>
-                    </div>
-                    <div className="rounded-lg bg-slate-900/80 p-3">
-                      <dt className="text-[11px] text-slate-500">Heat flux</dt>
-                      <dd className="mt-1 text-lg font-semibold text-amber-300">
-                        {typeof results.calculated_heat_flux === 'number'
-                          ? `${results.calculated_heat_flux.toFixed(2)} W/m²`
-                          : 'Post-processing'}
-                      </dd>
-                    </div>
-                  </dl>
-                </aside>
-              </section>
-            )}
-          </div>
+                  )}
+                </>
+              }
+            >
+              {activeStep === 'post' && results?.temperature_matrix ? (
+                <HeatmapCanvas matrix={results.temperature_matrix} />
+              ) : undefined}
+            </ViewportCanvas>
+
+            <SolverConsole
+              tab={consoleTab}
+              onTabChange={setConsoleTab}
+              logs={solverLogs}
+              status={solverJobStatus}
+              issues={consoleIssues}
+              residuals={currentProject.residualsHistory}
+              onClearIssues={() => setConsoleIssues([])}
+            />
+          </>
         )}
-      </main>
+        </main>
 
-      {/* Footer */}
-      <footer className="border-t border-slate-800/80 bg-slate-950/80 py-6 text-xs text-slate-400 print:hidden text-center">
-        <div className="max-w-7xl mx-auto px-4 flex flex-col sm:flex-row items-center justify-between gap-3">
-          <p>
-            ANSYS Engineering WorkBench - منصة المحاكاة والتحليل الهندسي الشاملة متعددة المجالات (CFD & FEA) © 2026
-          </p>
-          <div className="flex items-center gap-4 text-slate-400">
-            <span>ASME V&V 20-2009 Compliant</span>
-            <span>·</span>
-            <span>Roache GCI Verified</span>
-            <span>·</span>
-            <span>Navier-Stokes & Hooke Elasticity Formulation</span>
-            <span>·</span>
-            {currentProject && (
-              <button
-                onClick={() => setIsAssistantOpen(true)}
-                className="text-amber-400 hover:underline"
-              >
-                استشارة المستشار الهندسي
-              </button>
-            )}
-          </div>
-        </div>
-      </footer>
+        <PropertiesPanel
+          step={activeStep}
+          project={currentProject}
+          inputs={simulationInputs}
+          inputsLocked={isSolverRunning}
+          results={results}
+          onInputsChange={(patch) => setSimulationInputs(previous => ({ ...previous, ...patch }))}
+          actions={{
+            importModel: () => setIsUploadModalOpen(true),
+            openMeshGenerator: () => setIsMeshGeneratorOpen(true),
+            openMaterials: () => setIsMaterialsModalOpen(true),
+            openParametricSweep: () => setIsParametricSweepOpen(true),
+            openAssistant: () => setIsAssistantOpen(true),
+            openDocument,
+            print: handlePrint,
+          }}
+        />
+      </div>
 
       {/* Universal Multi-Format Ingestion Modal */}
       <ScriptUploaderModal
