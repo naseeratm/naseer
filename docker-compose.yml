@@ -6,6 +6,7 @@ services:
     environment:
       CELERY_BROKER_URL: redis://redis:6379/0
       CELERY_RESULT_BACKEND: redis://redis:6379/0
+      CAE_SQLITE_PATH: /app/jobs/cae.db
     depends_on:
       redis:
         condition: service_healthy
@@ -23,6 +24,7 @@ services:
     environment:
       CELERY_BROKER_URL: redis://redis:6379/0
       CELERY_RESULT_BACKEND: redis://redis:6379/0
+      CAE_SQLITE_PATH: /app/jobs/cae.db
     depends_on:
       redis:
         condition: service_healthy

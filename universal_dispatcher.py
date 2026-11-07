@@ -14,6 +14,7 @@ import subprocess
 import uuid
 import math
 import json
+import logging
 import re
 import math
 from time import perf_counter
@@ -23,6 +24,7 @@ from pathlib import Path
 from celery import Celery
 
 from physics_solver import solve_simulation
+from cae_repository import JobRepository
 from backend.report_generator import generate_academic_report
 from backend.result_schema import canonicalize_result
 
@@ -1023,9 +1025,9 @@ def _job_repository() -> Optional[Any]:
     global _JOB_REPOSITORY
     if _JOB_REPOSITORY is None:
         try:
-            from cae_repository import JobRepository
             _JOB_REPOSITORY = JobRepository()
         except Exception:
+            logging.getLogger(__name__).exception("Job repository is unavailable")
             return None
     return _JOB_REPOSITORY
 
@@ -1039,7 +1041,7 @@ def _record_job_state(task_id: Optional[str], status: str, **fields: Any) -> Non
         try:
             repository.update(task_id, status=status, **fields)
         except Exception:
-            pass
+            logging.getLogger(__name__).exception("Could not persist job %s state %s", task_id, status)
 
 
 @celery_app.task(
