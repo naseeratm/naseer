@@ -65,7 +65,7 @@ const STEP_TITLES: Record<WorkflowStep, string> = {
   geometry: 'Geometry',
   mesh: 'Mesh',
   physics: 'Physics & Materials',
-  copilot: 'AI Copilot',
+  copilot: 'OmniSolve AI (Copilot)',
   post: 'Post-Processing',
 };
 
@@ -329,12 +329,12 @@ export const PropertiesPanel: React.FC<PropertiesPanelProps> = ({
   } else if (step === 'copilot') {
     contextual = (
       <>
-        <Section title="Nanofluid Copilot">
+        <Section title="OmniSolve AI (Copilot)">
           <p className="text-[11px] leading-relaxed text-slate-400">
             Ask the AI consultant to recommend nanofluid candidates (e.g. Al₂O₃, CuO, TiO₂), volume fractions and
             effective property models for the active project.
           </p>
-          <ActionButton accent icon={<Sparkles className="h-3.5 w-3.5" />} label="Open AI Copilot" onClick={actions.openAssistant} />
+          <ActionButton accent icon={<Sparkles className="h-3.5 w-3.5" />} label="Open OmniSolve AI" onClick={actions.openAssistant} />
         </Section>
       </>
     );

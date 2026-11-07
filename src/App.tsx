@@ -26,12 +26,12 @@ import {
   Globe,
   Shield,
 } from 'lucide-react';
-import { ThesisProject, ApiKeyItem, EngineMode, CloudServerConfig } from './types/thesis';
+import { ThesisProject, ApiKeyItem, EngineMode, CloudServerConfig, SimulationRunRecord, MeshStudyResult, ProfileSpec, ReferenceDataSet, isCurrentMeshStudy } from './types/thesis';
 import { StudioHeader, HeaderMenuGroup } from './components/StudioHeader';
 import { SimulationTree, TreeAction } from './components/SimulationTree';
 import { ViewportCanvas } from './components/ViewportCanvas';
 import { PropertiesPanel, PanelDocument } from './components/PropertiesPanel';
-import { SolverConsole } from './components/SolverConsole';
+import { SolverConsole, ResidualSeries } from './components/SolverConsole';
 import {
   ConsoleIssue,
   ConsoleTab,
@@ -42,7 +42,7 @@ import {
   buildSimulationRequest,
   defaultSimulationTypeForField,
 } from './types/studio';
-import { exportToWordDocument, exportToCSV, exportToLatex, exportToJournalHTML } from './utils/exporter';
+import { exportToWordDocument, exportToCSV, exportToLatex, exportToJournalHTML, hasRealSimulationRun } from './utils/exporter';
 import { CleanWorkspaceHome } from './components/CleanWorkspaceHome';
 import { OverviewTab } from './components/OverviewTab';
 import { MeshStudyTab } from './components/MeshStudyTab';
@@ -87,6 +87,18 @@ class SimulationCancelledError extends Error {
   }
 }
 
+// Accepts only a genuine 2-D solver field: non-empty rows, a consistent column
+// count, and at least one finite value. Anything else keeps the CAD placeholder.
+const toRealTemperatureMatrix = (value: unknown): number[][] | undefined => {
+  if (!Array.isArray(value) || value.length === 0) return undefined;
+  if (!value.every((row): row is unknown[] => Array.isArray(row))) return undefined;
+  const columnCount = value[0].length;
+  if (columnCount === 0 || value.some((row) => row.length !== columnCount)) return undefined;
+  const matrix = value.map((row) => row.map((cell) => (typeof cell === 'number' ? cell : NaN)));
+  if (!matrix.some((row) => row.some((cell) => Number.isFinite(cell)))) return undefined;
+  return matrix;
+};
+
 export default function App() {
   // Start with clean workspace (null) so previous research does NOT stick to the app!
   const [currentProject, setCurrentProject] = useState<ThesisProject | null>(null);
@@ -106,6 +118,9 @@ export default function App() {
   const [solverJobStatus, setSolverJobStatus] = useState<JobStatus>('idle');
   const [solverLogs, setSolverLogs] = useState<string[]>([]);
   const [solverProgress, setSolverProgress] = useState<number | null>(null);
+  const [meshStudyRunning, setMeshStudyRunning] = useState<boolean>(false);
+  const [meshStudyError, setMeshStudyError] = useState<string | null>(null);
+  const [solverResidualSeries, setSolverResidualSeries] = useState<ResidualSeries[]>([]);
   const [simulationInputs, setSimulationInputs] = useState<SimulationInputs>(DEFAULT_SIMULATION_INPUTS);
   const [activeStep, setActiveStep] = useState<WorkflowStep>('geometry');
   const [documentOpen, setDocumentOpen] = useState<boolean>(false);
@@ -159,6 +174,10 @@ export default function App() {
 
     setSolverJobStatus('queued');
     setSolverProgress(null);
+    // A new run must not present a previous job's results while it executes.
+    setResults(null);
+    setSolverResidualSeries([]);
+    setCurrentProject(project => project ? { ...project, simulationRun: undefined, normalizedSolverResult: undefined } : project);
     let latestLogs = [`[${new Date().toISOString()}] Submitting ${currentProject.field} simulation (${simulationType}, ${String(requestBody.execution_mode)})`];
     setSolverLogs(latestLogs);
 
@@ -206,6 +225,12 @@ export default function App() {
         }
         if (jobStatus === 'COMPLETED') break;
         if (jobStatus === 'FAILED' || jobStatus === 'CANCELLED') {
+          // Print the backend's exact error string to the terminal before surfacing it.
+          const backendError = typeof job?.error === 'string' && job.error.trim() !== '' ? job.error : undefined;
+          if (backendError && !latestLogs.includes(backendError)) {
+            latestLogs = [...latestLogs, backendError];
+            setSolverLogs(latestLogs);
+          }
           throw new Error(extractApiError(job, `Solver job ${jobStatus.toLowerCase()}`));
         }
         await new Promise(resolve => setTimeout(resolve, 1500));
@@ -218,24 +243,30 @@ export default function App() {
     setResults({
       ...payload,
       ...solverData,
-      temperature_matrix: Array.isArray(solverData?.temperature_matrix)
-        ? solverData.temperature_matrix
-        : undefined,
+      temperature_matrix: toRealTemperatureMatrix(solverData?.temperature_matrix),
     });
     setSaveToast(`Solver completed: ${payload.solver || payload.recommended_solver || simulationType}`);
     const normalized = normalizeSolverResponse(payload, currentProject);
     normalized.logs = latestLogs;
-    const residualsHistory = normalized.residuals.map(point => ({
-      iteration: point.iteration,
-      continuity: point.residual,
-      xVelocity: point.residual,
-      yVelocity: point.residual,
-      energy: point.residual,
-    }));
+    setSolverResidualSeries(normalized.residualSeries ?? []);
+    const optionalText = (value: unknown) => (typeof value === 'string' && value ? value : undefined);
+    const simulationRun: SimulationRunRecord = {
+      taskId: optionalText(job?.task_id),
+      executionMode: isDirect ? 'direct' : 'celery',
+      submittedRequest: requestBody,
+      backendPayload: job?.payload && typeof job.payload === 'object' ? job.payload : undefined,
+      result: payload,
+      logs: latestLogs,
+      progress: typeof job?.progress === 'number' ? job.progress : undefined,
+      createdAt: optionalText(job?.created_at),
+      startedAt: optionalText(job?.started_at),
+      completedAt: optionalText(job?.completed_at),
+      recordedAt: new Date().toISOString(),
+    };
     setCurrentProject(project => project ? {
       ...project,
       normalizedSolverResult: normalized,
-      residualsHistory,
+      simulationRun,
       scriptExecutionLog: [...(project.scriptExecutionLog || []), ...latestLogs],
     } : project);
     setSolverJobStatus('completed');
@@ -281,12 +312,76 @@ export default function App() {
     recordIssue('Simulation cancelled by user. The backend job may still finish; its result is ignored.', 'warning');
   };
 
+  // Run a real mesh-independence study: the backend solves on three meshes and returns the GCI of a key result.
+  const runMeshStudy = async (keyResultId: string): Promise<void> => {
+    if (!currentProject || meshStudyRunning) return;
+    const studiedProjectId = currentProject.id;
+    setMeshStudyRunning(true);
+    setMeshStudyError(null);
+    setConsoleTab('logs');
+    setSolverLogs(previous => [...previous, `[${new Date().toISOString()}] Starting mesh independence study (${keyResultId}, 3 grid levels)`]);
+    try {
+      const requestBody = { ...buildSimulationRequest(simulationInputs), key_result: keyResultId };
+      const response = await fetch('/api/mesh-study', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(requestBody),
+      });
+      const payload = await readJson(response);
+      if (!response.ok || payload?.success === false) {
+        throw new Error(extractApiError(payload, `Mesh study failed (${response.status})`));
+      }
+      if (!isCurrentMeshStudy(payload?.study)) {
+        throw new Error('The mesh study backend returned an unrecognised response (expected schema version 2).');
+      }
+      const study = payload.study;
+      const meshStudyResult: MeshStudyResult = { ...study, recordedAt: new Date().toISOString() };
+      // The study may outlive the project it was started from; never attach it to a different one.
+      setCurrentProject(project => (project && project.id === studiedProjectId ? { ...project, meshStudyResult } : project));
+      const outcome = study.gci_fine_percent !== null
+        ? `GCI (fine) = ${study.gci_fine_percent}%`
+        : `no GCI (${study.convergence_type})`;
+      setSolverLogs(previous => [
+        ...previous,
+        `[${new Date().toISOString()}] Mesh study complete: ${study.key_result.label}, ${study.convergence_type}, ${outcome}` +
+          (study.observed_order !== null ? `, observed order p = ${study.observed_order}` : ''),
+      ]);
+      setSaveToast(`Mesh independence study complete — ${outcome}`);
+      setTimeout(() => setSaveToast(null), 4000);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Mesh study failed';
+      setMeshStudyError(message);
+      setSolverLogs(previous => [...previous, `[${new Date().toISOString()}] ERROR: ${message}`]);
+      recordIssue(message);
+      setConsoleTab('errors');
+    } finally {
+      setMeshStudyRunning(false);
+    }
+  };
+
+  const setReferenceData = (referenceData: ReferenceDataSet | undefined) => {
+    setCurrentProject(project => (project ? { ...project, referenceData } : project));
+  };
+
+  const setValidationProfile = (validationProfile: ProfileSpec) => {
+    setCurrentProject(project => (project ? { ...project, validationProfile } : project));
+  };
+
   // Stop any active polling loop when the app unmounts.
   useEffect(() => () => { runIdRef.current += 1; }, []);
 
   useEffect(() => {
+    // Switching projects invalidates any in-flight polling loop and every solver
+    // artifact of the previous project; the viewport falls back to the CAD model.
+    runIdRef.current += 1;
     setDocumentOpen(false);
     setActiveStep('geometry');
+    setResults(null);
+    setSolverResidualSeries([]);
+    setSolverLogs([]);
+    setSolverProgress(null);
+    setSolverJobStatus('idle');
+    setMeshStudyError(null);
     setSimulationInputs(previous => ({ ...previous, simulationType: defaultSimulationTypeForField(currentProject?.field) }));
   }, [currentProject?.id]);
 
@@ -624,6 +719,17 @@ export default function App() {
   };
 
   const hasProject = currentProject !== null;
+  const hasCompletedRun = hasRealSimulationRun(currentProject);
+
+  // Reports contain real solver output only; failures surface in the console instead of a silent no-op.
+  const runExport = async (action: () => unknown) => {
+    try {
+      await action();
+    } catch (error) {
+      recordIssue(error instanceof Error ? error.message : 'Report export failed', 'warning');
+      setConsoleTab('errors');
+    }
+  };
   const stepActions: Record<WorkflowStep, TreeAction[]> = {
     geometry: [
       { id: 'import', label: 'Import Model', icon: <Upload className="h-3.5 w-3.5" />, onClick: () => setIsUploadModalOpen(true) },
@@ -638,7 +744,7 @@ export default function App() {
       { id: 'sweep', label: 'Parametric Sweep', icon: <Sliders className="h-3.5 w-3.5" />, onClick: () => setIsParametricSweepOpen(true) },
     ],
     copilot: [
-      { id: 'consultant', label: 'Open AI Copilot', icon: <Sparkles className="h-3.5 w-3.5" />, onClick: () => setIsAssistantOpen(true) },
+      { id: 'consultant', label: 'Open OmniSolve AI', icon: <Sparkles className="h-3.5 w-3.5" />, onClick: () => setIsAssistantOpen(true) },
     ],
     post: [
       { id: 'contours', label: 'Contours & Vectors', icon: <Palette className="h-3.5 w-3.5" />, onClick: () => openDocument('contours') },
@@ -673,18 +779,18 @@ export default function App() {
         { id: 'mesh', label: 'Mesh Generator', icon: <Grid3X3 className="h-3.5 w-3.5" />, onClick: () => setIsMeshGeneratorOpen(true) },
         { id: 'materials', label: 'Materials Database', icon: <Database className="h-3.5 w-3.5" />, onClick: () => setIsMaterialsModalOpen(true), disabled: !hasProject },
         { id: 'sweep', label: 'Parametric Sweep', icon: <Sliders className="h-3.5 w-3.5" />, onClick: () => setIsParametricSweepOpen(true), disabled: !hasProject },
-        { id: 'assistant', label: 'AI Copilot', icon: <Sparkles className="h-3.5 w-3.5" />, onClick: () => setIsAssistantOpen(true), disabled: !hasProject },
+        { id: 'assistant', label: 'OmniSolve AI (Copilot)', icon: <Sparkles className="h-3.5 w-3.5" />, onClick: () => setIsAssistantOpen(true), disabled: !hasProject },
       ],
     },
     {
       id: 'export',
       label: 'Export',
       items: [
-        { id: 'word', label: 'Word Document', icon: <FileText className="h-3.5 w-3.5" />, onClick: () => currentProject && exportToWordDocument(currentProject), disabled: !hasProject },
-        { id: 'html', label: 'Journal HTML', icon: <Globe className="h-3.5 w-3.5" />, onClick: () => currentProject && exportToJournalHTML(currentProject), disabled: !hasProject },
-        { id: 'latex', label: 'LaTeX', icon: <FileCode className="h-3.5 w-3.5" />, onClick: () => currentProject && exportToLatex(currentProject), disabled: !hasProject },
-        { id: 'csv', label: 'CSV Data', icon: <FileSpreadsheet className="h-3.5 w-3.5" />, onClick: () => currentProject && exportToCSV(currentProject), disabled: !hasProject },
-        { id: 'print', label: 'Print Report', icon: <Printer className="h-3.5 w-3.5" />, onClick: handlePrint, disabled: !hasProject },
+        { id: 'word', label: 'Word Document', icon: <FileText className="h-3.5 w-3.5" />, onClick: () => runExport(() => currentProject && exportToWordDocument(currentProject)), disabled: !hasCompletedRun },
+        { id: 'html', label: 'Report HTML', icon: <Globe className="h-3.5 w-3.5" />, onClick: () => runExport(() => currentProject && exportToJournalHTML(currentProject)), disabled: !hasCompletedRun },
+        { id: 'latex', label: 'LaTeX', icon: <FileCode className="h-3.5 w-3.5" />, onClick: () => runExport(() => currentProject && exportToLatex(currentProject)), disabled: !hasCompletedRun },
+        { id: 'csv', label: 'CSV Data', icon: <FileSpreadsheet className="h-3.5 w-3.5" />, onClick: () => runExport(() => currentProject && exportToCSV(currentProject)), disabled: !hasCompletedRun },
+        { id: 'print', label: 'Print Report', icon: <Printer className="h-3.5 w-3.5" />, onClick: handlePrint, disabled: !hasCompletedRun },
       ],
     },
     {
@@ -711,9 +817,12 @@ export default function App() {
     geometry: 'Geometry',
     mesh: 'Mesh preview',
     physics: 'Physics setup',
-    copilot: 'AI Copilot',
+    copilot: 'OmniSolve AI (Copilot)',
     post: 'Results',
   };
+
+  // The heatmap mounts only for a real solver-returned matrix; never a fallback.
+  const realTemperatureMatrix = toRealTemperatureMatrix(results?.temperature_matrix);
 
   return (
     <div
@@ -771,7 +880,7 @@ export default function App() {
               showMeshOverlay={activeStep === 'mesh'}
               overlay={
                 <>
-                  {activeStep === 'post' && solverJobStatus === 'completed' && !results?.temperature_matrix && (
+                  {activeStep === 'post' && solverJobStatus === 'completed' && !realTemperatureMatrix && (
                     <div className="pointer-events-none absolute bottom-9 left-1/2 z-10 -translate-x-1/2 rounded border border-emerald-500/30 bg-slate-900/90 px-3 py-1.5 text-[11px] text-emerald-200 shadow-lg">
                       Solve completed — no 2D scalar field was returned. See the Results Summary and Result Views.
                     </div>
@@ -794,27 +903,29 @@ export default function App() {
                         )}
 
                         {activeTab === 'contours' && (
-                          <ContoursTab contours={currentProject.contours} />
+                          <ContoursTab project={currentProject} />
                         )}
 
                         {activeTab === 'mesh' && (
                           <MeshStudyTab
-                            meshStudy={currentProject.meshStudy}
-                            softwareType={currentProject.softwareType}
-                            onOpenMeshGenerator={() => setIsMeshGeneratorOpen(true)}
+                            project={currentProject}
+                            simulationType={simulationInputs.simulationType}
+                            onRunMeshStudy={runMeshStudy}
+                            meshStudyRunning={meshStudyRunning}
+                            meshStudyError={meshStudyError}
                           />
                         )}
 
                         {activeTab === 'validation' && (
                           <ValidationTab
-                            validation={currentProject.validation}
-                            field={currentProject.field}
                             project={currentProject}
+                            onSetReferenceData={setReferenceData}
+                            onSetProfile={setValidationProfile}
                           />
                         )}
 
                         {activeTab === 'tables' && (
-                          <TablesTab tables={currentProject.thesisTables} />
+                          <TablesTab project={currentProject} />
                         )}
 
                         {activeTab === 'overview' && (
@@ -832,8 +943,8 @@ export default function App() {
                 </>
               }
             >
-              {activeStep === 'post' && results?.temperature_matrix ? (
-                <HeatmapCanvas matrix={results.temperature_matrix} />
+              {activeStep === 'post' && realTemperatureMatrix ? (
+                <HeatmapCanvas matrix={realTemperatureMatrix} />
               ) : undefined}
             </ViewportCanvas>
 
@@ -842,8 +953,9 @@ export default function App() {
               onTabChange={setConsoleTab}
               logs={solverLogs}
               status={solverJobStatus}
+              progress={solverProgress}
               issues={consoleIssues}
-              residuals={currentProject.residualsHistory}
+              residualSeries={solverResidualSeries}
               onClearIssues={() => setConsoleIssues([])}
             />
           </>

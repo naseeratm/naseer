@@ -2,12 +2,15 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Terminal, LineChart, AlertTriangle, XCircle, ChevronDown, ChevronUp, Trash2 } from 'lucide-react';
 import { ConsoleIssue, ConsoleTab, JobStatus } from '../types/studio';
 
-export interface ResidualPoint {
+export interface ResidualSeriesPoint {
   iteration: number;
-  continuity: number;
-  xVelocity: number;
-  yVelocity: number;
-  energy: number;
+  value: number;
+}
+
+// A single named residual stream exactly as reported by the solver backend.
+export interface ResidualSeries {
+  name: string;
+  points: ResidualSeriesPoint[];
 }
 
 interface SolverConsoleProps {
@@ -15,20 +18,16 @@ interface SolverConsoleProps {
   onTabChange: (tab: ConsoleTab) => void;
   logs: string[];
   status: JobStatus;
+  progress?: number | null;
   issues: ConsoleIssue[];
-  residuals?: ResidualPoint[];
+  residualSeries?: ResidualSeries[];
   onClearIssues: () => void;
 }
 
 const MIN_HEIGHT = 96;
 const COLLAPSED_HEIGHT = 32;
 
-const SERIES: { key: keyof Omit<ResidualPoint, 'iteration'>; label: string; color: string }[] = [
-  { key: 'continuity', label: 'Continuity', color: '#38bdf8' },
-  { key: 'xVelocity', label: 'X-Velocity', color: '#34d399' },
-  { key: 'yVelocity', label: 'Y-Velocity', color: '#fbbf24' },
-  { key: 'energy', label: 'Energy', color: '#f472b6' },
-];
+const SERIES_COLORS = ['#38bdf8', '#34d399', '#fbbf24', '#f472b6', '#c084fc', '#f43f5e'];
 
 const lineTone = (line: string) => {
   if (/\b(error|fail(?:ed|ure)?|fatal|exception|diverg)/i.test(line)) return 'text-red-300';
@@ -37,15 +36,19 @@ const lineTone = (line: string) => {
   return 'text-slate-300';
 };
 
-const ConvergenceChart: React.FC<{ residuals: ResidualPoint[] }> = ({ residuals }) => {
-  const usable = residuals.filter((point) => Number.isFinite(point.iteration));
-  const logOf = (value: number) => Math.log10(Math.max(value, 1e-12));
-  const series = SERIES.map((item) => ({
-    ...item,
-    values: usable.map((point) => (Number.isFinite(point[item.key]) ? logOf(point[item.key]) : null)),
-  }));
-  const all = series.flatMap((item) => item.values).filter((value): value is number => value !== null);
-  if (usable.length < 2 || all.length === 0) {
+const ConvergenceChart: React.FC<{ series: ResidualSeries[] }> = ({ series }) => {
+  // Only real, positive residual samples reported by the backend are plottable on a log scale.
+  const usable = series
+    .map((item, index) => ({
+      name: item.name,
+      color: SERIES_COLORS[index % SERIES_COLORS.length],
+      points: item.points.filter(
+        (point) => Number.isFinite(point.iteration) && Number.isFinite(point.value) && point.value > 0,
+      ),
+    }))
+    .filter((item) => item.points.length >= 2);
+  const allPoints = usable.flatMap((item) => item.points);
+  if (allPoints.length === 0) {
     return (
       <div className="flex h-full flex-col items-center justify-center gap-1 text-center text-[11px] text-slate-500">
         <LineChart className="h-6 w-6 text-slate-600" />
@@ -53,19 +56,20 @@ const ConvergenceChart: React.FC<{ residuals: ResidualPoint[] }> = ({ residuals 
       </div>
     );
   }
+  const logOf = (value: number) => Math.log10(value);
+  const all = allPoints.map((point) => logOf(point.value));
   const minY = Math.floor(Math.min(...all));
   const maxY = Math.ceil(Math.max(...all));
   const spanY = maxY - minY || 1;
-  const firstIteration = usable[0].iteration;
-  const spanX = usable[usable.length - 1].iteration - firstIteration || 1;
-  const toPoints = (values: (number | null)[]) =>
-    values
-      .map((value, index) =>
-        value === null
-          ? null
-          : `${((usable[index].iteration - firstIteration) / spanX) * 100},${(1 - (value - minY) / spanY) * 100}`,
+  const firstIteration = Math.min(...allPoints.map((point) => point.iteration));
+  const lastIteration = Math.max(...allPoints.map((point) => point.iteration));
+  const spanX = lastIteration - firstIteration || 1;
+  const toPoints = (points: ResidualSeriesPoint[]) =>
+    points
+      .map(
+        (point) =>
+          `${((point.iteration - firstIteration) / spanX) * 100},${(1 - (logOf(point.value) - minY) / spanY) * 100}`,
       )
-      .filter(Boolean)
       .join(' ');
 
   return (
@@ -77,10 +81,10 @@ const ConvergenceChart: React.FC<{ residuals: ResidualPoint[] }> = ({ residuals 
           {[25, 50, 75].map((y) => (
             <line key={y} x1="0" x2="100" y1={y} y2={y} stroke="#334155" strokeWidth="0.3" vectorEffect="non-scaling-stroke" />
           ))}
-          {series.map((item) => (
+          {usable.map((item) => (
             <polyline
-              key={item.key}
-              points={toPoints(item.values)}
+              key={item.name}
+              points={toPoints(item.points)}
               fill="none"
               stroke={item.color}
               strokeWidth="1.4"
@@ -88,13 +92,13 @@ const ConvergenceChart: React.FC<{ residuals: ResidualPoint[] }> = ({ residuals 
             />
           ))}
         </svg>
-        <span className="absolute bottom-0 right-0 font-mono text-[9px] text-slate-500">iter {usable[usable.length - 1].iteration}</span>
+        <span className="absolute bottom-0 right-0 font-mono text-[9px] text-slate-500">iter {lastIteration}</span>
       </div>
       <ul className="w-28 shrink-0 space-y-1 text-[10.5px] text-slate-400">
-        {SERIES.map((item) => (
-          <li key={item.key} className="flex items-center gap-1.5">
+        {usable.map((item) => (
+          <li key={item.name} className="flex items-center gap-1.5">
             <span className="h-0.5 w-3" style={{ backgroundColor: item.color }} />
-            {item.label}
+            <span className="truncate" title={item.name}>{item.name}</span>
           </li>
         ))}
       </ul>
@@ -107,8 +111,9 @@ export const SolverConsole: React.FC<SolverConsoleProps> = ({
   onTabChange,
   logs,
   status,
+  progress = null,
   issues,
-  residuals = [],
+  residualSeries = [],
   onClearIssues,
 }) => {
   const [height, setHeight] = useState(232);
@@ -197,7 +202,10 @@ export const SolverConsole: React.FC<SolverConsoleProps> = ({
             {item.badge}
           </button>
         ))}
-        <span className="ml-auto mr-2 font-mono text-[10px] text-slate-500">job: {status}</span>
+        <span className="ml-auto mr-2 font-mono text-[10px] text-slate-500">
+          job: {status}
+          {typeof progress === 'number' && ` · ${Math.min(100, Math.max(0, Math.round(progress)))}%`}
+        </span>
         {tab === 'errors' && combinedIssues.length > 0 && (
           <button onClick={onClearIssues} title="Clear errors" className="mr-1 rounded p-1 text-slate-500 hover:bg-slate-800 hover:text-slate-200">
             <Trash2 className="h-3.5 w-3.5" />
@@ -234,9 +242,25 @@ export const SolverConsole: React.FC<SolverConsoleProps> = ({
                 ))
               )}
               {(status === 'queued' || status === 'running') && (
-                <div className="mt-1 flex items-center gap-2 text-sky-400">
-                  <span className="inline-block h-3 w-1.5 animate-pulse bg-sky-400" />
-                  polling job every 1.5 s…
+                <div className="mt-1 space-y-1.5">
+                  {typeof progress === 'number' && (
+                    <div
+                      role="progressbar"
+                      aria-valuemin={0}
+                      aria-valuemax={100}
+                      aria-valuenow={Math.min(100, Math.max(0, Math.round(progress)))}
+                      className="h-1 w-full overflow-hidden rounded bg-slate-800"
+                    >
+                      <div
+                        className="h-full bg-sky-500 transition-[width] duration-500"
+                        style={{ width: `${Math.min(100, Math.max(0, progress))}%` }}
+                      />
+                    </div>
+                  )}
+                  <div className="flex items-center gap-2 text-sky-400">
+                    <span className="inline-block h-3 w-1.5 animate-pulse bg-sky-400" />
+                    {status === 'queued' ? 'job queued on solver backend…' : 'solver running — streaming job state every 1.5 s…'}
+                  </div>
                 </div>
               )}
               <div ref={logEndRef} />
@@ -245,7 +269,7 @@ export const SolverConsole: React.FC<SolverConsoleProps> = ({
 
           {tab === 'convergence' && (
             <div className="h-full bg-[#050914] p-3">
-              <ConvergenceChart residuals={residuals} />
+              <ConvergenceChart series={residualSeries} />
             </div>
           )}
 

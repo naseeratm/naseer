@@ -380,7 +380,7 @@ uvicorn main:app --host 0.0.0.0 --port 8000 --workers 4`;
                   type="text"
                   value={formData.workingDirectory}
                   onChange={(e) => setFormData({ ...formData, workingDirectory: e.target.value })}
-                  placeholder="/data/ansys_workspace"
+                  placeholder="/data/naseer_workspace"
                   className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-xs text-slate-200 font-mono focus:border-sky-500 focus:outline-none"
                 />
               </div>

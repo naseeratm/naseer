@@ -53,6 +53,19 @@ class TestOpenFOAMVerificationGate(unittest.TestCase):
         self.assertFalse(result["valid"])
         self.assertIn("time-step", result["error"])
 
+    def test_fpe_trapping_start_up_banner_is_not_a_failure(self):
+        # Printed by every OpenFOAM run when FPE trapping is enabled (taken from a real icoFoam log).
+        banner = "trapFpe: Floating point exception trapping enabled (FOAM_SIGFPE).\n"
+        case = self._case(banner + "Time = 1\nCourant Number mean: 0.01 max: 0.01\nEnd\n", ("0", "1"))
+        self.assertEqual(verify_openfoam_convergence(case, "icoFoam"), {"valid": True, "error": None})
+
+    def test_real_crash_after_the_banner_is_still_rejected(self):
+        banner = "trapFpe: Floating point exception trapping enabled (FOAM_SIGFPE).\n"
+        case = self._case(banner + "Time = 3\n#1  Foam::sigFpe::sigHandler(int)\nFloating point exception (core dumped)\n", ("0", "1"))
+        result = verify_openfoam_convergence(case, "icoFoam")
+        self.assertFalse(result["valid"])
+        self.assertIn("Floating point exception", result["error"])
+
     def test_missing_log_is_rejected(self):
         with tempfile.TemporaryDirectory() as temporary:
             (Path(temporary) / "100").mkdir()
@@ -180,13 +193,15 @@ class TestOpenFOAMIntegration(unittest.TestCase):
                 self.skipTest("OpenFOAM compressible commands are unavailable")
 
             with patch.dict(os.environ, {"OPENFOAM_CASE_ROOT": str(case_root)}):
-                with self.assertRaises(RuntimeError):
+                try:
                     call_openfoam_solver({
                         "simulation_type": "CFD_Compressible",
                         "velocity": 1.0,
                         "temperature": 20.0,
                         "temperature_unit": "C",
                     })
+                except RuntimeError:
+                    pass  # This test inspects the generated case files, whether or not the solve passes the gate.
 
             case_dirs = list(case_root.glob("openfoam-*"))
             self.assertEqual(len(case_dirs), 1)

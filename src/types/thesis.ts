@@ -198,11 +198,133 @@ export interface NormalizedSolverResult {
   values: Record<string, number>;
   fields: Record<string, unknown>;
   residuals: { iteration: number; residual: number }[];
+  // Named residual streams exactly as reported by the solver backend (e.g. OpenFOAM p/Ux/Uy/h).
+  residualSeries?: { name: string; points: { iteration: number; value: number }[] }[];
   temperatureMatrix?: number[][];
   stressMatrix?: number[][];
   velocityMatrix?: number[][];
   displacementMatrix?: number[][];
   logs: string[];
+}
+
+// The verbatim record of one completed backend execution. Every exported report is built from this
+// record only, so it must hold exactly what the API returned (no derived or invented values).
+export interface SimulationRunRecord {
+  // GET /api/jobs/{task_id}.task_id; absent for synchronous `direct` executions.
+  taskId?: string;
+  executionMode: 'celery' | 'direct';
+  // Body POSTed to /api/run-simulation (temperatures in the unit the user typed).
+  submittedRequest: Record<string, unknown>;
+  // Payload persisted by the backend job (GET /api/jobs/{task_id}.payload); celery mode only.
+  backendPayload?: Record<string, unknown>;
+  // The solver result envelope exactly as returned by the backend.
+  result: Record<string, unknown>;
+  logs: string[];
+  progress?: number;
+  createdAt?: string;
+  startedAt?: string;
+  completedAt?: string;
+  // Client clock time at which the completed result was received.
+  recordedAt: string;
+}
+
+// --- Verification & Validation (real, computed from backend runs) -----------------------------
+
+// One physics-specific scalar the mesh study can compare across grids (GET /api/mesh-study/key-results).
+export interface MeshStudyKeyResult {
+  id: string;
+  label: string;
+  unit: string;
+  description: string;
+  // Why the GCI of this quantity may be unreliable (e.g. singular peak stresses); shown next to the verdict.
+  caveat: string | null;
+  default: boolean;
+}
+
+export interface MeshStudyLevel {
+  level: 'coarse' | 'medium' | 'fine';
+  // Nominal size for thermal/CFD; structural models are refined through divisions instead.
+  mesh_size: number | null;
+  divisions: { x: number; y: number; z: number } | null;
+  // Cells (elements) that govern accuracy; the refinement ratio is computed from these counts.
+  cells: number;
+  nodes: number | null;
+  // Cell size relative to the finest level (fine = 1), derived from the cell counts.
+  relative_size: number | null;
+  key_result: number;
+}
+
+export type ConvergenceType = 'monotonic' | 'oscillatory' | 'divergent' | 'converged' | 'indeterminate';
+
+// Grid Convergence Index study (Celik et al. 2008) returned by POST /api/mesh-study.
+export interface MeshStudyResult {
+  schema_version: 2;
+  physics_type: string;
+  solver: string | null;
+  key_result: MeshStudyKeyResult;
+  levels: MeshStudyLevel[];
+  // Present when relative errors were formed on a shifted scale (temperature in K).
+  basis_note: string | null;
+  // The solver payload the three levels were derived from.
+  parameters: Record<string, unknown>;
+  dimension: number;
+  r21: number | null;
+  r32: number | null;
+  convergence_type: ConvergenceType | null;
+  observed_order: number | null;
+  extrapolated_value: number | null;
+  extrapolated_error_percent: number | null;
+  gci_fine_percent: number | null;
+  gci_medium_percent: number | null;
+  asymptotic_ratio: number | null;
+  // Absolute uncertainty of the fine-grid value, in the unit of the key result.
+  uncertainty_fine: number | null;
+  // null when the convergence type does not allow a verdict.
+  grid_independent: boolean | null;
+  safety_factor: number;
+  gci_threshold_percent: number;
+  warnings: string[];
+  // Client clock time when the study completed.
+  recordedAt: string;
+}
+
+// Studies saved by an earlier version have a different shape and must not be rendered.
+export const isCurrentMeshStudy = (value: unknown): value is MeshStudyResult =>
+  typeof value === 'object' && value !== null && (value as { schema_version?: unknown }).schema_version === 2;
+
+// A single user-ingested reference point (experimental / base-paper).
+export interface ReferencePoint {
+  x: number;
+  y: number;
+}
+
+// User-supplied reference data for validation overlay.
+export interface ReferenceDataSet {
+  label: string;
+  xLabel: string;
+  yLabel: string;
+  points: ReferencePoint[];
+  recordedAt: string;
+}
+
+export type ProfileKind = 'horizontal' | 'vertical' | 'diagonal' | 'line';
+
+// Where on a 2-D result field the simulation profile is cut for comparison with reference data.
+export interface ProfileSpec {
+  kind: ProfileKind;
+  // Which returned field to cut, e.g. 'temperature_matrix'.
+  fieldKey: string;
+  // Coordinate system of the numbers below: meters, or fractions (0-1) of the domain size.
+  units: 'm' | 'fraction';
+  // horizontal: y of the cut line; vertical: x of the cut line.
+  position: number;
+  // 'line' only: cut-line end points.
+  x0: number;
+  y0: number;
+  x1: number;
+  y1: number;
+  // When true the reference X values are s/L (0-1 along the cut) instead of physical coordinates.
+  normalizeAbscissa: boolean;
 }
 
 export interface EngineeringAudit {
@@ -262,7 +384,10 @@ export interface ThesisProject {
   ingestedFilesInfo?: { name: string; category: string; summary: string }[];
   scriptExecutionLog?: string[];
   normalizedSolverResult?: NormalizedSolverResult;
-  residualsHistory?: { iteration: number; continuity: number; xVelocity: number; yVelocity: number; energy: number }[];
+  simulationRun?: SimulationRunRecord;
+  meshStudyResult?: MeshStudyResult;
+  referenceData?: ReferenceDataSet;
+  validationProfile?: ProfileSpec;
   detectedCommandsList?: { command: string; description: string; status: 'executed' | 'converged' }[];
   workbenchComponents?: {
     id: string;

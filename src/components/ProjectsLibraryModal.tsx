@@ -23,7 +23,7 @@ import {
   RotateCcw,
 } from 'lucide-react';
 import { ThesisProject } from '../types/thesis';
-import { exportToJournalHTML, exportToWordDocument } from '../utils/exporter';
+import { exportToJournalHTML, exportToWordDocument, hasRealSimulationRun } from '../utils/exporter';
 
 interface ProjectsLibraryModalProps {
   isOpen: boolean;
@@ -393,17 +393,19 @@ export const ProjectsLibraryModal: React.FC<ProjectsLibraryModalProps> = ({
                     <div className="flex items-center gap-2">
                       <button
                         onClick={() => exportToJournalHTML(proj)}
-                        className="px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white text-[11px] flex items-center gap-1 transition-colors"
-                        title="تصدير ورقة بحثية لمجلة عالمية HTML"
+                        disabled={!hasRealSimulationRun(proj)}
+                        className="px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white text-[11px] flex items-center gap-1 transition-colors disabled:cursor-not-allowed disabled:opacity-40"
+                        title={hasRealSimulationRun(proj) ? 'Export the real simulation report as HTML' : 'No completed simulation run stored with this project'}
                       >
                         <ExternalLink className="w-3 h-3 text-cyan-400" />
-                        <span>بحث المجلة (.html)</span>
+                        <span>HTML Report</span>
                       </button>
 
                       <button
                         onClick={() => exportToWordDocument(proj)}
-                        className="px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white text-[11px] flex items-center gap-1 transition-colors"
-                        title="تصدير وثيقة أطروحة Word كاملة"
+                        disabled={!hasRealSimulationRun(proj)}
+                        className="px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white text-[11px] flex items-center gap-1 transition-colors disabled:cursor-not-allowed disabled:opacity-40"
+                        title={hasRealSimulationRun(proj) ? 'Export the real simulation report as Word' : 'No completed simulation run stored with this project'}
                       >
                         <Download className="w-3 h-3 text-sky-400" />
                         <span>Word (.doc)</span>

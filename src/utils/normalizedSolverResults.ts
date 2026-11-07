@@ -27,6 +27,30 @@ export function normalizeSolverResponse(payload: any, project: ThesisProject): N
       })).filter((point: { iteration: number; residual: number }) => finiteNumber(point.residual) !== undefined)
     : [];
 
+  // Real residual streams only: either the OpenFOAM-style mapping
+  // { field: { values: number[] } } (under convergence.residuals / residuals) or an
+  // array history, which becomes a single "residual" series. Nothing is synthesized.
+  const toSeriesPoints = (values: unknown): { iteration: number; value: number }[] =>
+    Array.isArray(values)
+      ? values
+          .map((value, index) => ({ iteration: index + 1, value: finiteNumber(value) }))
+          .filter((point): point is { iteration: number; value: number } => point.value !== undefined)
+      : [];
+  const residualMapping = [nested?.convergence?.residuals, nested?.residuals].find(
+    (candidate) => candidate && typeof candidate === 'object' && !Array.isArray(candidate),
+  );
+  let residualSeries: { name: string; points: { iteration: number; value: number }[] }[] = residualMapping
+    ? Object.entries(residualMapping as Record<string, any>)
+        .map(([name, entry]) => ({
+          name,
+          points: toSeriesPoints(Array.isArray(entry) ? entry : entry?.values),
+        }))
+        .filter((series) => series.points.length > 0)
+    : [];
+  if (residualSeries.length === 0 && residuals.length > 0) {
+    residualSeries = [{ name: 'residual', points: residuals.map((point) => ({ iteration: point.iteration, value: point.residual })) }];
+  }
+
   const contours = nested?.contours ?? nested?.fields ?? {};
   const matrix = (key: string): number[][] | undefined =>
     Array.isArray(contours[key])
@@ -39,10 +63,16 @@ export function normalizeSolverResponse(payload: any, project: ThesisProject): N
     solver: String(nested?.solver ?? payload?.solver ?? payload?.recommended_solver ?? 'Python deterministic solver'),
     simulationType: String(payload?.simulation_type ?? nested?.simulation_type ?? type),
     processTimeMs: finiteNumber(payload?.process_time_ms ?? payload?.process_time),
-    converged: nested?.status ? String(nested.status).includes('CONVERGED') : true,
+    converged:
+      typeof nested?.convergence?.converged === 'boolean'
+        ? nested.convergence.converged
+        : nested?.status
+          ? String(nested.status).includes('CONVERGED')
+          : true,
     values,
     fields,
     residuals,
+    residualSeries,
     temperatureMatrix: matrix('temperature_matrix'),
     stressMatrix: matrix('von_mises_matrix'),
     velocityMatrix: matrix('velocity_magnitude'),

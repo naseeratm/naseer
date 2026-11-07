@@ -46,11 +46,11 @@ let activeLicenseConfig = {
   licenseAnsysLiPort: 2325,
   licenseType: 'academic',
   parallelCores: 8,
-  workingDirectory: '/data/ansys_workspace',
+  workingDirectory: '/data/naseer_workspace',
 };
 
 // Integrated CAE & Physics Backend Ready natively on Node.js
-console.log(`[Integrated CAE & Physics & ANSYS Bridge Backend active on port ${PORT}]`);
+console.log(`[NASEER Universal CAE Studio] Solver bridge starting on port ${PORT}`);
 
 
 // Canonical job authority: FastAPI owns all simulation jobs. These routes are a strict
@@ -95,7 +95,7 @@ async function proxyToFastApi(req: Request, res: Response) {
   }
 }
 
-app.use(['/api/run-simulation', '/api/jobs'], proxyToFastApi);
+app.use(['/api/run-simulation', '/api/jobs', '/api/mesh-study'], proxyToFastApi);
 
 app.use(express.json({ limit: '100mb' }));
 app.use(express.urlencoded({ extended: true, limit: '100mb' }));
@@ -205,10 +205,10 @@ app.get('/api/python/health', async (_req: Request, res: Response) => {
   } catch (err: any) {
     return res.json({
       connected: false,
-      status: 'active',
+      status: 'unreachable',
       backendUrl: activeCloudUrl,
       message: `تعذر الاتصال بمحرك بايثون على ${activeCloudUrl}`,
-      engine: 'ANSYS WorkBench & Python Fallback Solver Bridge',
+      engine: 'NASEER Universal CAE Studio solver bridge',
       error: err?.message || String(err),
     });
   }
@@ -285,22 +285,6 @@ app.post('/api/cloud/test-connection', async (req: Request, res: Response) => {
     });
   } catch (err: any) {
     const latencyMs = Date.now() - startTime;
-    // If testing the local default endpoint, provide the built-in active engine status
-    if (testUrl.includes('127.0.0.1') || testUrl.includes('localhost')) {
-      activeCloudUrl = testUrl;
-      return res.json({
-        success: true,
-        latencyMs: 1,
-        backendUrl: testUrl,
-        message: 'المحرك الفيزيائي والرقمي المدمج بالمنصة نشط ويعمل كخادم حسابي محلي دقيق (Integrated Physics Engine Ready)',
-        data: {
-          status: 'ready',
-          engine: 'ANSYS WorkBench Built-in CAE & Physics Solver',
-          mode: 'integrated_container',
-          parallelSupport: true,
-        },
-      });
-    }
     return res.status(502).json({
       success: false,
       latencyMs,
@@ -693,7 +677,7 @@ app.post(['/api/supervisor-query', '/api/consultant-query'], async (req: Request
           parts: [
             {
               text: `You are a Senior Principal Engineering Simulation Consultant with mastery of ANSYS Fluent, APDL, Mechanical, and ASME V&V 20 simulation standards.
-Context of Current Engineering Workbench Model:
+Context of the current NASEER Universal CAE Studio model:
 ${JSON.stringify(currentModelContext || {}).slice(0, 10000)}
 
 Engineer / Analyst Query:
@@ -722,181 +706,6 @@ Provide an authoritative, mathematically rigorous answer in clear Arabic with st
       isQuota,
     });
   }
-});
-
-// ==============================================================================
-// Section 14: Core Academic & Engineering API Endpoints (Specification-Compliant)
-// ==============================================================================
-
-const projectsDb = new Map<string, any>();
-
-// 1. POST /api/projects - Create or initialize project manifest
-app.post('/api/projects', (req: Request, res: Response) => {
-  const { title, titleEn, field = 'CFD', author, supervisor, university, department, researchQuestion, researchHypothesis } = req.body || {};
-  const id = req.body?.id || `proj_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
-  
-  const newProject = {
-    id,
-    title: title || 'دراسة محاكاة هندسية معتمدة',
-    titleEn: titleEn || 'Certified Engineering Simulation Study',
-    author: author || 'مهندس التحليل والمحاكاة',
-    supervisor: supervisor || 'اللجنة العلمية والاستشارية',
-    university: university || 'كلية الهندسة',
-    department: department || 'قسم الهندسة الميكانيكية والحرارية',
-    date: new Date().toISOString().split('T')[0],
-    field,
-    softwareType: 'ANSYS Mechanical APDL / Python SciPy Solver',
-    academicMeta: {
-      studentName: author || 'الباحث الأكاديمي',
-      studentId: req.body?.studentId || 'PHD-2026-ENG',
-      supervisor: supervisor || 'المشرف الرئيسي',
-      university: university || 'الجامعة التكنولوجية',
-      department: department || 'قسم الهندسة الميكانيكية',
-      academicYear: '2026-2027',
-      keywords: ['FEA', 'CFD', 'ASME V&V 20', 'Roache GCI', 'ANSYS APDL', 'Python Solver'],
-      platformVersion: 'v4.2-Enterprise',
-      ansysVersion: '2024 R2 Mechanical APDL',
-      pythonVersion: 'Python 3.12 (NumPy/SciPy/PyMAPDL)',
-      modelRevision: 'Rev-1.0',
-      researchQuestion: researchQuestion || 'ما هو السلوك الميكانيكي والحراري الدقيق للمنظومة تحت الشروط الحدية المركبة ومقارنتها بالحلول التحليلية؟',
-      researchHypothesis: researchHypothesis || 'الحل العددي المتقارب يطابق الحل التحليلي الكابولي بدقة تفوق 98% مع تحقيق استقلالية الشبكة وفق Roache GCI < 2%.'
-    },
-    casesMatrix: [
-      { caseId: 'Case-01', name: 'Baseline M1', nameAr: 'الحل المرجعي القياسي', studyVariable: 'Geometry Baseline', purpose: 'حل مرجعي للتحقق والمقارنة', meshElements: 12500, meshNodes: 38200, solverEngine: 'ANSYS Mechanical APDL', keyOutputName: 'أقصى إجهاد فون ميسيس', keyOutputValue: 142.5, keyOutputUnit: 'MPa', discrepancyPercent: 0.0, runDurationSec: 4.8, status: 'Baseline' },
-      { caseId: 'Case-02', name: 'Coarse Mesh M2', nameAr: 'شبكة خشنة استكشافية', studyVariable: 'Mesh Density (h3 = 1.0mm)', purpose: 'فحص الحساسية الأولية', meshElements: 4800, meshNodes: 15200, solverEngine: 'Python SciPy Benchmark', keyOutputName: 'أقصى إجهاد فون ميسيس', keyOutputValue: 135.2, keyOutputUnit: 'MPa', discrepancyPercent: 5.12, runDurationSec: 1.2, status: 'Completed' },
-      { caseId: 'Case-03', name: 'Medium Mesh M3', nameAr: 'شبكة متوسطة قياسية', studyVariable: 'Mesh Density (h2 = 0.75mm)', purpose: 'التقارب القياسي لمؤشر روتش', meshElements: 12500, meshNodes: 38200, solverEngine: 'ANSYS Mechanical APDL', keyOutputName: 'أقصى إجهاد فون ميسيس', keyOutputValue: 140.8, keyOutputUnit: 'MPa', discrepancyPercent: 1.19, runDurationSec: 4.2, status: 'Converged' },
-      { caseId: 'Case-04', name: 'Fine Mesh M4', nameAr: 'شبكة فائقة الدقة', studyVariable: 'Mesh Density (h1 = 0.50mm)', purpose: 'تحقيق استقلالية الشبكة Roache GCI', meshElements: 36400, meshNodes: 108500, solverEngine: 'ANSYS Mechanical APDL', keyOutputName: 'أقصى إجهاد فون ميسيس', keyOutputValue: 142.1, keyOutputUnit: 'MPa', discrepancyPercent: 0.28, runDurationSec: 12.6, status: 'Converged' },
-      { caseId: 'Case-05', name: 'Parametric Sweep', nameAr: 'دراسة حساسية الأحمال', studyVariable: 'Load Variation (+25%)', purpose: 'تقييم خطية النظام والاستجابة', meshElements: 12500, meshNodes: 38200, solverEngine: 'Python SciPy Benchmark', keyOutputName: 'أقصى إجهاد فون ميسيس', keyOutputValue: 177.6, keyOutputUnit: 'MPa', discrepancyPercent: 0.0, runDurationSec: 3.9, status: 'Completed' }
-    ],
-    ...req.body
-  };
-
-  projectsDb.set(id, newProject);
-  return res.json({ success: true, project: newProject });
-});
-
-// 2. GET /api/projects/:id - Retrieve project manifest
-app.get('/api/projects/:id', (req: Request, res: Response) => {
-  const project = projectsDb.get(req.params.id);
-  if (!project) {
-    return res.status(404).json({ success: false, error: 'المشروع غير موجود في السجل' });
-  }
-  return res.json({ success: true, project });
-});
-
-// 3. POST /api/projects/:id/files - Attach and parse engineering file
-app.post('/api/projects/:id/files', (req: Request, res: Response) => {
-  const { fileName, fileContent, category = 'code' } = req.body || {};
-  const project = projectsDb.get(req.params.id) || { id: req.params.id };
-  
-  if (!project.attachedFiles) project.attachedFiles = [];
-  project.attachedFiles.push({
-    fileName: fileName || 'input_script.mac',
-    category,
-    uploadedAt: new Date().toISOString(),
-    sizeBytes: fileContent ? Buffer.byteLength(fileContent, 'utf-8') : 1024,
-  });
-
-  projectsDb.set(req.params.id, project);
-  return res.json({ success: true, message: 'تم إرفاق الملف وفحصه بنجاح', fileCount: project.attachedFiles.length });
-});
-
-// 4. POST /api/projects/:id/mesh - Generate mesh levels and Roache GCI study
-app.post('/api/projects/:id/mesh', (req: Request, res: Response) => {
-  const r = 1.33; // Grid refinement factor r > 1.3
-  const p = 1.94; // Apparent order of convergence
-  const Fs = 1.25; // Safety factor
-  const f1 = 142.1; // Fine
-  const f2 = 140.8; // Medium
-  const f3 = 135.2; // Coarse
-
-  const eps12 = Math.abs((f2 - f1) / f1);
-  const eps23 = Math.abs((f3 - f2) / f2);
-
-  const gci12 = (Fs * eps12) / (Math.pow(r, p) - 1) * 100;
-  const gci23 = (Fs * eps23) / (Math.pow(r, p) - 1) * 100;
-  const asymptoticRatio = gci23 / (Math.pow(r, p) * gci12);
-
-  const meshStudyResult = {
-    gridRefinementRatioR: r,
-    apparentOrderP: +p.toFixed(2),
-    gci12Percent: +gci12.toFixed(2),
-    gci23Percent: +gci23.toFixed(2),
-    safetyFactorFs: Fs,
-    asymptoticRangeRatio: +asymptoticRatio.toFixed(2),
-    isGridIndependent: gci12 < 2.0,
-    qualityMetrics: {
-      minOrthogonalQuality: 0.88,
-      maxSkewness: 0.24,
-      maxAspectRatio: 2.15,
-      qualityAssessment: 'ممتازة ومطابقة لمعايير ASME V&V 20 (Excellent Mesh Quality)',
-    },
-    meshLevels: [
-      { levelName: 'Coarse', elements: 4800, nodes: 15200, gridSpacingMm: 1.0, keyResultValue: f3, percentageError: 4.85, gciPercent: +gci23.toFixed(2), computationTimeSec: 1.2 },
-      { levelName: 'Medium', elements: 12500, nodes: 38200, gridSpacingMm: 0.75, keyResultValue: f2, percentageError: 0.92, gciPercent: +gci12.toFixed(2), computationTimeSec: 4.2 },
-      { levelName: 'Fine', elements: 36400, nodes: 108500, gridSpacingMm: 0.50, keyResultValue: f1, percentageError: 0.15, gciPercent: +(gci12 / 2).toFixed(2), computationTimeSec: 12.6 },
-      { levelName: 'Extra-Fine', elements: 85000, nodes: 245000, gridSpacingMm: 0.35, keyResultValue: 142.3, percentageError: 0.03, gciPercent: 0.42, computationTimeSec: 34.0 }
-    ]
-  };
-
-  return res.json({ success: true, meshStudy: meshStudyResult });
-});
-
-// 8. POST /api/projects/:id/validate - Run ASME V&V 20 Analytical & Experimental Validation
-app.post('/api/projects/:id/validate', (_req: Request, res: Response) => {
-  const verificationDossier = {
-    theoryName: 'Euler-Bernoulli Beam Elasticity Theory (حل العارضة الكابولية التحليلي المرجعي)',
-    exactFormula: 'w_max = (F * L^3) / (3 * E * I)',
-    analyticalValue: 3.20,
-    simulatedValue: 3.185,
-    unit: 'mm',
-    relativeErrorPercent: 0.47,
-    apparentOrderOfConvergenceP: 1.94,
-    isVerified: true,
-    residualsConvergence: [
-      { equation: 'Momentum / Equilibrium X', finalResidual: 4.2e-7, criterion: 1.0e-6, isConverged: true },
-      { equation: 'Momentum / Equilibrium Y', finalResidual: 6.8e-7, criterion: 1.0e-6, isConverged: true },
-      { equation: 'Displacement Norm', finalResidual: 1.1e-7, criterion: 1.0e-6, isConverged: true }
-    ],
-    energyBalanceErrorPercent: 0.02,
-    scientificVerificationNote: 'مطابقة تامة مع الحل التحليلي الكابولي بنسبة خطأ أقل من 0.5%، مما يثبت صحة صياغة المعادلات عددياً.'
-  };
-
-  const validationDossier = {
-    benchmarkSource: 'Experimental Benchmark Data & ASME V&V 20 Standards',
-    rSquared: 0.9942,
-    rmse: 0.0185,
-    meanAbsoluteErrorPercent: 1.14,
-    uncertaintyBandPercent: 1.85,
-    isValidated: true,
-    scientificDiscussion: 'تظهر النتائج توافقاً إحصائياً ممتازاً بمعامل ارتباط R² = 0.9942 مع عدم يقين تجريبي أقل من 2%.'
-  };
-
-  return res.json({ success: true, verification: verificationDossier, validation: validationDossier });
-});
-
-// 9. POST /api/projects/:id/report - Generate academic report
-app.post('/api/projects/:id/report', (req: Request, res: Response) => {
-  const reportSummary = `# تقرير التوثيق والتحقق الهندسي المعتمد (ASME V&V 20 Certified Dossier)
-معرف المشروع: ${req.params.id}
-المحرك المستخدم: ANSYS Mechanical APDL 2024 R2 & Python SciPy Benchmark
-معايير التحقق: ASME V&V 20 و Roache GCI Grid Independence Study
-حالة الاعتماد: مكتمل ومحقق بنسبة 100% رياضياً وتجريبياً.`;
-  return res.json({ success: true, report: reportSummary, format: 'markdown' });
-});
-
-// 10. GET /api/projects/:id/results/export - Export dataset as CSV/JSON
-app.get('/api/projects/:id/results/export', (_req: Request, res: Response) => {
-  const csvData = `Case,Study_Variable,Elements,Nodes,Solver_Engine,Key_Output,Value,Unit,Error_Percent,Status
-Case-01,Baseline,12500,38200,ANSYS Mechanical APDL,Max_VonMises_Stress,142.5,MPa,0.00,Baseline
-Case-02,Coarse Mesh (h3=1.0mm),4800,15200,Python SciPy Benchmark,Max_VonMises_Stress,135.2,MPa,5.12,Completed
-Case-03,Medium Mesh (h2=0.75mm),12500,38200,ANSYS Mechanical APDL,Max_VonMises_Stress,140.8,MPa,1.19,Converged
-Case-04,Fine Mesh (h1=0.50mm),36400,108500,ANSYS Mechanical APDL,Max_VonMises_Stress,142.1,MPa,0.28,Converged
-Case-05,Load Sweep (+25%),12500,38200,Python SciPy Benchmark,Max_VonMises_Stress,177.6,MPa,0.00,Completed`;
-
-  res.setHeader('Content-Type', 'text/csv; charset=utf-8');
-  res.setHeader('Content-Disposition', `attachment; filename="simulation_results_${Date.now()}.csv"`);
-  return res.send(csvData);
 });
 
 // Production: serve built static files
@@ -971,7 +780,7 @@ ensureLocalPythonBackend().catch((error) => {
 });
 
 const server = app.listen(PORT, HOST, () => {
-  console.log(`[ANSYS Engineering WorkBench Server] Listening on http://${HOST}:${PORT}`);
+  console.log(`[NASEER Universal CAE Studio] Listening on http://${HOST}:${PORT}`);
 });
 
 server.on('error', (err: any) => {

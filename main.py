@@ -11,7 +11,8 @@ from json import JSONDecodeError
 from pydantic import BaseModel, Field, ValidationInfo, field_validator, model_validator
 import uvicorn
 
-from universal_dispatcher import execute_simulation, celery_app
+from universal_dispatcher import execute_simulation, celery_app, classify_physics
+from backend.vv_metrics import KeyResultUnavailable, MeshStudyError, key_result_specs, run_mesh_study
 from cae_repository import JobRepository
 
 job_repository = JobRepository()
@@ -215,6 +216,46 @@ async def get_job_status(task_id: str):
             detail={"success": False, "code": "JOB_NOT_FOUND", "error": f"Job {task_id} does not exist."}
         )
     return job
+
+
+# ---------------------------------------------------------
+# 4. Mesh Independence Study (Celik GCI) — real multi-grid runs
+# ---------------------------------------------------------
+class MeshStudyRequest(SimulationRequest):
+    # Which physics-specific scalar to compare across meshes; None selects the default for the physics type.
+    key_result: Optional[str] = None
+
+
+def _study_error(code: str, message: str, http_status: int = status.HTTP_422_UNPROCESSABLE_ENTITY) -> JSONResponse:
+    return JSONResponse(status_code=http_status, content={"success": False, "code": code, "error": message})
+
+
+@app.get("/api/mesh-study/key-results")
+def mesh_study_key_results(simulation_type: str):
+    """Key results the study can compare for a physics type (single source of truth for the UI)."""
+    try:
+        specs = key_result_specs(simulation_type)
+    except KeyResultUnavailable as exc:
+        return _study_error("UNSUPPORTED_PHYSICS", str(exc))
+    return {"success": True, "simulation_type": simulation_type, "key_results": [spec.to_dict() for spec in specs]}
+
+
+# A plain `def` so FastAPI runs it in a worker thread: three solver runs must not block the event loop.
+@app.post("/api/mesh-study")
+def mesh_independence_study(request: MeshStudyRequest):
+    """Run the solver on coarse/medium/fine meshes and compute the Grid Convergence Index of a key result."""
+    payload = request.to_solver_payload()
+    key_result = payload.pop("key_result", None)
+    payload["execution_mode"] = "direct"
+    physics_type = classify_physics(payload)
+    try:
+        study = run_mesh_study(payload, physics_type, key_result, execute_simulation)
+    except KeyResultUnavailable as exc:
+        return _study_error("KEY_RESULT_UNAVAILABLE", str(exc))
+    except MeshStudyError as exc:
+        return _study_error(exc.code, str(exc))
+    return {"success": True, "study": study}
+
 
 if __name__ == "__main__":
     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)

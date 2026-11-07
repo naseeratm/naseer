@@ -40,6 +40,8 @@ const EngineeringModelViewer3D = lazy(() =>
   })),
 );
 
+const RESIDUAL_PALETTE = ['#f43f5e', '#10b981', '#38bdf8', '#c084fc', '#fbbf24', '#34d399'];
+
 interface OverviewTabProps {
   project: ThesisProject;
   onRunSolver?: () => Promise<unknown>;
@@ -56,7 +58,9 @@ export const OverviewTab: React.FC<OverviewTabProps> = ({ project, onRunSolver, 
   // Sub-navigation view inside OverviewTab
   const [workbenchView, setWorkbenchView] = useState<'cases_matrix' | 'lhtes_charts' | 'schematic' | 'residuals' | 'console' | 'script' | 'parameters' | 'cad_schematic' | '3d_viewer'>('cases_matrix');
   const [isSolving, setIsSolving] = useState<boolean>(false);
-  const currentIter = project.residualsHistory?.at(-1)?.iteration ?? project.solver?.iterations ?? 0;
+  // Real residual streams reported by the solver backend (empty until a solve completes).
+  const residualSeries = project.normalizedSolverResult?.residualSeries ?? [];
+  const currentIter = residualSeries.reduce((max, series) => Math.max(max, series.points.at(-1)?.iteration ?? 0), 0);
   const [solveError, setSolveError] = useState<string | null>(null);
   const [copiedLog, setCopiedLog] = useState<boolean>(false);
   const [activeSchematicCell, setActiveSchematicCell] = useState<string>('wb_setup');
@@ -136,8 +140,8 @@ export const OverviewTab: React.FC<OverviewTabProps> = ({ project, onRunSolver, 
     }
   };
 
-  // Residuals history fallback
-  const residualsData = project.residualsHistory || [];
+  // Residuals history (real solver data only)
+  const residualsData = residualSeries;
 
   // Workbench components
   const workbenchCells = project.workbenchComponents || [
@@ -197,6 +201,7 @@ export const OverviewTab: React.FC<OverviewTabProps> = ({ project, onRunSolver, 
 
   // Commands list
   const detectedCommands = project.detectedCommandsList || [];
+  const canExportOpenFoam = String(project.simulationRun?.result?.physics_type ?? '').startsWith('CFD');
 
   return (
     <div className="space-y-6">
@@ -246,7 +251,7 @@ export const OverviewTab: React.FC<OverviewTabProps> = ({ project, onRunSolver, 
                   <CheckCircle2 className="w-3.5 h-3.5" />
                   {isSolving
                     ? `جاري تنفيذ المهمة (${solverJobStatus})${currentIter ? ` — iteration ${currentIter}` : ''}`
-                    : project.residualsHistory?.length
+                    : residualSeries.length
                       ? `اكتمل الحل — iteration ${currentIter}`
                       : 'لم يتم تنفيذ حل بعد'}
                 </span>
@@ -587,44 +592,42 @@ export const OverviewTab: React.FC<OverviewTabProps> = ({ project, onRunSolver, 
                     15. نموذج بيانات المهمة Job وسجل التحقق الرقمي (Job Execution Log & SHA-256 Checksums)
                   </h4>
                 </div>
-                <span className="text-[11px] font-mono text-emerald-400 bg-emerald-950/60 px-2.5 py-1 rounded border border-emerald-500/30">
-                  Checksum Verified
-                </span>
+                {project.jobsHistory?.[0] && (
+                  <span className="text-[11px] font-mono text-emerald-400 bg-emerald-950/60 px-2.5 py-1 rounded border border-emerald-500/30">
+                    Checksum Verified
+                  </span>
+                )}
               </div>
 
               <div className="grid grid-cols-1 md:grid-cols-3 gap-3 text-xs font-mono">
                 <div className="bg-slate-900 p-3 rounded-xl border border-slate-800">
                   <span className="text-slate-500 block mb-0.5">معرف المهمة (Job ID):</span>
-                  <span className="text-sky-300 font-bold">{project.jobsHistory?.[0]?.jobId || 'job_fe_2026_ansys_001'}</span>
+                  <span className="text-sky-300 font-bold">{project.jobsHistory?.[0]?.jobId || '—'}</span>
                 </div>
                 <div className="bg-slate-900 p-3 rounded-xl border border-slate-800">
                   <span className="text-slate-500 block mb-0.5">بصمة المدخلات (Boundary SHA-256):</span>
-                  <span className="text-slate-300 text-[11px] truncate block">{project.jobsHistory?.[0]?.boundaryChecksum || 'sha256:4f98a211b402ef709c09441fa34c44243b958742'}</span>
+                  <span className="text-slate-300 text-[11px] truncate block">{project.jobsHistory?.[0]?.boundaryChecksum || '—'}</span>
                 </div>
                 <div className="bg-slate-900 p-3 rounded-xl border border-slate-800">
                   <span className="text-slate-500 block mb-0.5">بصمة النتائج (Output SHA-256):</span>
-                  <span className="text-emerald-400 text-[11px] truncate block">{project.jobsHistory?.[0]?.outputChecksum || 'sha256:79a54bb33107b51b32d019184ba761e389df91aa'}</span>
+                  <span className="text-emerald-400 text-[11px] truncate block">{project.jobsHistory?.[0]?.outputChecksum || '—'}</span>
                 </div>
               </div>
 
-              {/* Execution log terminal */}
+              {/* Execution log terminal — real backend/job output only */}
               <div className="bg-slate-900/90 p-4 rounded-xl border border-slate-800 font-mono text-xs text-slate-300 space-y-1.5 direction-ltr text-left max-h-56 overflow-y-auto">
-                {(project.jobsHistory?.[0]?.logLines || [
-                  `[Job Started] Target Solver: ${project.softwareType}`,
-                  `Reading boundary conditions, material constants and CAD geometry...`,
-                  `Executing FEA/CFD solver with Direct Sparse formulation...`,
-                  `Assembling equations and resolving equilibrium vectors...`,
-                  `Convergence criterion satisfied: RMS residuals < 1.000e-06.`,
-                  `Results matrices and Von Mises contours successfully extracted.`,
-                  `Job completed with status: PASSED & VERIFIED.`
-                ]).map((line, idx) => (
-                  <div key={idx} className="leading-relaxed">
-                    <span className="text-slate-500 select-none mr-2">{idx + 1}.</span>
-                    <span className={line.includes('converged') || line.includes('completed') || line.includes('VERIFIED') ? 'text-emerald-400 font-bold' : 'text-slate-300'}>
-                      {line}
-                    </span>
-                  </div>
-                ))}
+                {(project.jobsHistory?.[0]?.logLines ?? project.scriptExecutionLog ?? []).length === 0 ? (
+                  <div className="text-slate-600">$ no execution log yet — run the solver to stream real output.</div>
+                ) : (
+                  (project.jobsHistory?.[0]?.logLines ?? project.scriptExecutionLog ?? []).map((line, idx) => (
+                    <div key={idx} className="leading-relaxed">
+                      <span className="text-slate-500 select-none mr-2">{idx + 1}.</span>
+                      <span className={line.includes('converged') || line.includes('completed') || line.includes('VERIFIED') ? 'text-emerald-400 font-bold' : 'text-slate-300'}>
+                        {line}
+                      </span>
+                    </div>
+                  ))
+                )}
               </div>
             </div>
           </div>
@@ -924,84 +927,105 @@ export const OverviewTab: React.FC<OverviewTabProps> = ({ project, onRunSolver, 
 
               {residualsData.length > 0 && (
                 <div className="flex flex-wrap items-center gap-3 text-[11px] font-mono bg-slate-950 p-2 rounded-xl border border-slate-800">
-                  <span className="text-rose-400">Residual: {residualsData.at(-1)?.continuity.toExponential(2)}</span>
+                  {residualsData.map((series, index) => (
+                    <span key={series.name} style={{ color: RESIDUAL_PALETTE[index % RESIDUAL_PALETTE.length] }}>
+                      {series.name}: {series.points.at(-1)?.value.toExponential(2) ?? '—'}
+                    </span>
+                  ))}
                 </div>
               )}
             </div>
 
-            {/* SVG Residuals Plot */}
+            {/* SVG Residuals Plot — renders only real solver-reported residual streams */}
             <div className="bg-slate-950 p-4 rounded-xl border border-slate-800 overflow-x-auto">
               {residualsData.length === 0 ? (
                 <div className="h-64 flex items-center justify-center text-sm text-slate-500">
                   Run the solver to collect residual history.
                 </div>
               ) : (
+              (() => {
+                const plottable = residualsData
+                  .map((series, index) => ({
+                    name: series.name,
+                    color: RESIDUAL_PALETTE[index % RESIDUAL_PALETTE.length],
+                    points: series.points.filter(
+                      (point) => Number.isFinite(point.iteration) && Number.isFinite(point.value) && point.value > 0,
+                    ),
+                  }))
+                  .filter((series) => series.points.length > 0);
+                const allPoints = plottable.flatMap((series) => series.points);
+                if (allPoints.length === 0) {
+                  return (
+                    <div className="h-64 flex items-center justify-center text-sm text-slate-500">
+                      Run the solver to collect residual history.
+                    </div>
+                  );
+                }
+                const minIteration = Math.min(...allPoints.map((point) => point.iteration));
+                const maxIteration = Math.max(...allPoints.map((point) => point.iteration));
+                const topPower = Math.max(0, Math.ceil(Math.max(...allPoints.map((point) => Math.log10(point.value)))));
+                const bottomPower = Math.floor(Math.min(...allPoints.map((point) => Math.log10(point.value))));
+                const toX = (iteration: number) => 70 + ((iteration - minIteration) / (maxIteration - minIteration || 1)) * 650;
+                const toY = (value: number) => 30 + ((Math.log10(value) - topPower) / (bottomPower - topPower || 1)) * 220;
+                const gridStep = Math.max(1, Math.round((topPower - bottomPower) / 4));
+                const gridPowers: number[] = [];
+                for (let power = topPower; power >= bottomPower; power -= gridStep) gridPowers.push(power);
+                const xTicks = Array.from({ length: 5 }, (_, index) => Math.round(minIteration + ((maxIteration - minIteration) * index) / 4));
+
+                return (
               <svg
                 viewBox="0 0 740 280"
                 className="w-full h-64 select-none font-mono text-[10px]"
               >
-                {/* Background Grid Lines for Powers of 10 */}
-                {/* 10^0 (y=30), 10^-2 (y=90), 10^-4 (y=150), 10^-6 (y=210), 10^-8 (y=260) */}
-                <line x1="70" y1="30" x2="720" y2="30" stroke="#334155" strokeDasharray="3 3" />
-                <text x="60" y="34" fill="#94a3b8" textAnchor="end">1e+00</text>
-
-                <line x1="70" y1="88" x2="720" y2="88" stroke="#334155" strokeDasharray="3 3" />
-                <text x="60" y="92" fill="#94a3b8" textAnchor="end">1e-02</text>
-
-                <line x1="70" y1="145" x2="720" y2="145" stroke="#334155" strokeDasharray="3 3" />
-                <text x="60" y="149" fill="#94a3b8" textAnchor="end">1e-04</text>
+                {/* Background Grid Lines for Powers of 10 (data-driven range) */}
+                {gridPowers.map((power) => (
+                  <g key={power}>
+                    <line x1="70" y1={toY(10 ** power)} x2="720" y2={toY(10 ** power)} stroke="#334155" strokeDasharray="3 3" />
+                    <text x="60" y={toY(10 ** power) + 4} fill="#94a3b8" textAnchor="end">1e{power}</text>
+                  </g>
+                ))}
 
                 {/* Target Convergence Line 1e-6 (Golden Line) */}
-                <line x1="70" y1="203" x2="720" y2="203" stroke="#eab308" strokeWidth="1.5" strokeDasharray="4 4" />
-                <text x="60" y="207" fill="#eab308" fontWeight="bold" textAnchor="end">1e-06</text>
-                <text x="715" y="198" fill="#eab308" textAnchor="end" fontSize="10">معيار التقارب (Convergence Criteria: 1e-6)</text>
-
-                <line x1="70" y1="250" x2="720" y2="250" stroke="#334155" strokeDasharray="3 3" />
-                <text x="60" y="254" fill="#94a3b8" textAnchor="end">1e-08</text>
+                {bottomPower <= -6 && topPower >= -6 && (
+                  <>
+                    <line x1="70" y1={toY(1e-6)} x2="720" y2={toY(1e-6)} stroke="#eab308" strokeWidth="1.5" strokeDasharray="4 4" />
+                    <text x="715" y={toY(1e-6) - 5} fill="#eab308" textAnchor="end" fontSize="10">معيار التقارب (Convergence Criteria: 1e-6)</text>
+                  </>
+                )}
 
                 {/* X Axis Iteration Ticks */}
                 <line x1="70" y1="255" x2="720" y2="255" stroke="#475569" strokeWidth="1" />
-                <text x="70" y="270" fill="#94a3b8" textAnchor="middle">1</text>
-                <text x="232" y="270" fill="#94a3b8" textAnchor="middle">350</text>
-                <text x="395" y="270" fill="#94a3b8" textAnchor="middle">750</text>
-                <text x="557" y="270" fill="#94a3b8" textAnchor="middle">1150</text>
-                <text x="720" y="270" fill="#94a3b8" textAnchor="middle">1500 (Iter)</text>
+                {xTicks.map((tick, index) => (
+                  <text
+                    key={index}
+                    x={toX(tick)}
+                    y="270"
+                    fill="#94a3b8"
+                    textAnchor={index === xTicks.length - 1 ? 'end' : 'middle'}
+                  >
+                    {index === xTicks.length - 1 ? `${tick} (Iter)` : tick}
+                  </text>
+                ))}
 
-                {/* Helper mapping function */}
-                {/* x: 70 + (iter / 1500) * 650 */}
-                {/* y: 30 + (log10(val) / -8) * 220 */}
-                {(() => {
-                  const toX = (it: number) => 70 + (it / 1500) * 650;
-                  const toY = (val: number) => {
-                    const log = Math.log10(Math.max(1e-9, val));
-                    // 0 -> 30, -8 -> 250
-                    return 30 + (log / -8) * 220;
-                  };
+                {/* Real residual series */}
+                {plottable.map((series) => (
+                  <path
+                    key={series.name}
+                    d={series.points.map((point, index) => `${index === 0 ? 'M' : 'L'} ${toX(point.iteration)} ${toY(point.value)}`).join(' ')}
+                    fill="none"
+                    stroke={series.color}
+                    strokeWidth="2"
+                  />
+                ))}
 
-                  const makePath = (key: 'continuity' | 'xVelocity' | 'yVelocity' | 'energy') => {
-                    return residualsData
-                      .map((d, i) => `${i === 0 ? 'M' : 'L'} ${toX(d.iteration)} ${toY(d[key])}`)
-                      .join(' ');
-                  };
-
-                  return (
-                    <g>
-                      {/* Continuity (Red) */}
-                      <path d={makePath('continuity')} fill="none" stroke="#f43f5e" strokeWidth="2.5" />
-                      {/* Momentum-X (Emerald) */}
-                      <path d={makePath('xVelocity')} fill="none" stroke="#10b981" strokeWidth="2" />
-                      {/* Momentum-Y (Sky) */}
-                      <path d={makePath('yVelocity')} fill="none" stroke="#38bdf8" strokeWidth="2" />
-                      {/* Energy (Purple) */}
-                      <path d={makePath('energy')} fill="none" stroke="#c084fc" strokeWidth="2" />
-
-                      {/* Final convergence points */}
-                      <circle cx={toX(1500)} cy={toY(residualsData[residualsData.length - 1].continuity)} r="4" fill="#f43f5e" />
-                      <circle cx={toX(1500)} cy={toY(residualsData[residualsData.length - 1].xVelocity)} r="4" fill="#10b981" />
-                    </g>
-                  );
-                })()}
+                {/* Final convergence points */}
+                {plottable.map((series) => {
+                  const last = series.points[series.points.length - 1];
+                  return <circle key={series.name} cx={toX(last.iteration)} cy={toY(last.value)} r="4" fill={series.color} />;
+                })}
               </svg>
+                );
+              })()
               )}
             </div>
           </div>
@@ -1034,6 +1058,9 @@ export const OverviewTab: React.FC<OverviewTabProps> = ({ project, onRunSolver, 
             </div>
 
             <div className="bg-slate-950 rounded-xl p-4 border border-slate-800 font-mono text-xs text-slate-300 max-h-80 overflow-y-auto direction-ltr text-left space-y-1 selection:bg-sky-500/30">
+              {(project.scriptExecutionLog || []).length === 0 && (
+                <div className="text-slate-600">$ no solver output yet — run the simulation to stream real logs.</div>
+              )}
               {(project.scriptExecutionLog || []).map((line, lIdx) => {
                 const isHeader = line.startsWith('[ANSYS') || line.startsWith('===');
                 const isConverged = line.includes('CONVERGED') || line.includes('SUCCESS');
@@ -1073,8 +1100,16 @@ export const OverviewTab: React.FC<OverviewTabProps> = ({ project, onRunSolver, 
                 </span>
                 <button
                   type="button"
-                  onClick={() => exportToOpenFoamScripts(project)}
-                  className="px-3 py-1.5 rounded-lg bg-sky-600 hover:bg-sky-500 text-white font-bold text-xs flex items-center gap-1.5 transition-all shadow-md shadow-sky-950/40 active:scale-95"
+                  disabled={!canExportOpenFoam}
+                  title={canExportOpenFoam ? undefined : 'Requires a completed CFD run'}
+                  onClick={() => {
+                    try {
+                      exportToOpenFoamScripts(project);
+                    } catch (error) {
+                      setSolveError(error instanceof Error ? error.message : 'OpenFOAM export failed');
+                    }
+                  }}
+                  className="px-3 py-1.5 rounded-lg bg-sky-600 hover:bg-sky-500 text-white font-bold text-xs flex items-center gap-1.5 transition-all shadow-md shadow-sky-950/40 active:scale-95 disabled:cursor-not-allowed disabled:opacity-40"
                 >
                   <FileCode className="w-3.5 h-3.5" />
                   <span>تصدير سكربت OpenFOAM (blockMesh & controlDict)</span>

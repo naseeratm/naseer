@@ -21,7 +21,7 @@ const STEPS: { id: WorkflowStep; label: string; icon: React.ReactNode }[] = [
   { id: 'geometry', label: '1. Geometry', icon: <Box className="h-4 w-4" /> },
   { id: 'mesh', label: '2. Mesh', icon: <Grid3X3 className="h-4 w-4" /> },
   { id: 'physics', label: '3. Physics & Materials', icon: <Atom className="h-4 w-4" /> },
-  { id: 'copilot', label: '4. AI Copilot (Nanofluids)', icon: <Sparkles className="h-4 w-4" /> },
+  { id: 'copilot', label: '4. OmniSolve AI (Copilot)', icon: <Sparkles className="h-4 w-4" /> },
   { id: 'post', label: '5. Post-Processing', icon: <Activity className="h-4 w-4" /> },
 ];
 

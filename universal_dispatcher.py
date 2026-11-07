@@ -27,6 +27,7 @@ from physics_solver import solve_simulation
 from cae_repository import JobRepository
 from backend.report_generator import generate_academic_report
 from backend.result_schema import canonicalize_result
+from backend.vv_metrics import compute_openfoam_metrics
 
 
 PhysicsResult = Dict[str, Any]
@@ -278,6 +279,9 @@ _OPENFOAM_FAILURE_PATTERNS = (
 )
 
 
+_OPENFOAM_FPE_BANNER = re.compile(r"^[^\n]*trapFpe:[^\n]*trapping enabled[^\n]*$", re.M | re.I)
+
+
 def _is_solution_time_directory(path: Path) -> bool:
     if not path.is_dir():
         return False
@@ -295,6 +299,9 @@ def verify_openfoam_convergence(case_dir: Path, solver_name: str) -> dict:
         return {"valid": False, "error": f"{solver_name}: solver.log was not produced; the solver did not run."}
 
     log_text = log_path.read_text(encoding="utf-8", errors="replace")
+    # OpenFOAM prints "trapFpe: Floating point exception trapping enabled (FOAM_SIGFPE)." at every start
+    # when FPE trapping is on. It is informational, and would otherwise match every failure pattern below.
+    log_text = _OPENFOAM_FPE_BANNER.sub("", log_text)
     for label, pattern in _OPENFOAM_FAILURE_PATTERNS:
         match = pattern.search(log_text)
         if match:
@@ -391,7 +398,9 @@ def call_openfoam_solver(data: Mapping[str, Any]) -> PhysicsResult:
         raise ValueError("mesh_size must be positive")
     nx = max(4, min(200, int(round(width / size))))
     ny = max(4, min(200, int(round(height / size))))
-    nz = max(1, min(20, int(round(depth / (size * 0.1)))))
+    # frontAndBack are 'empty' patches, which OpenFOAM requires to be a single cell layer. Extra layers leave z
+    # as an unconstrained solution direction (observed Uz ~ -1e4 m/s with 10 layers).
+    nz = 1
     (case_dir / "system" / "blockMeshDict").write_text(
         'FoamFile { version 2.0; format ascii; class dictionary; object blockMeshDict; }\n'
         "convertToMeters 1;\n"
@@ -636,6 +645,12 @@ def call_openfoam_solver(data: Mapping[str, Any]) -> PhysicsResult:
     }
     result["units"] = {"pressure": "Pa", "velocity": "m/s", "residual": "dimensionless"}
     result["artifacts"]["mesh_metadata"] = str(case_dir / "mesh_metadata.json")
+    try:
+        result["metrics"] = compute_openfoam_metrics(case_dir)
+        # Incompressible solvers write kinematic pressure; report the unit the field actually has.
+        result["units"]["pressure"] = result["metrics"]["pressure_drop"]["unit"] or result["units"]["pressure"]
+    except Exception as exc:  # additive: the solve already passed the verification gate, so record why metrics are absent
+        result["metrics_error"] = f"{type(exc).__name__}: {exc}"
     return canonicalize_result(result, physics_type=physics_type, input_data=data, solver="OpenFOAM")
 
 
@@ -652,6 +667,10 @@ def _numbered_dat_rows(path: Path, heading_tokens: tuple[str, ...], column_count
             continue
         if any(token in line for token in heading_tokens):
             active = True
+            continue
+        if any(token in line for token in ("displacements", "forces", "stresses", "strains")):
+            # A different result block begins; .dat files contain no '*' lines to mark the end of a block.
+            active = False
             continue
         if active and line.startswith("*"):
             active = False
@@ -727,6 +746,12 @@ def call_openfoam_compressible_solver(data: Mapping[str, Any]) -> PhysicsResult:
 
     payload["simulation_type"] = "CFD_Compressible"
     return call_openfoam_solver(payload)
+
+
+def _ccx_id_lines(ids) -> str:
+    """CalculiX allows at most 16 entries per data line, so long node/element id lists must be wrapped."""
+    ids = [str(i) for i in ids]
+    return "".join(",".join(ids[start:start + 16]) + "\n" for start in range(0, len(ids), 16))
 
 
 def call_calculix_solver(data: Mapping[str, Any]) -> PhysicsResult:
@@ -821,7 +846,7 @@ def call_calculix_solver(data: Mapping[str, Any]) -> PhysicsResult:
     )
 
     with inp.open("a", encoding="utf-8") as f:
-        f.write(f"*NSET,NSET=ALL\n{','.join(map(str, range(1, len(coordinates) + 1)))}\n")
+        f.write(f"*NSET,NSET=ALL\n{_ccx_id_lines(range(1, len(coordinates) + 1))}")
         constraints = data.get("constraints", [])
         if isinstance(constraints, Mapping):
             constraints = [constraints]
@@ -840,7 +865,7 @@ def call_calculix_solver(data: Mapping[str, Any]) -> PhysicsResult:
             if not isinstance(values, (list, tuple)):
                 values = [values]
             values += [0.0] * max(0, len(dofs) - len(values))
-            f.write(f"*NSET,NSET=CONSTRAINT_{index}\n" + ",".join(map(str, ids)) + "\n")
+            f.write(f"*NSET,NSET=CONSTRAINT_{index}\n" + _ccx_id_lines(ids))
             for dof, value in zip(dofs, values):
                 f.write(f"*BOUNDARY\nCONSTRAINT_{index},{dof},{dof},{float(value)}\n")
 
@@ -861,7 +886,7 @@ def call_calculix_solver(data: Mapping[str, Any]) -> PhysicsResult:
             if load.get("nodes") and load["nodes"] and isinstance(load["nodes"][0], int):
                 ids = list(load["nodes"])
             if ids:
-                f.write(f"*NSET,NSET=LOAD_{index}\n" + ",".join(map(str, ids)) + "\n")
+                f.write(f"*NSET,NSET=LOAD_{index}\n" + _ccx_id_lines(ids))
                 if load.get("direction") and not any(components):
                     direction = str(load["direction"]).lower()
                     components = [float(load.get("value", load.get("magnitude", 0)))] if direction == "x" else components
@@ -889,11 +914,16 @@ def call_calculix_solver(data: Mapping[str, Any]) -> PhysicsResult:
                 for dof, value in enumerate(nodal, start=1):
                     if abs(value) > 0:
                         load_cards.append(f"*CLOAD\nLOAD_{index},{dof},{value:.15g}\n")
-        # Legacy displacement remains available as a prescribed top edge displacement.
+        # Legacy displacement is a prescribed top-face displacement. The bottom face must be supported as well:
+        # otherwise the whole block translates rigidly and no stress develops (von Mises ~ 1e-13).
         if "displacement" in data and not constraints:
             value = float(data["displacement"])
             ids = face_nodes("top")
-            f.write(f"*NSET,NSET=TOP\n{','.join(map(str, ids))}\n*BOUNDARY\nTOP,1,3,{0}\nTOP,2,2,{value}\n")
+            bottom_ids = face_nodes("bottom")
+            f.write(
+                f"*NSET,NSET=TOP\n{_ccx_id_lines(ids)}*BOUNDARY\nTOP,1,3,{0}\nTOP,2,2,{value}\n"
+                f"*NSET,NSET=BOTTOM\n{_ccx_id_lines(bottom_ids)}*BOUNDARY\nBOTTOM,1,3,{0}\n"
+            )
 
         f.write(
             "*STEP\n*STATIC\n"

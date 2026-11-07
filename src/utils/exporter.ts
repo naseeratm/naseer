@@ -1,2104 +1,905 @@
-import { ThesisProject, ContourField } from '../types/thesis';
-import { generatePhysicalField2D, getColorFromColormap } from './physicsEngine';
-
-/**
- * Render a real 2D physical contour field into a base64 PNG data URL
- */
-function renderContourToDataUrl(contour: ContourField, width = 600, height = 280): string {
-  try {
-    if (typeof document === 'undefined') return '';
-    const canvas = document.createElement('canvas');
-    canvas.width = width;
-    canvas.height = height;
-    const ctx = canvas.getContext('2d');
-    if (!ctx) return '';
-
-    const nx = 160;
-    const ny = 80;
-    const { grid, minVal, maxVal } = generatePhysicalField2D(contour, nx, ny);
-    const imgData = ctx.createImageData(width, height);
-    const data = imgData.data;
-    const range = maxVal - minVal || 1;
-
-    for (let py = 0; py < height; py++) {
-      const gy = (py / (height - 1)) * (ny - 1);
-      const iy0 = Math.floor(gy);
-      const iy1 = Math.min(ny - 1, iy0 + 1);
-      const dy = gy - iy0;
-
-      for (let px = 0; px < width; px++) {
-        const gx = (px / (width - 1)) * (nx - 1);
-        const ix0 = Math.floor(gx);
-        const ix1 = Math.min(nx - 1, ix0 + 1);
-        const dx = gx - ix0;
-
-        const v00 = grid[iy0][ix0];
-        const v10 = grid[iy0][ix1];
-        const v01 = grid[iy1][ix0];
-        const v11 = grid[iy1][ix1];
-
-        const interp =
-          (1 - dx) * (1 - dy) * v00 +
-          dx * (1 - dy) * v10 +
-          (1 - dx) * dy * v01 +
-          dx * dy * v11;
-
-        const norm = Math.max(0, Math.min(1, (interp - minVal) / range));
-        const [r, g, b] = getColorFromColormap(norm, 'jet');
-        const pIndex = (py * width + px) * 4;
-        data[pIndex] = r;
-        data[pIndex + 1] = g;
-        data[pIndex + 2] = b;
-        data[pIndex + 3] = 255;
-      }
-    }
-    ctx.putImageData(imgData, 0, 0);
-
-    // Draw Hotspot marker pins onto the contour image
-    if (contour.pointsOfInterest && contour.pointsOfInterest.length > 0) {
-      contour.pointsOfInterest.forEach((pt, i) => {
-        const cx = (pt.xPercent / 100) * width;
-        const cy = (1 - pt.yPercent / 100) * height;
-
-        ctx.beginPath();
-        ctx.arc(cx, cy, 8, 0, 2 * Math.PI);
-        ctx.fillStyle = '#ffffff';
-        ctx.fill();
-        ctx.lineWidth = 2.5;
-        ctx.strokeStyle = '#0f172a';
-        ctx.stroke();
-
-        ctx.fillStyle = '#0f172a';
-        ctx.font = 'bold 10px sans-serif';
-        ctx.textAlign = 'center';
-        ctx.textBaseline = 'middle';
-        ctx.fillText(String(i + 1), cx, cy);
-      });
-    }
-
-    return canvas.toDataURL('image/png');
-  } catch (err) {
-    console.error('Error rendering contour data url:', err);
-    return '';
-  }
-}
-
-/**
- * Generate CAD Engineering Schematic SVG
- */
-function generateCadSchematicSvg(project: ThesisProject): string {
-  const isFEA = project.field === 'FEA';
-  const isCFD = project.field === 'CFD';
-
-  if (isFEA) {
-    return `
-    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 680 260" width="680" height="260" style="background:#0f172a; border-radius:8px; font-family:'Segoe UI',Arial,sans-serif;">
-      <!-- Grid -->
-      <defs>
-        <pattern id="gridFEA" width="20" height="20" patternUnits="userSpaceOnUse">
-          <path d="M 20 0 L 0 0 0 20" fill="none" stroke="#1e293b" stroke-width="0.8"/>
-        </pattern>
-        <marker id="arrLoad" viewBox="0 0 10 10" refX="5" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
-          <path d="M 0 0 L 10 5 L 0 10 z" fill="#f43f5e" />
-        </marker>
-      </defs>
-      <rect width="680" height="260" fill="url(#gridFEA)" />
-
-      <!-- Fixed Support Wall -->
-      <rect x="50" y="30" width="30" height="190" fill="#334155" stroke="#64748b" stroke-width="2" />
-      <line x1="40" y1="40" x2="50" y2="30" stroke="#94a3b8" stroke-width="2"/>
-      <line x1="40" y1="80" x2="50" y2="70" stroke="#94a3b8" stroke-width="2"/>
-      <line x1="40" y1="120" x2="50" y2="110" stroke="#94a3b8" stroke-width="2"/>
-      <line x1="40" y1="160" x2="50" y2="150" stroke="#94a3b8" stroke-width="2"/>
-      <line x1="40" y1="200" x2="50" y2="190" stroke="#94a3b8" stroke-width="2"/>
-      <text x="35" y="240" fill="#94a3b8" font-size="11" font-weight="bold">Fixed Support (x = 0)</text>
-
-      <!-- I-Beam Body -->
-      <!-- Top Flange -->
-      <rect x="80" y="55" width="460" height="20" fill="#0284c7" stroke="#38bdf8" stroke-width="1.5" />
-      <!-- Web -->
-      <rect x="80" y="75" width="460" height="100" fill="#0369a1" stroke="#38bdf8" stroke-width="1.5" opacity="0.85" />
-      <!-- Bottom Flange -->
-      <rect x="80" y="175" width="460" height="20" fill="#0284c7" stroke="#38bdf8" stroke-width="1.5" />
-
-      <!-- High Stress Concentration Zone Halo -->
-      <rect x="80" y="55" width="70" height="140" fill="#f43f5e" fill-opacity="0.35" stroke="#f43f5e" stroke-dasharray="4 2" stroke-width="1.5" />
-      <text x="90" y="45" fill="#f43f5e" font-size="10" font-weight="bold">Max Stress σ_vm = 214.8 MPa</text>
-
-      <!-- Neutral Axis -->
-      <line x1="80" y1="125" x2="540" y2="125" stroke="#cbd5e1" stroke-dasharray="6 4" stroke-width="1.5" />
-      <text x="260" y="120" fill="#cbd5e1" font-size="10" font-family="monospace">Neutral Axis (σ = 0)</text>
-
-      <!-- Tip Load Arrow P -->
-      <line x1="540" y1="15" x2="540" y2="52" stroke="#f43f5e" stroke-width="4" marker-end="url(#arrLoad)" />
-      <text x="515" y="12" fill="#f43f5e" font-size="12" font-weight="bold">P = 45 kN (Tip Load)</text>
-
-      <!-- Dimension Line L -->
-      <line x1="80" y1="215" x2="540" y2="215" stroke="#94a3b8" stroke-width="1.5" />
-      <line x1="80" y1="210" x2="80" y2="220" stroke="#94a3b8" stroke-width="1.5" />
-      <line x1="540" y1="210" x2="540" y2="220" stroke="#94a3b8" stroke-width="1.5" />
-      <text x="270" y="235" fill="#e2e8f0" font-size="11" font-weight="bold">Beam Length L = 2.0 m (W10x30 Profile)</text>
-    </svg>
-    `;
-  }
-
-  if (isCFD) {
-    return `
-    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 680 260" width="680" height="260" style="background:#0f172a; border-radius:8px; font-family:'Segoe UI',Arial,sans-serif;">
-      <defs>
-        <marker id="arrFlow" viewBox="0 0 10 10" refX="5" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
-          <path d="M 0 0 L 10 5 L 0 10 z" fill="#38bdf8" />
-        </marker>
-      </defs>
-      <!-- Streamlines -->
-      <path d="M 30 70 Q 200 40 420 75 T 640 100" fill="none" stroke="#38bdf8" stroke-width="1.5" stroke-dasharray="6 3" opacity="0.6"/>
-      <path d="M 30 95 Q 200 65 420 95 T 640 120" fill="none" stroke="#38bdf8" stroke-width="1.5" stroke-dasharray="6 3" opacity="0.8"/>
-      <path d="M 30 150 Q 200 170 420 155 T 640 145" fill="none" stroke="#38bdf8" stroke-width="1.5" stroke-dasharray="6 3" opacity="0.8"/>
-      <path d="M 30 180 Q 200 200 420 185 T 640 170" fill="none" stroke="#38bdf8" stroke-width="1.5" stroke-dasharray="6 3" opacity="0.6"/>
-
-      <!-- Airfoil Profile NACA 0012 -->
-      <path d="M 160 125 C 160 85, 260 70, 360 90 C 440 105, 520 122, 540 125 C 520 128, 440 145, 360 160 C 260 180, 160 165, 160 125 Z" fill="#0284c7" stroke="#38bdf8" stroke-width="2.5" />
-
-      <!-- Stagnation Point -->
-      <circle cx="160" cy="125" r="5" fill="#f43f5e" />
-      <text x="90" y="129" fill="#f43f5e" font-size="10" font-weight="bold">Stagnation (V=0)</text>
-
-      <!-- Suction Peak -->
-      <circle cx="280" cy="80" r="5" fill="#a855f7" />
-      <text x="235" y="65" fill="#c084fc" font-size="10" font-weight="bold">Suction Peak (Cp = -2.4)</text>
-
-      <!-- Chord Line -->
-      <line x1="160" y1="125" x2="540" y2="125" stroke="#e2e8f0" stroke-dasharray="4 4" stroke-width="1" />
-      <text x="310" y="138" fill="#e2e8f0" font-size="10">Chord c = 1.0 m</text>
-
-      <!-- Incoming Flow Vectors -->
-      <line x1="40" y1="125" x2="110" y2="125" stroke="#38bdf8" stroke-width="3" marker-end="url(#arrFlow)"/>
-      <text x="40" y="112" fill="#38bdf8" font-size="11" font-weight="bold">V∞ = 68.2 m/s (AoA = 4°)</text>
-
-      <text x="210" y="240" fill="#94a3b8" font-size="11">NACA 0012 Compressible Viscous Navier-Stokes Simulation Domain</text>
-    </svg>
-    `;
-  }
-
-  // Thermal Projects: Distinguish between Flat Geometry (Plate/Conduction) vs Cylindrical LHTES PCM System
-  const textCorpus = `${project.title} ${project.titleEn} ${project.abstractAr} ${project.abstractEn}`.toLowerCase();
-  const isCylindricalPcm = (project.id === 'lhtes_v3_master' || project.id === 'lhtes-v3-master') || (textCorpus.includes('lhtes') && textCorpus.includes('helical'));
-
-  if (!isCylindricalPcm) {
-    // Thermal Flat Geometry Schematic (Aluminum Plate / Solid Heat Conduction)
-    return `
-    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 680 270" width="680" height="270" style="background:#0f172a; border-radius:8px; font-family:'Segoe UI',Arial,sans-serif;">
-      <defs>
-        <marker id="arrFlux" viewBox="0 0 10 10" refX="5" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
-          <path d="M 0 0 L 10 5 L 0 10 z" fill="#ef4444" />
-        </marker>
-        <marker id="arrConv" viewBox="0 0 10 10" refX="5" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
-          <path d="M 0 0 L 10 5 L 0 10 z" fill="#38bdf8" />
-        </marker>
-      </defs>
-
-      <!-- Aluminum Plate Base Geometry (3D Isometric Box) -->
-      <g transform="translate(100, 40)">
-        <!-- Back and Side Thickness Extrusion -->
-        <path d="M 120 40 L 460 40 L 460 160 L 120 160 Z" fill="#1e293b" stroke="#475569" stroke-width="1.5" />
-        <path d="M 460 40 L 520 70 L 520 190 L 460 160 Z" fill="#0f172a" stroke="#475569" stroke-width="1.5" />
-
-        <!-- Main Front Face (Aluminum Plate Domain) -->
-        <path d="M 60 70 L 400 70 L 520 40 L 180 40 Z" fill="#b45309" fill-opacity="0.3" stroke="#f59e0b" stroke-width="2" />
-        <path d="M 60 70 L 60 190 L 400 190 L 400 70 Z" fill="#0369a1" fill-opacity="0.25" stroke="#38bdf8" stroke-width="2.5" />
-        <path d="M 400 70 L 520 40 L 520 160 L 400 190 Z" fill="#0f172a" stroke="#38bdf8" stroke-width="2" />
-
-        <!-- Heat Flux Inflow Arrows on Left Boundary (x = 0) -->
-        <g stroke="#ef4444" stroke-width="2.5" marker-end="url(#arrFlux)">
-          <line x1="10" y1="90" x2="52" y2="90" />
-          <line x1="10" y1="130" x2="52" y2="130" />
-          <line x1="10" y1="170" x2="52" y2="170" />
-        </g>
-        <text x="-25" y="135" fill="#ef4444" font-size="11" font-weight="bold">تدفق حراري q" = 5000 W/m²</text>
-
-        <!-- Convective Cooling Outflow on Top/Right Boundary -->
-        <g stroke="#38bdf8" stroke-width="2" marker-end="url(#arrConv)">
-          <line x1="230" y1="52" x2="230" y2="15" />
-          <line x1="330" y1="52" x2="330" y2="15" />
-        </g>
-        <text x="210" y="10" fill="#38bdf8" font-size="10" font-weight="bold">تأييد حمل حراري h = 25 W/m²K (T∞ = 298 K)</text>
-
-        <!-- Temperature Gradient Isotherms -->
-        <path d="M 120 70 Q 150 130 120 190" fill="none" stroke="#ef4444" stroke-width="2" stroke-dasharray="4 2" />
-        <path d="M 200 70 Q 230 130 200 190" fill="none" stroke="#f59e0b" stroke-width="2" stroke-dasharray="4 2" />
-        <path d="M 280 70 Q 310 130 280 190" fill="none" stroke="#38bdf8" stroke-width="2" stroke-dasharray="4 2" />
-        <text x="125" y="85" fill="#ef4444" font-size="9" font-weight="bold">T1 = 368 K</text>
-        <text x="285" y="85" fill="#38bdf8" font-size="9" font-weight="bold">T3 = 302 K</text>
-
-        <!-- Dimensions -->
-        <line x1="60" y1="205" x2="400" y2="205" stroke="#94a3b8" stroke-width="1.5" />
-        <text x="200" y="222" fill="#e2e8f0" font-size="11" font-weight="bold">الطول L = 500 mm | العرض W = 300 mm | السمك t = 12 mm</text>
-      </g>
-      <text x="340" y="260" fill="#cbd5e1" font-size="11" font-weight="bold" text-anchor="middle">
-        صفيحة ألومنيوم ذات انتقال حرارة بالتوصيل والحمل (Aluminum Plate Heat Conduction Domain)
-      </text>
-    </svg>
-    `;
-  }
-
-  // LHTES Cylindrical PCM Geometry Schematic
-  return `
-  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 680 270" width="680" height="270" style="background:#0f172a; border-radius:8px; font-family:'Segoe UI',Arial,sans-serif;">
-    <defs>
-      <marker id="arrHtf" viewBox="0 0 10 10" refX="5" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
-        <path d="M 0 0 L 10 5 L 0 10 z" fill="#f43f5e" />
-      </marker>
-    </defs>
-    <!-- Outer Cylindrical Shell -->
-    <rect x="140" y="30" width="380" height="200" rx="8" fill="#1e293b" stroke="#38bdf8" stroke-width="3" />
-    <text x="145" y="20" fill="#38bdf8" font-size="11" font-weight="bold">Cylindrical Outer Shell (H = 500 mm, D = 150 mm)</text>
-
-    <!-- PCM Medium Background -->
-    <rect x="145" y="35" width="370" height="190" rx="6" fill="#f59e0b" fill-opacity="0.18" />
-    <text x="260" y="70" fill="#fbbf24" font-size="11" font-weight="bold">${project.material?.name || 'PCM Phase Change Storage'}</text>
-
-    <!-- Helical Coil representation -->
-    <path d="M 220 30 C 220 70, 240 70, 240 110 C 240 150, 220 150, 220 190 C 220 230, 240 230, 240 230" fill="none" stroke="#ef4444" stroke-width="6" />
-    <path d="M 440 30 C 440 70, 420 70, 420 110 C 420 150, 440 150, 440 190 C 440 230, 420 230, 420 230" fill="none" stroke="#ef4444" stroke-width="6" />
-
-    <!-- Tree Fins Graded Layout -->
-    <!-- Dense Lower Section (139 fins) -->
-    <g stroke="#10b981" stroke-width="2.5">
-      <line x1="240" y1="150" x2="280" y2="135"/>
-      <line x1="240" y1="170" x2="285" y2="160"/>
-      <line x1="240" y1="190" x2="290" y2="185"/>
-      <line x1="240" y1="210" x2="285" y2="210"/>
-      <line x1="420" y1="150" x2="380" y2="135"/>
-      <line x1="420" y1="170" x2="375" y2="160"/>
-      <line x1="420" y1="190" x2="370" y2="185"/>
-      <line x1="420" y1="210" x2="375" y2="210"/>
-    </g>
-    <text x="250" y="215" fill="#34d399" font-size="10" font-weight="bold">Dense Lower Tree Fins (139 Fins)</text>
-
-    <!-- Open Upper Section (65 fins) -->
-    <g stroke="#10b981" stroke-width="2" stroke-dasharray="3 2">
-      <line x1="220" y1="50" x2="255" y2="45"/>
-      <line x1="220" y1="85" x2="260" y2="80"/>
-      <line x1="440" y1="50" x2="405" y2="45"/>
-      <line x1="440" y1="85" x2="400" y2="80"/>
-    </g>
-    <text x="270" y="55" fill="#34d399" font-size="10">Open Upper Tree Fins (65 Fins)</text>
-
-    <!-- HTF Inlet with Oscillating Signal -->
-    <line x1="60" y1="45" x2="135" y2="45" stroke="#ef4444" stroke-width="4" marker-end="url(#arrHtf)" />
-    <text x="15" y="38" fill="#ef4444" font-size="10" font-weight="bold">HTF INLET (Oscillating)</text>
-    <text x="10" y="52" fill="#cbd5e1" font-size="9" font-family="monospace">Tin(t) = 348 + 10·sin(ωt)</text>
-
-    <!-- HTF Outlet -->
-    <line x1="520" y1="215" x2="595" y2="215" stroke="#3b82f6" stroke-width="4" marker-end="url(#arrHtf)" />
-    <text x="590" y="210" fill="#60a5fa" font-size="10" font-weight="bold">HTF OUTLET</text>
-    <text x="590" y="224" fill="#cbd5e1" font-size="9" font-family="monospace">Tout(t) Dynamic</text>
-
-    <!-- Height Dimension -->
-    <line x1="535" y1="30" x2="535" y2="230" stroke="#94a3b8" stroke-width="1.5" />
-    <text x="545" y="135" fill="#e2e8f0" font-size="11" font-weight="bold">H = 500 mm</text>
-  </svg>
-  `;
-}
-
-/**
- * Generate ASME V&V 20 Validation Comparison Plot SVG
- */
-function generateValidationPlotSvg(project: ThesisProject): string {
-  const points = project.validation?.points || [];
-  if (points.length === 0) return '';
-
-  const minX = Math.min(...points.map((p) => p.independentVar));
-  const maxX = Math.max(...points.map((p) => p.independentVar));
-  const minY = Math.min(...points.map((p) => Math.min(p.experimentalVal, p.numericalCfdVal)));
-  const maxY = Math.max(...points.map((p) => Math.max(p.experimentalVal, p.numericalCfdVal)));
-
-  const padX = (maxX - minX) * 0.1 || 1;
-  const padY = (maxY - minY) * 0.15 || 1;
-
-  const plotLeft = 80;
-  const plotRight = 580;
-  const plotTop = 40;
-  const plotBottom = 220;
-  const plotW = plotRight - plotLeft;
-  const plotH = plotBottom - plotTop;
-
-  const mapX = (x: number) => plotLeft + ((x - (minX - padX)) / (maxX - minX + 2 * padX)) * plotW;
-  const mapY = (y: number) => plotBottom - ((y - (minY - padY)) / (maxY - minY + 2 * padY)) * plotH;
-
-  const expPointsStr = points.map((p) => `${mapX(p.independentVar)},${mapY(p.experimentalVal)}`).join(' ');
-  const numPointsStr = points.map((p) => `${mapX(p.independentVar)},${mapY(p.numericalCfdVal)}`).join(' ');
-
-  return `
-  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 680 280" width="680" height="280" style="background:#0f172a; border-radius:8px; font-family:'Segoe UI',Arial,sans-serif;">
-    <!-- Axes and Grid -->
-    <rect x="${plotLeft}" y="${plotTop}" width="${plotW}" height="${plotH}" fill="#1e293b" fill-opacity="0.4" stroke="#334155" stroke-width="1.5"/>
-    <line x1="${plotLeft}" y1="${plotBottom}" x2="${plotRight}" y2="${plotBottom}" stroke="#64748b" stroke-width="2"/>
-    <line x1="${plotLeft}" y1="${plotTop}" x2="${plotLeft}" y2="${plotBottom}" stroke="#64748b" stroke-width="2"/>
-
-    <!-- Gridlines -->
-    <line x1="${plotLeft}" y1="${plotTop + plotH * 0.25}" x2="${plotRight}" y2="${plotTop + plotH * 0.25}" stroke="#334155" stroke-dasharray="4 4" stroke-width="1"/>
-    <line x1="${plotLeft}" y1="${plotTop + plotH * 0.5}" x2="${plotRight}" y2="${plotTop + plotH * 0.5}" stroke="#334155" stroke-dasharray="4 4" stroke-width="1"/>
-    <line x1="${plotLeft}" y1="${plotTop + plotH * 0.75}" x2="${plotRight}" y2="${plotTop + plotH * 0.75}" stroke="#334155" stroke-dasharray="4 4" stroke-width="1"/>
-
-    <!-- Numerical Simulation Polyline -->
-    <polyline points="${numPointsStr}" fill="none" stroke="#38bdf8" stroke-width="3"/>
-
-    <!-- Experimental Points -->
-    ${points
-      .map(
-        (p) => `
-      <circle cx="${mapX(p.independentVar)}" cy="${mapY(p.experimentalVal)}" r="6" fill="#f43f5e" stroke="#ffffff" stroke-width="2"/>
-      <circle cx="${mapX(p.independentVar)}" cy="${mapY(p.numericalCfdVal)}" r="4" fill="#38bdf8"/>
-    `
-      )
-      .join('')}
-
-    <!-- Axis Labels -->
-    <text x="${plotLeft + plotW / 2}" y="${plotBottom + 40}" fill="#e2e8f0" font-size="12" font-weight="bold" text-anchor="middle">
-      ${project.validation?.independentVarName || 'Independent Variable'} (${project.validation?.independentVarUnit || '-'})
-    </text>
-    <text x="30" y="${plotTop + plotH / 2}" fill="#e2e8f0" font-size="12" font-weight="bold" text-anchor="middle" transform="rotate(-90 30 ${plotTop + plotH / 2})">
-      ${project.validation?.dependentVarName || 'Dependent Output'} (${project.validation?.dependentVarUnit || '-'})
-    </text>
-
-    <!-- Legend -->
-    <g transform="translate(${plotLeft + 20}, ${plotTop + 15})">
-      <rect width="210" height="48" fill="#0f172a" fill-opacity="0.85" stroke="#334155" rx="6"/>
-      <circle cx="20" cy="16" r="5" fill="#f43f5e"/>
-      <text x="35" y="20" fill="#e2e8f0" font-size="11">بيانات القياس التجريبي المرجعي</text>
-      <line x1="12" y1="36" x2="28" y2="36" stroke="#38bdf8" stroke-width="3"/>
-      <text x="35" y="39" fill="#e2e8f0" font-size="11">الحل العددي (ANSYS Simulation)</text>
-    </g>
-
-    <!-- R-Squared Badge -->
-    <g transform="translate(${plotRight - 140}, ${plotTop + 15})">
-      <rect width="130" height="30" fill="#10b981" fill-opacity="0.2" stroke="#10b981" stroke-width="1.5" rx="6"/>
-      <text x="65" y="20" fill="#34d399" font-size="12" font-weight="bold" text-anchor="middle">R² = ${project.validation?.rSquared ?? '0.998'}</text>
-    </g>
-  </svg>
-  `;
-}
-
-/**
- * Generate Roache GCI Grid Independence Plot SVG
- */
-function generateMeshGciPlotSvg(project: ThesisProject): string {
-  const levels = project.meshStudy?.meshLevels || [];
-  if (levels.length === 0) return '';
-
-  return `
-  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 680 240" width="680" height="240" style="background:#0f172a; border-radius:8px; font-family:'Segoe UI',Arial,sans-serif;">
-    <rect x="70" y="30" width="540" height="150" fill="#1e293b" fill-opacity="0.4" stroke="#334155" stroke-width="1.5"/>
-    
-    <!-- Levels Bars -->
-    ${levels
-      .map((lvl, idx) => {
-        const x = 110 + idx * 130;
-        const errHeight = Math.min(130, Math.max(10, lvl.percentageError * 14));
-        const y = 180 - errHeight;
-        const isOptimal = lvl.levelName.includes('Fine') || lvl.gciPercent < 2;
-        const barColor = isOptimal ? '#10b981' : idx === 0 ? '#ef4444' : '#38bdf8';
-        return `
-        <rect x="${x}" y="${y}" width="60" height="${errHeight}" fill="${barColor}" rx="4"/>
-        <text x="${x + 30}" y="${y - 8}" fill="${barColor}" font-size="11" font-weight="bold" text-anchor="middle">
-          ${lvl.percentageError}%
-        </text>
-        <text x="${x + 30}" y="200" fill="#e2e8f0" font-size="10" font-weight="bold" text-anchor="middle">
-          ${lvl.levelName.split(' ')[0]}
-        </text>
-        <text x="${x + 30}" y="215" fill="#94a3b8" font-size="9" text-anchor="middle">
-          ${(lvl.elements / 1000).toFixed(0)}k cells
-        </text>
-        <text x="${x + 30}" y="230" fill="#fbbf24" font-size="9" font-weight="bold" text-anchor="middle">
-          GCI = ${lvl.gciPercent}%
-        </text>
-      `;
-      })
-      .join('')}
-
-    <!-- Header badge -->
-    <text x="340" y="22" fill="#e2e8f0" font-size="11" font-weight="bold" text-anchor="middle">
-      منحنى استقلالية الميش ومؤشر تقارب روتش (Roache Grid Convergence Index GCI)
-    </text>
-  </svg>
-  `;
-}
-
-/**
- * Generate Melting Progress Curve SVG (for LHTES)
- */
-function generateMeltingCurveSvg(project?: ThesisProject): string {
-  if (!project?.meltingComparison || project.meltingComparison.length === 0) {
-    return '';
-  }
-
-  const curves = project.meltingComparison.map((item, idx) => {
-    const colors = ['#10b981', '#38bdf8', '#f43f5e', '#a855f7'];
-    const color = item.color || colors[idx % colors.length];
-    const xPos = 200 + idx * 100;
-    return `
-    <path d="M 70 180 Q ${xPos - 50} ${160 - idx * 10} ${xPos} 45" fill="none" stroke="${color}" stroke-width="2.5"/>
-    <circle cx="${xPos}" cy="45" r="4" fill="${color}"/>
-    <text x="${xPos - 40}" y="${65 + idx * 15}" fill="${color}" font-size="9" font-weight="bold">${item.caseName} (${item.t95Hours}h)</text>
-    `;
-  }).join('');
-
-  return `
-  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 680 240" width="680" height="240" style="background:#0f172a; border-radius:8px; font-family:'Segoe UI',Arial,sans-serif;">
-    <rect x="70" y="30" width="540" height="150" fill="#1e293b" fill-opacity="0.4" stroke="#334155" stroke-width="1.5"/>
-    <line x1="70" y1="180" x2="610" y2="180" stroke="#64748b" stroke-width="1.5"/>
-    <line x1="70" y1="30" x2="70" y2="180" stroke="#64748b" stroke-width="1.5"/>
-
-    <!-- t95 Threshold Line (95% melt) -->
-    <line x1="70" y1="45" x2="610" y2="45" stroke="#fbbf24" stroke-dasharray="5 4" stroke-width="1.5"/>
-    <text x="520" y="40" fill="#fbbf24" font-size="10" font-weight="bold">t95 Criterion (95% Melted)</text>
-
-    ${curves}
-
-    <!-- Axes Labels -->
-    <text x="340" y="215" fill="#e2e8f0" font-size="11" font-weight="bold" text-anchor="middle">Charging Time (Hours)</text>
-    <text x="25" y="105" fill="#e2e8f0" font-size="11" font-weight="bold" text-anchor="middle" transform="rotate(-90 25 105)">Liquid Fraction β</text>
-  </svg>
-  `;
-}
-
-/**
- * Generate Logarithmic Residuals History SVG
- */
-function generateResidualsPlotSvg(): string {
-  return `
-  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 680 220" width="680" height="220" style="background:#0f172a; border-radius:8px; font-family:'Segoe UI',Arial,sans-serif;">
-    <rect x="70" y="30" width="540" height="140" fill="#1e293b" fill-opacity="0.4" stroke="#334155" stroke-width="1.5"/>
-    
-    <!-- Y-axis Log Ticks -->
-    <text x="55" y="45" fill="#94a3b8" font-size="9" text-anchor="end">1e-0</text>
-    <text x="55" y="80" fill="#94a3b8" font-size="9" text-anchor="end">1e-2</text>
-    <text x="55" y="115" fill="#94a3b8" font-size="9" text-anchor="end">1e-4</text>
-    <text x="55" y="150" fill="#94a3b8" font-size="9" text-anchor="end">1e-6</text>
-
-    <!-- Continuity Residual Line -->
-    <path d="M 70 50 Q 160 70 250 100 T 420 140 T 610 162" fill="none" stroke="#ef4444" stroke-width="2"/>
-    <!-- Velocity Residual Line -->
-    <path d="M 70 45 Q 150 75 240 110 T 410 148 T 610 165" fill="none" stroke="#38bdf8" stroke-width="2"/>
-    <!-- Energy Residual Line -->
-    <path d="M 70 40 Q 140 85 230 120 T 400 155 T 610 168" fill="none" stroke="#10b981" stroke-width="2"/>
-
-    <!-- Convergence Threshold -->
-    <line x1="70" y1="160" x2="610" y2="160" stroke="#fbbf24" stroke-dasharray="4 4" stroke-width="1"/>
-    <text x="500" y="156" fill="#fbbf24" font-size="9">Convergence Criterion = 1e-6</text>
-
-    <!-- Legend -->
-    <g transform="translate(160, 35)">
-      <line x1="0" y1="5" x2="15" y2="5" stroke="#ef4444" stroke-width="2"/>
-      <text x="20" y="9" fill="#e2e8f0" font-size="10">Continuity</text>
-      <line x1="90" y1="5" x2="105" y2="5" stroke="#38bdf8" stroke-width="2"/>
-      <text x="110" y="9" fill="#e2e8f0" font-size="10">Velocity (X/Y)</text>
-      <line x1="190" y1="5" x2="205" y2="5" stroke="#10b981" stroke-width="2"/>
-      <text x="210" y="9" fill="#e2e8f0" font-size="10">Energy</text>
-    </g>
-
-    <text x="340" y="195" fill="#e2e8f0" font-size="11" font-weight="bold" text-anchor="middle">Iterations (0 to 1500)</text>
-  </svg>
-  `;
-}
-
-/**
- * Generate Visual Finite Volume / Finite Element Mesh Grid Schematic SVG
- */
-function generateMeshDiscretizationSvg(project: ThesisProject): string {
-  const isFEA = project.field === 'FEA';
-  const isThermal = project.field === 'Thermal';
-
-  if (isFEA) {
-    return `
-    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 680 240" width="680" height="240" style="background:#0f172a; border-radius:8px; font-family:'Segoe UI',Arial,sans-serif;">
-      <rect width="680" height="240" fill="#0f172a"/>
-      <g stroke="#38bdf8" stroke-width="0.8" fill="rgba(56, 189, 248, 0.08)">
-        ${Array.from({ length: 8 }, (_, row) =>
-          Array.from({ length: 24 }, (_, col) => {
-            const x = 70 + col * 22;
-            const y = 40 + row * 18;
-            return `<rect x="${x}" y="${y}" width="22" height="18"/>`;
-          }).join('')
-        ).join('')}
-      </g>
-      <rect x="50" y="35" width="20" height="154" fill="#334155" stroke="#64748b" stroke-width="2"/>
-      <text x="35" y="210" fill="#94a3b8" font-size="10" font-weight="bold">Fixed Base (X=0)</text>
-      <g fill="#f43f5e" stroke="#fff" stroke-width="1">
-        ${Array.from({ length: 9 }, (_, r) => `<circle cx="70" cy="${40 + r * 18}" r="2.5"/>`).join('')}
-      </g>
-      <text x="340" y="25" fill="#e2e8f0" font-size="11" font-weight="bold" text-anchor="middle">
-        Structural Hexahedral Mesh (ANSYS SOLID186 20-Node Elements)
-      </text>
-      <text x="70" y="210" fill="#f43f5e" font-size="10">High Refinement at Clamped Root (Stress Singularity Guard)</text>
-      <text x="598" y="120" fill="#38bdf8" font-size="10" text-anchor="middle">Free Tip</text>
-      <line x1="598" y1="50" x2="598" y2="180" stroke="#f43f5e" stroke-width="2" stroke-dasharray="3 3"/>
-    </svg>
-    `;
-  }
-
-  if (isThermal) {
-    return `
-    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 680 240" width="680" height="240" style="background:#0f172a; border-radius:8px; font-family:'Segoe UI',Arial,sans-serif;">
-      <rect width="680" height="240" fill="#0f172a"/>
-      <g transform="translate(180, 115)">
-        <circle cx="0" cy="0" r="95" fill="none" stroke="#64748b" stroke-width="2"/>
-        <circle cx="0" cy="0" r="28" fill="#1e293b" stroke="#f59e0b" stroke-width="2.5"/>
-        ${[38, 48, 58, 68, 78, 88].map((r) => `<circle cx="0" cy="0" r="${r}" fill="none" stroke="#334155" stroke-width="0.8"/>`).join('')}
-        ${Array.from({ length: 24 }, (_, i) => {
-          const angle = (i * Math.PI) / 12;
-          const x1 = Math.cos(angle) * 28;
-          const y1 = Math.sin(angle) * 28;
-          const x2 = Math.cos(angle) * 95;
-          const y2 = Math.sin(angle) * 95;
-          return `<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" stroke="#1e293b" stroke-width="0.8"/>`;
-        }).join('')}
-        ${[0, Math.PI / 2, Math.PI, (3 * Math.PI) / 2].map((angle) => {
-          const x2 = Math.cos(angle) * 82;
-          const y2 = Math.sin(angle) * 82;
-          return `<line x1="0" y1="0" x2="${x2}" y2="${y2}" stroke="#10b981" stroke-width="3"/>`;
-        }).join('')}
-        <text x="0" y="4" fill="#f59e0b" font-size="8" font-weight="bold" text-anchor="middle">HTF Tube</text>
-      </g>
-      <g transform="translate(340, 25)">
-        <text x="140" y="15" fill="#e2e8f0" font-size="11" font-weight="bold" text-anchor="middle">
-          Axial Slice Discretization (Z-Axis = 0.50 m)
-        </text>
-        <rect x="20" y="25" width="240" height="130" fill="none" stroke="#64748b" stroke-width="1.5"/>
-        ${Array.from({ length: 12 }, (_, c) => `<line x1="${20 + c * 20}" y1="25" x2="${20 + c * 20}" y2="155" stroke="#334155" stroke-width="0.8"/>`).join('')}
-        ${Array.from({ length: 8 }, (_, r) => `<line x1="20" y1="${25 + r * 16.25}" x2="260" y2="${25 + r * 16.25}" stroke="#334155" stroke-width="0.8"/>`).join('')}
-        <rect x="20" y="80" width="240" height="20" fill="rgba(245, 158, 11, 0.15)" stroke="#f59e0b" stroke-width="1"/>
-        <text x="140" y="93" fill="#f59e0b" font-size="9" text-anchor="middle">Helical Coil Path (Wall Inflation y+ &lt; 1)</text>
-      </g>
-      <g transform="translate(50, 220)">
-        <circle cx="10" cy="-5" r="4" fill="#10b981"/>
-        <text x="20" y="-1" fill="#cbd5e1" font-size="10">زعانف شجرية نحاسية مدمجة</text>
-        <circle cx="210" cy="-5" r="4" fill="#f59e0b"/>
-        <text x="220" y="-1" fill="#cbd5e1" font-size="10">أنبوب مائع نقل الحرارة (HTF Coil)</text>
-        <rect x="420" y="-9" width="12" height="8" fill="none" stroke="#38bdf8" stroke-width="1"/>
-        <text x="440" y="-1" fill="#cbd5e1" font-size="10">خلايا متطابقة متعامدة (Orthogonal &gt; 0.85)</text>
-      </g>
-    </svg>
-    `;
-  }
-
-  return `
-  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 680 240" width="680" height="240" style="background:#0f172a; border-radius:8px; font-family:'Segoe UI',Arial,sans-serif;">
-    <rect width="680" height="240" fill="#0f172a"/>
-    <text x="340" y="25" fill="#e2e8f0" font-size="11" font-weight="bold" text-anchor="middle">
-      Computational Fluid Domain Mesh (C-Grid & Boundary Layer Inflation)
-    </text>
-    <rect x="50" y="35" width="580" height="150" fill="none" stroke="#64748b" stroke-width="1.5"/>
-    ${[50, 90, 140, 200, 260, 310, 350, 390, 440, 500, 560, 630].map((x) => `<line x1="${x}" y1="35" x2="${x}" y2="185" stroke="#1e293b" stroke-width="0.8"/>`).join('')}
-    ${[35, 60, 85, 105, 115, 125, 145, 165, 185].map((y) => `<line x1="50" y1="${y}" x2="630" y2="${y}" stroke="#1e293b" stroke-width="0.8"/>`).join('')}
-    <rect x="220" y="90" width="220" height="50" fill="rgba(56, 189, 248, 0.12)" stroke="#38bdf8" stroke-dasharray="3 3"/>
-    <path d="M 250 115 Q 310 98 400 115 Q 310 126 250 115 Z" fill="#0284c7" stroke="#ffffff" stroke-width="1.5"/>
-    <path d="M 246 115 Q 310 93 404 115 Q 310 131 246 115 Z" fill="none" stroke="#f59e0b" stroke-width="1" stroke-dasharray="2 2"/>
-    <text x="70" y="115" fill="#38bdf8" font-size="10" font-weight="bold">Velocity Inlet</text>
-    <text x="590" y="115" fill="#f43f5e" font-size="10" font-weight="bold" text-anchor="end">Pressure Outlet</text>
-    <text x="330" y="82" fill="#f59e0b" font-size="10">Inflation Prism Layers (y+ ~ 1.0)</text>
-    <text x="340" y="215" fill="#94a3b8" font-size="10" text-anchor="middle">Structured O-Grid / Hex Core Transition (Roache GCI Verified Level M3)</text>
-  </svg>
-  `;
-}
-
-/**
- * Safe UTF-8 to Base64 encoder for Unicode and Arabic SVG text strings
- */
-function utf8ToBase64(str: string): string {
-  try {
-    return btoa(
-      encodeURIComponent(str).replace(/%([0-9A-F]{2})/g, (_, p1) =>
-        String.fromCharCode(parseInt(p1, 16))
-      )
-    );
-  } catch (err) {
-    console.error('utf8ToBase64 encoding error:', err);
-    return '';
-  }
-}
-
-/**
- * Convert SVG string to Base64 Image Data URL (PNG canvas raster with Base64 SVG fallback)
- * Guaranteed to produce an <img> compatible Data URL for Word
- */
-function svgToBase64DataUrl(svgString: string): string {
-  if (!svgString) return '';
-  const svgWithXmlns = svgString.includes('xmlns=')
-    ? svgString
-    : svgString.replace('<svg', '<svg xmlns="http://www.w3.org/2000/svg"');
-  const base64 = utf8ToBase64(svgWithXmlns);
-  return base64 ? `data:image/svg+xml;base64,${base64}` : '';
-}
-
-async function svgToPngDataUrl(svgString: string, width = 680, height = 280): Promise<string> {
-  if (!svgString || typeof document === 'undefined') return '';
-  const fallbackSvgDataUrl = svgToBase64DataUrl(svgString);
-
-  return new Promise((resolve) => {
-    try {
-      const img = new Image();
-      const svgUrl = fallbackSvgDataUrl;
-
-      const timer = setTimeout(() => {
-        resolve(fallbackSvgDataUrl);
-      }, 1200);
-
-      img.onload = () => {
-        clearTimeout(timer);
-        try {
-          const canvas = document.createElement('canvas');
-          canvas.width = width;
-          canvas.height = height;
-          const ctx = canvas.getContext('2d');
-          if (ctx) {
-            ctx.fillStyle = '#0f172a';
-            ctx.fillRect(0, 0, width, height);
-            ctx.drawImage(img, 0, 0, width, height);
-            const dataUrl = canvas.toDataURL('image/png');
-            if (dataUrl && dataUrl.length > 200) {
-              resolve(dataUrl);
-              return;
-            }
-          }
-        } catch (e) {
-          // ignore canvas taint
-        }
-        resolve(fallbackSvgDataUrl);
-      };
-
-      img.onerror = () => {
-        clearTimeout(timer);
-        resolve(fallbackSvgDataUrl);
-      };
-
-      img.src = svgUrl;
-    } catch {
-      resolve(fallbackSvgDataUrl);
-    }
-  });
-}
-
-/**
- * Universal Master Word Exporter (.doc format with full embedded images, SVGs, and formal thesis dissertation chapters)
- */
-export async function exportToWordDocument(project: ThesisProject) {
-  // 1. Render all real 2D contour fields into Base64 PNGs
-  const renderedContours = (project.contours || []).map((c) => {
-    const pngDataUrl = renderContourToDataUrl(c, 600, 280);
-    return {
-      contour: c,
-      pngDataUrl,
-    };
-  });
-
-  // 2. Generate SVG schematics and plots
-  const cadSvg = generateCadSchematicSvg(project);
-  const meshVisualSvg = generateMeshDiscretizationSvg(project);
-  const validationSvg = generateValidationPlotSvg(project);
-  const meshGciSvg = generateMeshGciPlotSvg(project);
-  const residualsSvg = generateResidualsPlotSvg();
-  const meltingSvg = (project.meltingComparison && project.field === 'Thermal') ? generateMeltingCurveSvg(project) : '';
-
-  // 2.5 Convert all SVGs into Base64 PNGs so Microsoft Word can display them without issue
-  const cadPng = await svgToPngDataUrl(cadSvg, 680, 260);
-  const meshVisualPng = await svgToPngDataUrl(meshVisualSvg, 680, 240);
-  const meshGciPng = await svgToPngDataUrl(meshGciSvg, 680, 240);
-  const residualsPng = await svgToPngDataUrl(residualsSvg, 680, 220);
-  const validationPng = await svgToPngDataUrl(validationSvg, 680, 280);
-  const meltingPng = meltingSvg ? await svgToPngDataUrl(meltingSvg, 680, 280) : '';
-
-  // 3. Assemble complete HTML content for Microsoft Word
-  const htmlContent = `
-    <html xmlns:o='urn:schemas-microsoft-com:office:office' xmlns:w='urn:schemas-microsoft-com:office:word' xmlns='http://www.w3.org/TR/REC-html40'>
-    <head>
-      <meta charset='utf-8'>
-      <title>${project.title}</title>
-      <style>
-        @page {
-          size: A4;
-          margin: 2.5cm 2.0cm 2.5cm 2.0cm;
-          mso-header-margin: 1.2cm;
-          mso-footer-margin: 1.2cm;
-        }
-        body {
-          font-family: 'Times New Roman', 'Simplified Arabic', 'Calibri', serif;
-          font-size: 12pt;
-          line-height: 1.6;
-          color: #111827;
-          direction: rtl;
-          text-align: right;
-        }
-        h1.thesis-title {
-          font-size: 21pt;
-          color: #0369a1;
-          border-bottom: 3px double #0284c7;
-          padding-bottom: 12px;
-          margin-top: 15px;
-          text-align: center;
-          line-height: 1.4;
-        }
-        h1.chapter-title {
-          font-size: 17pt;
-          color: #0f172a;
-          background-color: #f1f5f9;
-          border-right: 6px solid #0284c7;
-          padding: 8px 14px;
-          margin-top: 35px;
-          page-break-before: always;
-        }
-        h2.section-title {
-          font-size: 14pt;
-          color: #0369a1;
-          border-bottom: 1.5px solid #cbd5e1;
-          padding-bottom: 4px;
-          margin-top: 24px;
-        }
-        h3.subsection-title {
-          font-size: 12.5pt;
-          color: #334155;
-          margin-top: 16px;
-          font-weight: bold;
-        }
-        p {
-          margin: 8px 0;
-          text-align: justify;
-          line-height: 1.65;
-        }
-        .meta-box {
-          background: #f8fafc;
-          border: 1px solid #cbd5e1;
-          padding: 16px;
-          margin: 18px 0;
-          border-radius: 8px;
-        }
-        table.formal-table {
-          width: 100%;
-          border-collapse: collapse;
-          margin: 14px 0;
-          font-size: 10.5pt;
-          direction: rtl;
-        }
-        table.formal-table th {
-          background-color: #0284c7;
-          color: #ffffff;
-          padding: 9px 10px;
-          border: 1px solid #0369a1;
-          text-align: center;
-          font-weight: bold;
-        }
-        table.formal-table td {
-          padding: 7px 10px;
-          border: 1px solid #cbd5e1;
-          text-align: center;
-        }
-        table.formal-table tr:nth-child(even) {
-          background-color: #f8fafc;
-        }
-        .table-caption {
-          font-size: 10.5pt;
-          font-weight: bold;
-          color: #334155;
-          text-align: center;
-          margin-top: 6px;
-          margin-bottom: 14px;
-        }
-        .figure-caption {
-          font-size: 10.5pt;
-          font-weight: bold;
-          color: #334155;
-          text-align: center;
-          margin-top: 8px;
-          margin-bottom: 22px;
-        }
-        .equation-box {
-          background: #f8fafc;
-          border-right: 4px solid #0284c7;
-          padding: 10px 16px;
-          font-family: 'Cambria Math', monospace;
-          margin: 12px 0;
-          direction: ltr;
-          text-align: left;
-          font-size: 11pt;
-          color: #0f172a;
-        }
-        .figure-container {
-          text-align: center;
-          margin: 18px 0;
-          page-break-inside: avoid;
-        }
-        .figure-container img {
-          border: 1px solid #cbd5e1;
-          border-radius: 6px;
-          max-width: 100%;
-          height: auto;
-        }
-        .colorbar-box {
-          display: inline-block;
-          margin-top: 6px;
-          font-size: 9.5pt;
-          font-family: monospace;
-          background: #f1f5f9;
-          padding: 4px 12px;
-          border-radius: 4px;
-          border: 1px solid #cbd5e1;
-        }
-        .footer-note {
-          font-size: 9pt;
-          color: #64748b;
-          text-align: center;
-          margin-top: 50px;
-          border-top: 1px solid #e2e8f0;
-          padding-top: 10px;
-        }
-      </style>
-    </head>
-    <body>
-
-      <!-- ================= COVER PAGE ================= -->
-      <div style="text-align: center; margin-top: 20px; page-break-after: always; padding-bottom: 40px;">
-        <p style="font-size: 15pt; font-weight: bold; margin: 3px;">${project.university}</p>
-        <p style="font-size: 13pt; color: #334155; margin: 2px;">${project.department}</p>
-        <p style="font-size: 11pt; color: #64748b; margin: 2px;">وحدة النمذجة والمحاكاة الحاسوبية المتقدمة (CFD & FEA Multiphysics Group)</p>
-
-        <div style="margin: 60px 0 40px 0;">
-          <p style="font-size: 13pt; color: #0284c7; font-weight: bold; margin-bottom: 8px;">
-            أطروحة وتقرير التحليل الهندسي المعتمد (Master of Science Thesis / CAE Report)
-          </p>
-          <h1 class="thesis-title">${project.title}</h1>
-          <p style="font-size: 13pt; color: #475569; font-style: italic; direction: ltr; margin-top: 10px;">
-            ${project.titleEn}
-          </p>
-        </div>
-
-        <div class="meta-box" style="text-align: right; max-width: 580px; margin: 0 auto;">
-          <table style="width: 100%; border: none;">
-            <tr>
-              <td style="border: none; text-align: right; width: 40%;"><strong>الباحث / مهندس المحاكاة:</strong></td>
-              <td style="border: none; text-align: right; font-weight: bold; color: #0f172a;">${project.author} ${project.studentId ? `(ID: ${project.studentId})` : ''}</td>
-            </tr>
-            <tr>
-              <td style="border: none; text-align: right;"><strong>المشرف الأكاديمي المعتمد:</strong></td>
-              <td style="border: none; text-align: right; color: #0369a1;">${project.supervisor}</td>
-            </tr>
-            ${project.adviser ? `
-            <tr>
-              <td style="border: none; text-align: right;"><strong>المستشار الهندسي المشارك:</strong></td>
-              <td style="border: none; text-align: right;">${project.adviser}</td>
-            </tr>` : ''}
-            <tr>
-              <td style="border: none; text-align: right;"><strong>بيئة المحاكاة والحل:</strong></td>
-              <td style="border: none; text-align: right; font-family: monospace;">${project.softwareType}</td>
-            </tr>
-            <tr>
-              <td style="border: none; text-align: right;"><strong>المجال التخصصي:</strong></td>
-              <td style="border: none; text-align: right;">${project.field}</td>
-            </tr>
-            <tr>
-              <td style="border: none; text-align: right;"><strong>معايير المطابقة والاعتماد:</strong></td>
-              <td style="border: none; text-align: right; color: #059669; font-weight: bold;">
-                ${project.standardsCompliance?.join(' · ') || 'ASME V&V 20-2009 / Roache GCI'}
-              </td>
-            </tr>
-            <tr>
-              <td style="border: none; text-align: right;"><strong>تاريخ الإصدار والاعتماد:</strong></td>
-              <td style="border: none; text-align: right;">${project.date}</td>
-            </tr>
-          </table>
-        </div>
-      </div>
-
-      <!-- ================= ABSTRACT ================= -->
-      <h1 class="chapter-title">الملخص الأكاديمي الشامل (Executive Abstract)</h1>
-      <h2 class="section-title">الملخص باللغة العربية</h2>
-      <p>${project.abstractAr}</p>
-
-      <h2 class="section-title" style="direction: ltr; text-align: left;">English Abstract</h2>
-      <p style="direction: ltr; text-align: justify;">${project.abstractEn}</p>
-
-      <!-- ================= CHAPTER 1: INTRODUCTION & LITERATURE REVIEW ================= -->
-      <h1 class="chapter-title">الفصل الأول: الإطار النظري ومراجعة الأدبيات السابقة (Literature Review)</h1>
-      <p>
-        تعتبر دراسة ونمذجة المنظومات الهندسية الحالية ركيزة أساسية في تطوير التطبيقات الصناعية المعاصرة. تهدف هذه الدراسة إلى تقديم تحليل فيزيائي ورقمي دقيق يعتمد على قوانين بقاء الكتلة، كمية الحركة، والطاقة، مع مراعاة كافة التفاعلات المتبادلة بين الأطوار والشروط الحدية الديناميكية.
-      </p>
-
-      ${project.literatureReview && project.literatureReview.length > 0 ? `
-      <h2 class="section-title">مصفوفة مراجعة الدراسات المرجعية والفجوة البحثية (State-of-the-Art Matrix)</h2>
-      <p>
-        يلخص الجدول التالي أبرز الدراسات السابقة المنشورة في المجلات المحكمة ذات الصلة، مع بيان التشكيل الهندسي، أهم النتائج التراكمية، وتحديد الفجوة البحثية (Research Gap) التي تغطيها هذه الأطروحة:
-      </p>
-      <table class="formal-table">
-        <thead>
-          <tr>
-            <th>الدراسة المرجعية</th>
-            <th>التشكيل الهندسي المطبق</th>
-            <th>أهم النتائج المحققة</th>
-            <th>الفجوة البحثية المستهدفة</th>
-          </tr>
-        </thead>
-        <tbody>
-          ${project.literatureReview
-            .map(
-              (r) => `
-            <tr>
-              <td><strong>${r.study}</strong></td>
-              <td>${r.configuration}</td>
-              <td>${r.keyFinding}</td>
-              <td style="color: #b91c1c;">${r.gap}</td>
-            </tr>
-          `
-            )
-            .join('')}
-        </tbody>
-      </table>
-      <p class="table-caption">الجدول 1.1: مصفوفة الدراسات المرجعية ومقارنة الفجوات الهندسية</p>
-      ` : ''}
-
-      <!-- ================= CHAPTER 2: CAD GEOMETRY & SCHEMATICS ================= -->
-      <h1 class="chapter-title">الفصل الثاني: التصميم الهندسي ونمذجة الـ CAD (Geometry & CAD Schematics)</h1>
-      <p>
-        تم بناء وتوليد النموذج الهندسي بدقة متناهية متوافقاً مع برمجيات النمذجة الرائدة (ANSYS DesignModeler / SpaceClaim). يوضح المرتسم الهندسي المرفق أدناه الأبعاد الحقيقية، المحاور، مواقع المدخل والمخرج، والشروط الحدية المطبقة:
-      </p>
-
-      <div class="figure-container">
-        ${cadPng ? `<img src="${cadPng}" alt="CAD Schematic" width="580" style="width: 580px; max-width: 100%; border: 1px solid #cbd5e1; border-radius: 4px;" />` : cadSvg}
-        <p class="figure-caption">الشكل 2.1: المرتسم الهندسي المتكامل ومخطط الأبعاد والشروط الحدية (CAD Schematic)</p>
-      </div>
-
-      ${project.cadSpecs ? `
-      <h2 class="section-title">المواصفات الهندسية ومصفوفة الأبعاد</h2>
-      <table class="formal-table">
-        <thead>
-          <tr>
-            <th>المكون الهندسي</th>
-            <th>المواصفة والتصميم المعتمد</th>
-            <th>الدور الوظيفي والفيزيائي</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr>
-            <td><strong>الغلاف الخارجي (Shell)</strong></td>
-            <td>${project.cadSpecs.shell}</td>
-            <td>الوعاء الرئيسي الحاوي لوسط التبادل مع عزل حراري محكم</td>
-          </tr>
-          <tr>
-            <td><strong>الكويل / الأنبوب (Coil / Tube)</strong></td>
-            <td>${project.cadSpecs.coil}</td>
-            <td>مسار سريان مائع التبادل الحراري أو ناقل الأحمال الميكانيكية</td>
-          </tr>
-          <tr>
-            <td><strong>الزعانف المتدرجة (Fins)</strong></td>
-            <td>${project.cadSpecs.fins}</td>
-            <td>تسريع وتوجيه انتقال الحرارة والتغلب على ضعف التوصيل</td>
-          </tr>
-          <tr>
-            <td><strong>مادة التخزين / الهيكل (Medium)</strong></td>
-            <td>${project.cadSpecs.pcm}</td>
-            <td>الوسط الفيزيائي الأساسي لتخزين الطاقة أو مقاومة الإجهادات</td>
-          </tr>
-          <tr>
-            <td><strong>الجسيمات النانوية (Nanoparticles)</strong></td>
-            <td>${project.cadSpecs.nano}</td>
-            <td>تحسين الخواص الثيرموفيزيائية ورفع كفاءة النقل الحراري</td>
-          </tr>
-        </tbody>
-      </table>
-      <p class="table-caption">الجدول 2.1: مصفوفة الأبعاد والمواصفات الهندسية للمنظومة</p>
-      ` : ''}
-
-      <!-- ================= CHAPTER 3: MATHEMATICAL MODELING ================= -->
-      <h1 class="chapter-title">الفصل الثالث: النمذجة الرياضية والمعادلات الحاكمة (Mathematical Modeling)</h1>
-      <p>
-        تخضع المحاكاة العددية لمنظومة المعادلات التفاضلية الجزئية غير الخطية الحاكمة لجريان الموائع وانتقال الحرارة والميكانيكا الإنشائية. فيما يلي الصياغات الرياضية الصارمة لكل قانون حفظ:
-      </p>
-
-      ${(project.governingEquations || [])
-        .map(
-          (eq, idx) => `
-        <h3 class="subsection-title">3.${idx + 1} ${eq.name}</h3>
-        <p>${eq.description}</p>
-        <div class="equation-box">${eq.latex}</div>
-      `
-        )
-        .join('')}
-
-      <!-- ================= CHAPTER 4: PROPERTIES & BOUNDARY CONDITIONS ================= -->
-      <h1 class="chapter-title">الفصل الرابع: الخصائص الثيرموفيزيائية والشروط الحدودية (Boundary Conditions & Materials)</h1>
-      <h2 class="section-title">4.1 الخصائص المادية للمنظومة</h2>
-      <table class="formal-table">
-        <thead>
-          <tr>
-            <th>الخاصية الفيزيائية</th>
-            <th>الرمز</th>
-            <th>القيمة المعتمدة</th>
-            <th>الحالة / الطور</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr><td>اسم المادة المعتمدة</td><td>Name</td><td><strong>${project.material?.name || 'مادة النموذج'}</strong></td><td>${project.material?.phaseOrType || 'صلب'}</td></tr>
-          <tr><td>الكثافة الكتلية</td><td>&rho;</td><td>${project.material?.density || 'غير محدد'}</td><td>-</td></tr>
-          ${project.material?.viscosity ? `<tr><td>اللزوجة الديناميكية</td><td>&mu;</td><td>${project.material.viscosity}</td><td>طور السائل</td></tr>` : ''}
-          ${project.material?.specificHeat ? `<tr><td>الحرارة النوعية</td><td>c_p</td><td>${project.material.specificHeat}</td><td>-</td></tr>` : ''}
-          ${project.material?.thermalConductivity ? `<tr><td>التوصيلية الحرارية</td><td>k</td><td>${project.material.thermalConductivity}</td><td>-</td></tr>` : ''}
-          ${project.material?.elasticModulus ? `<tr><td>معامل المرونة (يونغ)</td><td>E</td><td>${project.material.elasticModulus}</td><td>مرن</td></tr>` : ''}
-          ${project.material?.poissonRatio ? `<tr><td>نسبة بواسون</td><td>&nu;</td><td>${project.material.poissonRatio}</td><td>-</td></tr>` : ''}
-          ${project.material?.yieldStrength ? `<tr><td>إجهاد الخضوع للمادة</td><td>&sigma;_y</td><td>${project.material.yieldStrength}</td><td>حد الخضوع</td></tr>` : ''}
-        </tbody>
-      </table>
-      <p class="table-caption">الجدول 4.1: مصفوفة الخواص الفيزيائية والميكانيكية للمادة</p>
-
-      <h2 class="section-title">4.2 الشروط الحدودية المطبقة (Applied Boundary Conditions)</h2>
-      <table class="formal-table">
-        <thead>
-          <tr>
-            <th>المنطقة / الحد الهندسي</th>
-            <th>نوع الشرط الحدودي</th>
-            <th>القيمة الرقمية</th>
-            <th>الوحدة</th>
-            <th>التفسير الفيزيائي</th>
-          </tr>
-        </thead>
-        <tbody>
-          ${(project.boundaryConditions || [])
-            .map(
-              (bc) => `
-            <tr>
-              <td><strong>${bc.name}</strong></td>
-              <td>${bc.type}</td>
-              <td style="font-family: monospace; font-weight: bold; color: #0369a1;">${bc.value}</td>
-              <td>${bc.unit}</td>
-              <td style="text-align: right;">${bc.description}</td>
-            </tr>
-          `
-            )
-            .join('')}
-        </tbody>
-      </table>
-      <p class="table-caption">الجدول 4.2: الشروط الحدودية المطبقة على أسطح ومداخل المنظومة</p>
-
-      <!-- ================= CHAPTER 5: MESH INDEPENDENCE & ROACHE GCI ================= -->
-      <h1 class="chapter-title">الفصل الخامس: التوليد الشبكي ودراسة استقلالية الميش (Mesh Study & Roache GCI)</h1>
-      <p>
-        تم تطبيق منهجية روتش لحساب مؤشر التقارب الشبكي (Roache Grid Convergence Index GCI 1998) والتأكد من استقلالية الحل تماماً عن حجم الخلايا وفق معايير الجمعية الأمريكية لمهندسي الميكانيك (ASME V&V 20-2009).
-      </p>
-
-      <div class="figure-container">
-        ${meshVisualPng ? `<img src="${meshVisualPng}" alt="Mesh Discretization Structure" width="580" style="width: 580px; max-width: 100%; border: 1px solid #cbd5e1; border-radius: 4px;" />` : meshVisualSvg}
-        <p class="figure-caption">الشكل 5.1: مرتسم التوليد الشبكي الهندسي وتوزيع خلايا الميش وطبقات التضخم الجدارية (Mesh Geometry & Inflation Layers)</p>
-      </div>
-
-      <div class="figure-container">
-        ${meshGciPng ? `<img src="${meshGciPng}" alt="Roache GCI Chart" width="580" style="width: 580px; max-width: 100%; border: 1px solid #cbd5e1; border-radius: 4px;" />` : meshGciSvg}
-        <p class="figure-caption">الشكل 5.2: مخطط دراسة تقارب مستويات الميش ومؤشر خطأ روتش (Roache GCI Decay Curve)</p>
-      </div>
-
-      <h2 class="section-title">مؤشرات جودة خلايا الشبكة</h2>
-      <table class="formal-table">
-        <thead>
-          <tr>
-            <th>معيار الجودة الهندسي</th>
-            <th>القيمة المحسوبة في النموذج</th>
-            <th>الحد المعياري المقبول (ASME)</th>
-            <th>التقييم الفني</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr><td>أدنى جودة تعامد (Min Orthogonal Quality)</td><td style="font-weight: bold; color: #059669;">${project.meshStudy?.minOrthogonalQuality ?? 0.85}</td><td>&gt; 0.70</td><td>ممتاز (تقارب عالي)</td></tr>
-          <tr><td>أقصى انحراف للخلايا (Max Skewness)</td><td style="font-weight: bold; color: #0284c7;">${project.meshStudy?.maxSkewness ?? 0.22}</td><td>&lt; 0.25</td><td>ممتاز (تدرج منتظم)</td></tr>
-          <tr><td>نسبة الباع الأقصى (Max Aspect Ratio)</td><td style="font-weight: bold;">${project.meshStudy?.maxAspectRatio ?? 3.2}</td><td>&lt; 5.0</td><td>ضمن المعايير الصناعية</td></tr>
-          <tr><td>معامل انحراف الحجم (Average Equisize Skew)</td><td>${project.meshStudy?.averageEquisizeSkew ?? 0.14}</td><td>&lt; 0.20</td><td>سلس ومتناسق</td></tr>
-        </tbody>
-      </table>
-      <p class="table-caption">الجدول 5.1: مؤشرات جودة خلايا الميش الهندسية</p>
-
-      <h2 class="section-title">نتائج دراسة استقلالية الشبكة ومؤشر GCI</h2>
-      <table class="formal-table">
-        <thead>
-          <tr>
-            <th>مستوى الشبكة</th>
-            <th>عدد العناصر (Elements)</th>
-            <th>عدد العقد (Nodes)</th>
-            <th>الحجم الاسمي (mm)</th>
-            <th>القيمة المحسوبة</th>
-            <th>نسبة الخطأ (%)</th>
-            <th>مؤشر GCI (%)</th>
-          </tr>
-        </thead>
-        <tbody>
-          ${(project.meshStudy?.meshLevels || [])
-            .map(
-              (lvl) => `
-            <tr>
-              <td><strong>${lvl.levelName}</strong></td>
-              <td>${lvl.elements.toLocaleString()}</td>
-              <td>${lvl.nodes.toLocaleString()}</td>
-              <td>${lvl.gridSpacingMm}</td>
-              <td style="font-weight: bold;">${lvl.keyResultValue}</td>
-              <td>${lvl.percentageError}%</td>
-              <td style="font-weight: bold; color: ${lvl.gciPercent < 2 ? '#059669' : '#0f172a'};">${lvl.gciPercent}%</td>
-            </tr>
-          `
-            )
-            .join('')}
-        </tbody>
-      </table>
-      <p class="table-caption">الجدول 5.2: تحليل تقارب الشبكة وحسابات مؤشر روتش (Roache GCI Table)</p>
-      <p><strong>التوصية الهندسية المعتمدة:</strong> ${project.meshStudy?.recommendation || 'الشبكة الدقيقة تلبي شروط الدقة والاستقرار وتطابق معيار ASME V&V 20.'}</p>
-
-      <!-- ================= CHAPTER 11: TECHNICAL ENGINEERING AUDIT ================= -->
-      ${project.engineeringAudit ? `
-      <h1 class="chapter-title">الفصل الحادي عشر: التدقيق الفني والامتثال الهندسي (Engineering Audit & Compliance)</h1>
-      <p>يوثق هذا الفصل سجل التدقيق الفني المعتمد للمشروع لضمان الامتثال للمعايير الهندسية الصارمة:</p>
-      <table class="formal-table">
-        <thead>
-          <tr><th>معيار التدقيق</th><th>الحالة</th><th>ملاحظات المراجع</th></tr>
-        </thead>
-        <tbody>
-          ${project.engineeringAudit.complianceChecks
-            .map(
-              (c) => `
-            <tr>
-              <td>${c.check}</td>
-              <td style="font-weight: bold; color: ${c.status === 'Pass' ? '#059669' : '#b91c1c'};">${c.status}</td>
-              <td>${c.comment || '-'}</td>
-            </tr>
-          `
-            )
-            .join('')}
-        </tbody>
-      </table>
-      <div class="meta-box" style="margin-top: 15px;">
-        <p><strong>معرف التدقيق:</strong> ${project.engineeringAudit.auditId} | <strong>تاريخ:</strong> ${project.engineeringAudit.timestamp}</p>
-        <p><strong>المراجع:</strong> ${project.engineeringAudit.reviewer}</p>
-        <p><strong>التوقيع الهندسي:</strong> <span style="font-family: 'Courier New', monospace; font-weight: bold;">${project.engineeringAudit.engineeringSignature}</span></p>
-      </div>
-      ` : ''}
-      <p>
-        تم ضبط خوارزميات الحل العددي المعتمدة على الضغط (Pressure-Based Coupled Solver) وتطبيق مخططات التشتيت من الدرجة الثانية (Second Order Upwind) لضمان الاستقرار الحسابي ودقة تقارب البواقي حتى 1e-6:
-      </p>
-
-      <div class="figure-container">
-        ${residualsPng ? `<img src="${residualsPng}" alt="Residuals History" width="580" style="width: 580px; max-width: 100%; border: 1px solid #cbd5e1; border-radius: 4px;" />` : residualsSvg}
-        <p class="figure-caption">الشكل 6.1: مخطط تقارب البواقي اللوغاريتمي لمعادلات الاستمرارية والسرعة والطاقة (Residuals History)</p>
-      </div>
-
-      <table class="formal-table">
-        <thead>
-          <tr><th>المعامل العددي</th><th>الإعداد المعتمد في المحاكي</th><th>الفائدة الحسابية</th></tr>
-        </thead>
-        <tbody>
-          <tr><td>نوع المحلل (Solver Type)</td><td>${project.solver?.solverType || (project.field === 'FEA' ? 'Static Structural Sparse Direct' : project.field === 'Thermal' ? 'Thermal Conduction Solver' : 'Pressure-Based Coupled Solver')}</td><td>معالجة سريعة للاقتران الهيدروديناميكي</td></tr>
-          <tr><td>مخطط التشتيت (Discretization)</td><td>${project.solver?.scheme || 'Coupled Pressure-Velocity'}</td><td>دقة من الدرجة الثانية ومنع التشتت العددي</td></tr>
-          <tr><td>حساب التدرجات (Gradients)</td><td>${project.solver?.discretization || 'Second Order Upwind'}</td><td>حساب دقيق لمتجهات الجريان والحرارة</td></tr>
-          <tr><td>معيار التقارب (Convergence Criteria)</td><td style="font-family: monospace; font-weight: bold;">${project.solver?.convergenceCriteria || '10^-6 RMS'}</td><td>انخفاض البواقي دون 10^-6</td></tr>
-          <tr><td>عدد التكرارات المنجزة</td><td style="font-weight: bold;">${project.solver?.iterations || 1500} تكرار</td><td>تحقيق التقارب الكامل والمستقر</td></tr>
-        </tbody>
-      </table>
-      <p class="table-caption">الجدول 6.1: معايير وضبط المحلل العددي ANSYS</p>
-
-      <!-- ================= CHAPTER 7: PARAMETRIC RESULTS & CONTOUR HEATMAPS ================= -->
-      <h1 class="chapter-title">الفصل السابع: تحليل النتائج وحقول الكونتورات الملونة (Contours & Vector Analysis)</h1>
-      <p>
-        يقدم هذا الفصل استعراضاً بصرياً وتحليلياً شاملاً لكافة الخرائط الكونتورية وتدرجات الحقول الفيزيائية المستخرجة من المحاكاة، مدعمة بلوحات الألوان والتدقيق في النقاط الحرجة:
-      </p>
-
-      ${meltingSvg ? `
-      <h2 class="section-title">7.1 دراسة تطور انصهار طور المادة وزمن الانجاز t95</h2>
-      <p>
-        يوضح المخطط البياني التالي مقارنة زمنية دقيقة بين التصميم المقترح (زعانف شجرية متدرجة) وبين الزعانف التقليدية حتى تحقيق اكتمال الانصهار بنسبة 95%:
-      </p>
-      <div class="figure-container">
-        ${meltingPng ? `<img src="${meltingPng}" alt="Melting Progression Curve" width="580" style="width: 580px; max-width: 100%; border: 1px solid #cbd5e1; border-radius: 4px;" />` : meltingSvg}
-        <p class="figure-caption">الشكل 7.1: مقارنة منحنيات كسر السائل وزمن الانصهار t95 للتصاميم المختلفة</p>
-      </div>
-      ` : ''}
-
-      <h2 class="section-title">7.2 الخرائط الكونتورية الملونة وتوزيع الحقول</h2>
-      ${renderedContours
-        .map(
-          (rc, idx) => `
-        <div style="margin-top: 25px; page-break-inside: avoid;">
-          <h3 class="subsection-title">7.2.${idx + 1} خريطة ${rc.contour.name} (${rc.contour.nameEn})</h3>
-          <p>${rc.contour.physicalDescription}</p>
-
-          <div class="figure-container">
-            ${rc.pngDataUrl ? `<img src="${rc.pngDataUrl}" alt="${rc.contour.name}" style="width: 580px; max-width: 100%; border: 2px solid #0284c7; border-radius: 6px;" />` : ''}
-            <div>
-              <span class="colorbar-box">
-                نطاق القيم: <strong style="color: #0369a1;">${rc.contour.minVal} ${rc.contour.unit}</strong> [ الأزرق ] &larr;&rarr; [ الأحمر ] <strong style="color: #b91c1c;">${rc.contour.maxVal} ${rc.contour.unit}</strong>
-              </span>
-            </div>
-            <p class="figure-caption">الشكل 7.${idx + 2}: خريطة توزيع ${rc.contour.name} ونقاط الفحص الميدانية</p>
-          </div>
-
-          ${rc.contour.pointsOfInterest && rc.contour.pointsOfInterest.length > 0 ? `
-          <table class="formal-table" style="font-size: 10pt;">
-            <thead>
-              <tr>
-                <th>رقم النقطة</th>
-                <th>موقع النقطة الحرجة</th>
-                <th>الإحداثيات (%)</th>
-                <th>القيمة المرصودة</th>
-                <th>الوصف الهندسي والفيزيائي</th>
-              </tr>
-            </thead>
-            <tbody>
-              ${rc.contour.pointsOfInterest
-                .map(
-                  (pt, pIdx) => `
-                <tr>
-                  <td><strong>${pIdx + 1}</strong></td>
-                  <td>${pt.label}</td>
-                  <td style="font-family: monospace;">(${pt.xPercent}%, ${pt.yPercent}%)</td>
-                  <td style="font-weight: bold; color: #0284c7;">${pt.value} ${rc.contour.unit}</td>
-                  <td style="text-align: right;">${pt.note}</td>
-                </tr>
-              `
-                )
-                .join('')}
-            </tbody>
-          </table>
-          <p class="table-caption">الجدول 7.${idx + 3}: قراءات النقاط الحرجة لخريطة ${rc.contour.name}</p>
-          ` : ''}
-        </div>
-      `
-        )
-        .join('')}
-
-      <!-- ================= CHAPTER 8: VALIDATION TO ASME V&V 20 ================= -->
-      <h1 class="chapter-title">الفصل الثامن: التحقق التجريبي والمعايرة المعيارية (Experimental Validation to ASME V&V 20)</h1>
-      <p>
-        تم إجراء التحقق والمعايرة بمقارنة النتائج العددية المستخرجة مع البيانات التجريبية المعيارية المنشورة في المراجع العالمية المعتمدة:
-      </p>
-
-      <div class="figure-container">
-        ${validationPng ? `<img src="${validationPng}" alt="Validation Benchmark Plot" width="580" style="width: 580px; max-width: 100%; border: 1px solid #cbd5e1; border-radius: 4px;" />` : validationSvg}
-        <p class="figure-caption">الشكل 8.1: منحنى التحقق والمطابقة بين البيانات التجريبية والحل العددي (ASME V&V 20 Benchmark Plot)</p>
-      </div>
-
-      <div class="meta-box">
-        <p><strong>المرجع التجريبي المعتمد:</strong> ${project.validation?.benchmarkSource || 'ASME Benchmark V&V 20'}</p>
-        <p><strong>معامل التحديد الإحصائي (R²):</strong> <strong style="color: #059669;">${project.validation?.rSquared ?? '0.998'}</strong> (تطابق استثنائي يتجاوز 99%)</p>
-        <p><strong>جذر متوسط مربع الخطأ (RMSE):</strong> ${project.validation?.rmse ?? '0.04'}</p>
-        <p><strong>متوسط الخطأ النسبي المطلق (MAE):</strong> ${project.validation?.meanAbsoluteErrorPercent ?? '1.2'}% (أقل بكثير من الحد الأقصى المسموح به في ASME البالغ 3.0%)</p>
-      </div>
-
-      <table class="formal-table">
-        <thead>
-          <tr>
-            <th>${project.validation?.independentVarName || 'المتغير المستقل'} (${project.validation?.independentVarUnit || '-'})</th>
-            <th>البيانات التجريبية المعملية</th>
-            <th>الحل العددي المحاكى (ANSYS)</th>
-            <th>النموذج التجريبي المقارن</th>
-            <th>نسبة الخطأ النسبي (%)</th>
-          </tr>
-        </thead>
-        <tbody>
-          ${(project.validation?.points || [])
-            .map(
-              (pt) => `
-            <tr>
-              <td><strong>${pt.independentLabel}</strong></td>
-              <td>${pt.experimentalVal}</td>
-              <td style="font-weight: bold; color: #0284c7;">${pt.numericalCfdVal}</td>
-              <td>${pt.empiricalVal}</td>
-              <td style="color: ${Math.abs(pt.errorPercent) < 2 ? '#059669' : '#0f172a'}; font-weight: bold;">${pt.errorPercent}%</td>
-            </tr>
-          `
-            )
-            .join('')}
-        </tbody>
-      </table>
-      <p class="table-caption">الجدول 8.1: نقاط التحقق والمطابقة المعيارية وفق ASME V&V 20</p>
-      <p><strong>المناقشة العلمية للمطابقة:</strong> ${project.validation?.scientificDiscussion || 'تطابق عددي وتجريبي متسق يفي بكافة معايير الجودة والتحقق الأكاديمية.'}</p>
-
-      <!-- ================= CHAPTER 9: PARAMETRIC DATA TABLES ================= -->
-      <h1 class="chapter-title">الفصل التاسع: مصفوفات وجداول البيانات الهندسية الشاملة (Engineering Data Matrices)</h1>
-      <p>
-        يوثق هذا الفصل المصفوفات والجداول العددية المستخلصة من عمليات المحاكاة لكافة المتغيرات البارامترية:
-      </p>
-
-      ${(project.thesisTables || [])
-        .map(
-          (table, tIdx) => `
-        <h3 class="subsection-title">9.${tIdx + 1} ${table.tableName}</h3>
-        <p style="direction: ltr; font-style: italic; color: #475569; margin-bottom: 4px;">${table.tableNameEn}</p>
-        <p>${table.caption}</p>
-        <table class="formal-table">
-          <thead>
-            <tr>
-              ${table.headers.map((h) => `<th>${h}</th>`).join('')}
-            </tr>
-          </thead>
-          <tbody>
-            ${table.rows
-              .map(
-                (row) => `
-              <tr>
-                ${row.map((cell) => `<td>${cell}</td>`).join('')}
-              </tr>
-            `
-              )
-              .join('')}
-          </tbody>
-        </table>
-        <p class="table-caption">الجدول 9.${tIdx + 1}: ${table.tableName}</p>
-      `
-        )
-        .join('')}
-
-      <!-- ================= CHAPTER 10: ACADEMIC DEFENSE & TECHNICAL AUDIT ================= -->
-      <h1 class="chapter-title">الفصل العاشر: أسئلة مناقشة الأطروحة والردود العلمية المعتمدة (Defense Committee Questions)</h1>
-      <p>
-        تتضمن هذه الفقرة استعراضاً تحليلياً لأهم الأسئلة التقنية التي تطرحها لجان التحكيم الهندسية والردود الأكاديمية المدعمة بالسند المعياري والفيزيائي:
-      </p>
-
-      ${(project.supervisorDefensePoints || [])
-        .map(
-          (dp, idx) => `
-        <div style="background: #f8fafc; border-right: 4px solid #059669; border-radius: 6px; padding: 14px 18px; margin: 16px 0; border: 1px solid #e2e8f0;">
-          <p style="color: #0f172a; font-weight: bold; font-size: 11.5pt;">
-            السؤال 10.${idx + 1}: ${dp.question}
-          </p>
-          <p style="margin-top: 8px; color: #1e293b;">
-            <strong>الإجابة الهندسية المعتمدة:</strong> ${dp.answer}
-          </p>
-          <p style="margin-top: 6px; font-size: 10pt; color: #047857; background: #ecfdf5; padding: 6px 10px; border-radius: 4px; display: inline-block;">
-            <strong>السند الفيزيائي والمعياري:</strong> ${dp.scientificJustification}
-          </p>
-        </div>
-      `
-        )
-        .join('')}
-
-      <!-- ================= CONCLUSIONS & RECOMMENDATIONS ================= -->
-      <h1 class="chapter-title">الاستنتاجات الهندسية والتوصيات المستقبلية (Conclusions & Recommendations)</h1>
-      <h2 class="section-title">أبرز الاستنتاجات العلمية المحققة</h2>
-      <ul>
-        <li>تم إثبات استقلالية الميش رياضياً بمؤشر روتش GCI بلغت قيمته <strong>${project.meshStudy?.meshLevels?.[2]?.gciPercent || '0.88'}%</strong>، وهو في النطاق التقاربي الحتمي (Asymptotic Range).</li>
-        <li>أظهرت المقارنة المعيارية تطابقاً فائقاً مع التجارب المرجعية بمعامل تحديد <strong>R² = ${project.validation?.rSquared ?? '0.998'}</strong> ونسبة خطأ دون <strong>${project.validation?.meanAbsoluteErrorPercent ?? '1.2'}%</strong>، محققة متطلبات معيار ASME V&V 20.</li>
-        <li>أثبتت النتائج تفوق التصميم المبتكر في تحسين كفاءة المنظومة وتحقيق انخفاض ملحوظ في الفواقد الميكانيكية والحرارية.</li>
-      </ul>
-
-      <h2 class="section-title">التوصيات للأبحاث المستقبلية</h2>
-      <ul>
-        <li>تطبيق خوارزميات الذكاء الاصطناعي التوليدي والتعلم الآلي (Physics-Informed Neural Networks - PINNs) للتحسين متعدد الأهداف (Multi-Objective Optimization).</li>
-        <li>دراسة تأثير التغيرات الدقيقة في خشونة السطوح الناتجة عن التصنيع الإضافي ثلاثي الأبعاد (Additive Manufacturing).</li>
-        <li>توسيع نطاق التحليل ليشمل دورات العمل الطويلة تحت ظروف التشغيل الميدانية القاسية.</li>
-      </ul>
-
-      <!-- ================= SIGNATURE & ACCREDITATION ================= -->
-      <div style="margin-top: 70px; page-break-inside: avoid; border-top: 2px dashed #94a3b8; padding-top: 25px;">
-        <h3 style="text-align: center; color: #0f172a; margin-bottom: 30px;">اعتماد وتوقيعات لجنة التحكيم والمشرفين الأكاديميين</h3>
-        <table style="width: 100%; border: none;">
-          <tr>
-            <td style="border: none; text-align: center; width: 33%;">
-              <p><strong>مهندس التحليل / الباحث</strong></p>
-              <div style="height: 50px;"></div>
-              <p>.........................................</p>
-              <p style="font-weight: bold;">${project.author}</p>
-            </td>
-            <td style="border: none; text-align: center; width: 33%;">
-              <p><strong>المشرف الأكاديمي الرئيسي</strong></p>
-              <div style="height: 50px;"></div>
-              <p>.........................................</p>
-              <p style="font-weight: bold; color: #0369a1;">${project.supervisor}</p>
-            </td>
-            <td style="border: none; text-align: center; width: 33%;">
-              <p><strong>رئيس لجنة الفحص والاعتماد</strong></p>
-              <div style="height: 50px;"></div>
-              <p>.........................................</p>
-              <p style="font-weight: bold;">عميد الكلية / مدير المركز الهندسي</p>
-            </td>
-          </tr>
-        </table>
-      </div>
-
-      <div class="footer-note">
-        تم توليد وتوثيق هذا التقرير الهندسي الشامل تلقائياً بواسطة منصة <strong>ANSYS Engineering WorkBench</strong> المتكاملة للتحليل والمحاكاة | ASME V&V 20-2009 Compliant
-      </div>
-
-    </body>
-    </html>
-  `;
-
-  // 4. Trigger download as Microsoft Word (.doc)
-  const blob = new Blob(['\ufeff', htmlContent], {
-    type: 'application/msword;charset=utf-8',
-  });
+import { ThesisProject } from '../types/thesis';
+import { meshStudyVerdict } from './meshStudyVerdict';
+import { meshConvergenceSvg, validationOverlaySvg } from './vvPlots';
+import {
+  AI_ASSISTANT_LABEL,
+  AI_ASSISTANT_NAME,
+  ExportUnavailableError,
+  PLATFORM_NAME,
+  RealReport,
+  ReportMatrix,
+  ReportRow,
+  ReportSeries,
+  buildRealReport,
+  formatNumber,
+  hasRealSimulationRun,
+} from './reportModel';
+
+export { ExportUnavailableError, hasRealSimulationRun };
+
+// ---------------------------------------------------------------------------------------------
+// Generic helpers
+// ---------------------------------------------------------------------------------------------
+
+const esc = (value: unknown): string =>
+  String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+
+const safeFileStem = (project: ThesisProject): string =>
+  `${String(project.id || 'project').replace(/[^A-Za-z0-9_-]+/g, '_')}_NASEER_CAE_report`;
+
+function downloadBlob(blob: Blob, filename: string): void {
   const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = `${project.id}_full_thesis_dissertation.doc`;
-  document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a);
+  const anchor = document.createElement('a');
+  anchor.href = url;
+  anchor.download = filename;
+  document.body.appendChild(anchor);
+  anchor.click();
+  document.body.removeChild(anchor);
   URL.revokeObjectURL(url);
 }
 
-// Export as LaTeX Document (.tex)
-export function exportToLatex(project: ThesisProject) {
-  const texContent = String.raw`\documentclass[a4paper,12pt]{article}
+const SERIES_COLORS = ['#0369a1', '#dc2626', '#059669', '#7c3aed', '#d97706', '#0891b2'];
+
+/**
+ * Log-scale residual plot of the REAL residual series reported by the solver backend.
+ * Mirrors the live console chart (data-driven axes, only positive finite samples).
+ * Returns an empty string when the run reported no plottable history, so callers never
+ * show an invented curve.
+ */
+export function generateResidualsPlotSvg(series: ReportSeries[]): string {
+  const plottable = series
+    .map((item, index) => ({
+      name: item.name,
+      color: SERIES_COLORS[index % SERIES_COLORS.length],
+      points: item.points.filter((point) => Number.isFinite(point.iteration) && Number.isFinite(point.value) && point.value > 0),
+    }))
+    .filter((item) => item.points.length >= 2);
+  if (plottable.length === 0) return '';
+
+  const allPoints = plottable.flatMap((item) => item.points);
+  const minIteration = Math.min(...allPoints.map((point) => point.iteration));
+  const maxIteration = Math.max(...allPoints.map((point) => point.iteration));
+  const logs = allPoints.map((point) => Math.log10(point.value));
+  const topPower = Math.ceil(Math.max(...logs));
+  let bottomPower = Math.floor(Math.min(...logs));
+  if (bottomPower === topPower) bottomPower = topPower - 1;
+
+  const width = 680;
+  const height = 320;
+  const left = 78;
+  const right = 22;
+  const top = 50;
+  const bottom = 50;
+  const plotWidth = width - left - right;
+  const plotHeight = height - top - bottom;
+  const toX = (iteration: number) => left + ((iteration - minIteration) / (maxIteration - minIteration || 1)) * plotWidth;
+  const toY = (value: number) => top + ((topPower - Math.log10(value)) / (topPower - bottomPower)) * plotHeight;
+
+  const step = Math.max(1, Math.ceil((topPower - bottomPower) / 6));
+  const grid: string[] = [];
+  for (let power = topPower; power >= bottomPower; power -= step) {
+    const y = top + ((topPower - power) / (topPower - bottomPower)) * plotHeight;
+    grid.push(
+      `<line x1="${left}" y1="${y.toFixed(1)}" x2="${width - right}" y2="${y.toFixed(1)}" stroke="#cbd5e1" stroke-dasharray="3 3"/>` +
+        `<text x="${left - 8}" y="${(y + 3.5).toFixed(1)}" text-anchor="end" font-size="10" fill="#475569">1e${power}</text>`,
+    );
+  }
+  const xTicks = Array.from({ length: 5 }, (_, index) => Math.round(minIteration + ((maxIteration - minIteration) * index) / 4));
+  const xLabels = xTicks
+    .map(
+      (tick) =>
+        `<line x1="${toX(tick).toFixed(1)}" y1="${top + plotHeight}" x2="${toX(tick).toFixed(1)}" y2="${top + plotHeight + 4}" stroke="#475569"/>` +
+        `<text x="${toX(tick).toFixed(1)}" y="${top + plotHeight + 17}" text-anchor="middle" font-size="10" fill="#475569">${tick}</text>`,
+    )
+    .join('');
+  const paths = plottable
+    .map(
+      (item) =>
+        `<path d="${item.points.map((point, index) => `${index === 0 ? 'M' : 'L'}${toX(point.iteration).toFixed(2)} ${toY(point.value).toFixed(2)}`).join(' ')}" fill="none" stroke="${item.color}" stroke-width="1.8" stroke-linejoin="round"/>`,
+    )
+    .join('');
+  const legend = plottable
+    .map(
+      (item, index) =>
+        `<line x1="${left + index * 120}" y1="26" x2="${left + index * 120 + 18}" y2="26" stroke="${item.color}" stroke-width="2.5"/>` +
+        `<text x="${left + index * 120 + 24}" y="30" font-size="11" fill="#0f172a">${esc(item.name)}</text>`,
+    )
+    .join('');
+
+  return (
+    `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${width} ${height}" width="${width}" height="${height}" style="background:#ffffff;font-family:'Segoe UI',Arial,sans-serif;">` +
+    `<rect x="${left}" y="${top}" width="${plotWidth}" height="${plotHeight}" fill="#f8fafc" stroke="#94a3b8"/>` +
+    grid.join('') +
+    paths +
+    xLabels +
+    legend +
+    `<text x="${left + plotWidth / 2}" y="${height - 8}" text-anchor="middle" font-size="11" fill="#0f172a">Iteration (solver log sample)</text>` +
+    `<text x="16" y="${top + plotHeight / 2}" text-anchor="middle" font-size="11" fill="#0f172a" transform="rotate(-90 16 ${top + plotHeight / 2})">Residual (log scale)</text>` +
+    `</svg>`
+  );
+}
+
+interface RenderedImage {
+  src: string;
+  width: number;
+  height: number;
+}
+
+/** Rasterises a real result matrix (row 0 = y = 0, drawn at the bottom) with a labelled colour bar. */
+export function renderMatrixToImage(matrix: ReportMatrix): RenderedImage | undefined {
+  try {
+    if (typeof document === 'undefined') return undefined;
+    const left = 62;
+    const top = 40;
+    const bottom = 50;
+    const barGap = 24;
+    const barWidth = 16;
+    const labelWidth = 92;
+    const maxDimension = 420;
+    const aspect = matrix.widthM && matrix.heightM ? matrix.heightM / matrix.widthM : matrix.rows / matrix.cols;
+    const plotWidth = Math.max(80, Math.round(aspect >= 1 ? maxDimension / aspect : maxDimension));
+    const plotHeight = Math.max(80, Math.round(aspect >= 1 ? maxDimension : maxDimension * aspect));
+    const width = left + plotWidth + barGap + barWidth + labelWidth;
+    const height = top + plotHeight + bottom;
+    const scale = 2;
+
+    const canvas = document.createElement('canvas');
+    canvas.width = width * scale;
+    canvas.height = height * scale;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return undefined;
+    ctx.scale(scale, scale);
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(0, 0, width, height);
+
+    const range = matrix.max - matrix.min || 1;
+    // Same blue→red hue sweep as the live viewport heatmap.
+    const colorOf = (value: number) => `hsl(${(1 - Math.min(1, Math.max(0, (value - matrix.min) / range))) * 240}, 100%, 50%)`;
+
+    ctx.fillStyle = '#e5e7eb';
+    ctx.fillRect(left, top, plotWidth, plotHeight);
+    for (let r = 0; r < matrix.rows; r++) {
+      const y0 = Math.floor(top + plotHeight - ((r + 1) * plotHeight) / matrix.rows);
+      const y1 = Math.ceil(top + plotHeight - (r * plotHeight) / matrix.rows);
+      for (let c = 0; c < matrix.cols; c++) {
+        const value = matrix.data[r][c];
+        if (!Number.isFinite(value)) continue;
+        const x0 = Math.floor(left + (c * plotWidth) / matrix.cols);
+        const x1 = Math.ceil(left + ((c + 1) * plotWidth) / matrix.cols);
+        ctx.fillStyle = colorOf(value);
+        ctx.fillRect(x0, y0, x1 - x0, y1 - y0);
+      }
+    }
+    ctx.strokeStyle = '#334155';
+    ctx.lineWidth = 1;
+    ctx.strokeRect(left + 0.5, top + 0.5, plotWidth, plotHeight);
+
+    ctx.fillStyle = '#0f172a';
+    ctx.font = 'bold 13px Segoe UI, Arial, sans-serif';
+    ctx.textAlign = 'left';
+    ctx.fillText(`${matrix.label}${matrix.unit ? ` [${matrix.unit}]` : ''}`, left, 24);
+
+    ctx.font = '11px Segoe UI, Arial, sans-serif';
+    ctx.fillStyle = '#475569';
+    ctx.textAlign = 'center';
+    const lx = matrix.widthM !== undefined ? `${formatNumber(matrix.widthM)} m` : `${matrix.cols - 1}`;
+    const ly = matrix.heightM !== undefined ? `${formatNumber(matrix.heightM)} m` : `${matrix.rows - 1}`;
+    ctx.fillText('0', left, top + plotHeight + 15);
+    ctx.fillText(lx, left + plotWidth, top + plotHeight + 15);
+    ctx.fillText(matrix.widthM !== undefined ? 'x [m]' : 'x (node index)', left + plotWidth / 2, top + plotHeight + 30);
+    ctx.textAlign = 'right';
+    ctx.fillText('0', left - 6, top + plotHeight);
+    ctx.fillText(ly, left - 6, top + 10);
+    ctx.save();
+    ctx.translate(14, top + plotHeight / 2);
+    ctx.rotate(-Math.PI / 2);
+    ctx.textAlign = 'center';
+    ctx.fillText(matrix.heightM !== undefined ? 'y [m]' : 'y (node index)', 0, 0);
+    ctx.restore();
+
+    const barX = left + plotWidth + barGap;
+    for (let i = 0; i < plotHeight; i++) {
+      ctx.fillStyle = colorOf(matrix.max - (i / (plotHeight - 1 || 1)) * (matrix.max - matrix.min));
+      ctx.fillRect(barX, top + i, barWidth, 1);
+    }
+    ctx.strokeRect(barX + 0.5, top + 0.5, barWidth, plotHeight);
+    ctx.fillStyle = '#0f172a';
+    ctx.textAlign = 'left';
+    ctx.fillText(formatNumber(matrix.max), barX + barWidth + 6, top + 10);
+    ctx.fillText(formatNumber((matrix.max + matrix.min) / 2), barX + barWidth + 6, top + plotHeight / 2 + 4);
+    ctx.fillText(formatNumber(matrix.min), barX + barWidth + 6, top + plotHeight);
+
+    return { src: canvas.toDataURL('image/png'), width, height };
+  } catch (error) {
+    console.error('Result field rendering failed:', error);
+    return undefined;
+  }
+}
+
+function utf8ToBase64(text: string): string {
+  return btoa(encodeURIComponent(text).replace(/%([0-9A-F]{2})/g, (_, hex) => String.fromCharCode(parseInt(hex, 16))));
+}
+
+async function svgToPngImage(svg: string, width: number, height: number): Promise<RenderedImage> {
+  const svgUrl = `data:image/svg+xml;base64,${utf8ToBase64(svg)}`;
+  const fallback = { src: svgUrl, width, height };
+  if (typeof document === 'undefined') return fallback;
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => resolve(fallback), 2000);
+    const image = new Image();
+    image.onload = () => {
+      clearTimeout(timer);
+      try {
+        const canvas = document.createElement('canvas');
+        canvas.width = width * 2;
+        canvas.height = height * 2;
+        const ctx = canvas.getContext('2d');
+        if (!ctx) return resolve(fallback);
+        ctx.fillStyle = '#ffffff';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        ctx.drawImage(image, 0, 0, canvas.width, canvas.height);
+        resolve({ src: canvas.toDataURL('image/png'), width, height });
+      } catch {
+        resolve(fallback);
+      }
+    };
+    image.onerror = () => {
+      clearTimeout(timer);
+      resolve(fallback);
+    };
+    image.src = svgUrl;
+  });
+}
+
+// ---------------------------------------------------------------------------------------------
+// HTML report body (shared by the Word export, the HTML export and the in-app report view)
+// ---------------------------------------------------------------------------------------------
+
+export interface ReportAssets {
+  matrixImages: Record<string, RenderedImage | undefined>;
+  // Ready-to-embed markup (inline <svg> or <img>); each is empty when the run produced nothing to plot.
+  residualsHtml: string;
+  meshStudyHtml: string;
+  validationHtml: string;
+}
+
+function validationSvgOf(report: RealReport): string {
+  const validation = report.validation;
+  return validation?.profile ? validationOverlaySvg(validation.profile, validation.reference, validation.comparison, 'light') : '';
+}
+
+export function buildInlineAssets(report: RealReport): ReportAssets {
+  return {
+    matrixImages: Object.fromEntries(report.matrices.map((matrix) => [matrix.key, renderMatrixToImage(matrix)])),
+    residualsHtml: generateResidualsPlotSvg(report.series),
+    meshStudyHtml: report.meshStudy ? meshConvergenceSvg(report.meshStudy, 'light') : '',
+    validationHtml: validationSvgOf(report),
+  };
+}
+
+// Word cannot display inline SVG, so each figure is rasterised at the size declared in its viewBox.
+async function rasterFigure(svg: string, alt: string): Promise<string> {
+  if (!svg) return '';
+  const box = svg.match(/viewBox="0 0 (\d+) (\d+)"/);
+  const width = box ? Number(box[1]) : 680;
+  const height = box ? Number(box[2]) : 340;
+  const image = await svgToPngImage(svg, width, height);
+  return `<img src="${image.src}" width="${image.width}" height="${image.height}" alt="${esc(alt)}" />`;
+}
+
+async function buildRasterAssets(report: RealReport): Promise<ReportAssets> {
+  return {
+    matrixImages: Object.fromEntries(report.matrices.map((matrix) => [matrix.key, renderMatrixToImage(matrix)])),
+    residualsHtml: await rasterFigure(generateResidualsPlotSvg(report.series), 'Residual history'),
+    meshStudyHtml: await rasterFigure(report.meshStudy ? meshConvergenceSvg(report.meshStudy, 'light') : '', 'Mesh convergence'),
+    validationHtml: await rasterFigure(validationSvgOf(report), 'Simulation vs. reference data'),
+  };
+}
+
+export const REPORT_CSS = `
+.naseer-report { font-family: 'Segoe UI', Calibri, Arial, sans-serif; color: #0f172a; font-size: 11pt; line-height: 1.55; direction: ltr; text-align: left; }
+.naseer-report .rp-cover { border-bottom: 3px solid #0369a1; padding-bottom: 14px; margin-bottom: 20px; }
+.naseer-report .rp-brand { font-size: 12pt; font-weight: 700; letter-spacing: 0.12em; text-transform: uppercase; color: #0369a1; }
+.naseer-report .rp-brand-sub { font-size: 10pt; color: #475569; margin-bottom: 14px; }
+.naseer-report h1.rp-title { font-size: 21pt; line-height: 1.25; margin: 6px 0 4px; color: #0f172a; }
+.naseer-report .rp-subtitle { font-size: 11pt; color: #334155; margin-bottom: 10px; }
+.naseer-report h2.rp-h2 { font-size: 14pt; color: #0f4c81; border-bottom: 1.5px solid #cbd5e1; padding-bottom: 3px; margin: 26px 0 8px; }
+.naseer-report h2.rp-h2 .rp-ar { font-size: 11pt; font-weight: 400; color: #64748b; margin-left: 10px; }
+.naseer-report p { margin: 6px 0; text-align: justify; }
+.naseer-report table.rp-table { width: 100%; border-collapse: collapse; margin: 8px 0 14px; font-size: 10pt; }
+.naseer-report table.rp-table th { background: #0f4c81; color: #ffffff; padding: 6px 9px; border: 1px solid #0b3254; text-align: left; font-weight: 600; }
+.naseer-report table.rp-table td { padding: 5px 9px; border: 1px solid #cbd5e1; vertical-align: top; }
+.naseer-report table.rp-table td.rp-num { font-family: Consolas, 'Courier New', monospace; text-align: right; white-space: nowrap; }
+.naseer-report table.rp-table td.rp-note { color: #475569; font-size: 9.5pt; }
+.naseer-report table.rp-meta td { border: none; border-bottom: 1px solid #e2e8f0; padding: 3px 8px 3px 0; }
+.naseer-report table.rp-meta td:first-child { color: #475569; width: 28%; }
+.naseer-report .rp-figure { text-align: center; margin: 12px 0 4px; page-break-inside: avoid; }
+.naseer-report .rp-figure img, .naseer-report .rp-figure svg { max-width: 100%; height: auto; border: 1px solid #cbd5e1; }
+.naseer-report .rp-caption { font-size: 9.5pt; color: #334155; text-align: center; margin: 4px 0 16px; }
+.naseer-report .rp-empty { color: #64748b; font-style: italic; }
+.naseer-report .rp-pass { color: #047857; font-weight: 700; }
+.naseer-report .rp-fail { color: #b91c1c; font-weight: 700; }
+.naseer-report pre.rp-log { font-family: Consolas, 'Courier New', monospace; font-size: 8.5pt; background: #f1f5f9; border: 1px solid #cbd5e1; padding: 8px 10px; white-space: pre-wrap; word-wrap: break-word; margin: 6px 0 12px; }
+.naseer-report .rp-error { border-left: 4px solid #b91c1c; background: #fef2f2; padding: 6px 10px; margin: 6px 0; }
+.naseer-report .rp-footer { margin-top: 28px; padding-top: 8px; border-top: 1px solid #cbd5e1; font-size: 9pt; color: #64748b; text-align: center; }
+.naseer-report .rp-verdict { padding: 7px 11px; margin: 8px 0; border-left: 4px solid #64748b; background: #f1f5f9; font-weight: 600; }
+.naseer-report .rp-verdict-good { border-left-color: #047857; background: #ecfdf5; color: #064e3b; }
+.naseer-report .rp-verdict-warn { border-left-color: #b45309; background: #fffbeb; color: #78350f; }
+.naseer-report .rp-verdict-bad { border-left-color: #b91c1c; background: #fef2f2; color: #7f1d1d; }
+.naseer-report ul.rp-list { margin: 4px 0 10px 18px; padding: 0; font-size: 10pt; }
+`;
+
+const AR_TITLES = {
+  summary: 'الملخص التنفيذي',
+  setup: 'إعداد المحاكاة',
+  method: 'الطريقة العددية والشبكة',
+  results: 'النتائج',
+  checks: 'فحوصات التحقق',
+  meshStudy: 'دراسة استقلالية الشبكة',
+  validation: 'التحقق والمطابقة',
+  convergence: 'التقارب',
+  log: 'سجل تنفيذ المحلل',
+  provenance: 'التوثيق وقابلية الإعادة',
+  scope: 'النطاق والقيود',
+};
+
+function rowsTable(rows: ReportRow[], emptyText = 'Not reported by the backend for this run.'): string {
+  if (rows.length === 0) return `<p class="rp-empty">${esc(emptyText)}</p>`;
+  const hasNote = rows.some((item) => item.note);
+  return (
+    `<table class="rp-table"><thead><tr><th>Quantity</th><th>Value</th><th>Unit</th>${hasNote ? '<th>Basis</th>' : ''}</tr></thead><tbody>` +
+    rows
+      .map(
+        (item) =>
+          `<tr><td>${esc(item.label)}</td><td class="rp-num">${esc(item.value)}</td><td>${esc(item.unit ?? '')}</td>${hasNote ? `<td class="rp-note">${esc(item.note ?? '')}</td>` : ''}</tr>`,
+      )
+      .join('') +
+    '</tbody></table>'
+  );
+}
+
+export function renderReportBody(report: RealReport, assets: ReportAssets): string {
+  let section = 0;
+  const heading = (english: string, arabic: string) => `<h2 class="rp-h2">${++section}. ${esc(english)}<span class="rp-ar" dir="rtl">${arabic}</span></h2>`;
+
+  const metaRows: [string, string | undefined][] = [
+    ['Discipline', report.field],
+    ['Simulation type', report.simulationTypeLabel],
+    ['Job ID', report.jobId ?? 'direct execution (no job ID)'],
+    ['Prepared by', report.preparedBy],
+    ['Institution', report.institution],
+    ['Report generated', report.generatedAt.replace('T', ' ').replace(/\.\d+Z$/, ' UTC')],
+  ];
+
+  const parts: string[] = [];
+  parts.push(
+    `<div class="rp-cover">` +
+      `<div class="rp-brand">${esc(PLATFORM_NAME)}</div>` +
+      `<div class="rp-brand-sub">Computational Simulation Report · تقرير المحاكاة الحاسوبية</div>` +
+      `<h1 class="rp-title">${esc(report.title)}</h1>` +
+      (report.titleEn && report.titleEn !== report.title ? `<div class="rp-subtitle">${esc(report.titleEn)}</div>` : '') +
+      `<table class="rp-meta"><tbody>${metaRows
+        .filter(([, value]) => !!value)
+        .map(([label, value]) => `<tr><td>${esc(label)}</td><td>${esc(value)}</td></tr>`)
+        .join('')}</tbody></table>` +
+      `<div class="rp-brand-sub" style="margin:8px 0 0;">Interpretation assistant: ${esc(report.assistant)}</div>` +
+      `</div>`,
+  );
+
+  parts.push(heading('Executive Summary', AR_TITLES.summary) + report.summary.map((line) => `<p>${esc(line)}</p>`).join(''));
+  parts.push(heading('Simulation Setup', AR_TITLES.setup) + `<p>Parameters below are the values the backend received for this job.</p>` + rowsTable(report.parameters));
+  parts.push(heading('Numerical Method and Mesh', AR_TITLES.method) + rowsTable([...report.solver, ...report.mesh]));
+
+  let figure = 0;
+  const figures = report.matrices
+    .map((matrix) => {
+      const image = assets.matrixImages[matrix.key];
+      return image
+        ? `<div class="rp-figure"><img src="${image.src}" width="${image.width}" height="${image.height}" alt="${esc(matrix.label)}" /></div>` +
+            `<p class="rp-caption">Figure ${++figure}: ${esc(matrix.label)} as returned by the solver (${matrix.cols} × ${matrix.rows} nodes${matrix.nonFiniteCount ? `, ${matrix.nonFiniteCount} non-finite nodes left blank` : ''}).</p>`
+        : `<p class="rp-empty">${esc(matrix.label)}: figure not rendered in this environment; its statistics are tabulated above.</p>`;
+    })
+    .join('');
+  parts.push(
+    heading('Results', AR_TITLES.results) +
+      `<p>All values are taken from the solver result; minimum, maximum and mean are computed directly from the returned arrays.</p>` +
+      rowsTable(report.results) +
+      figures,
+  );
+
+  if (report.checks.length) {
+    parts.push(
+      heading('Verification Checks', AR_TITLES.checks) +
+        `<p>Independent arithmetic checks recomputed from the submitted parameters and the returned arrays.</p>` +
+        `<table class="rp-table"><thead><tr><th>Check</th><th>Outcome</th><th>Detail</th></tr></thead><tbody>${report.checks
+          .map(
+            (check) =>
+              `<tr><td>${esc(check.label)}</td><td class="${check.passed ? 'rp-pass' : 'rp-fail'}">${check.passed ? 'PASS' : 'FAIL'}</td><td class="rp-note">${esc(check.detail)}</td></tr>`,
+          )
+          .join('')}</tbody></table>`,
+    );
+  }
+
+  // Verification: real mesh-independence (GCI) study.
+  if (report.meshStudy) {
+    const study = report.meshStudy;
+    const verdict = meshStudyVerdict(study);
+    const num = (value: number | null | undefined) => (value === null || value === undefined ? '—' : esc(formatNumber(value)));
+    const unit = study.key_result.unit ? ` ${study.key_result.unit}` : '';
+    parts.push(
+      heading('Mesh Independence Study (GCI)', AR_TITLES.meshStudy) +
+        `<p>The solver (${esc(study.solver ?? 'unnamed solver')}) was run on three systematically refined ${esc(study.physics_type.replace(/_/g, ' '))} meshes and the Grid Convergence Index of <strong>${esc(study.key_result.label)}</strong> was computed following Celik et al. (2008), with safety factor ${num(study.safety_factor)}. ` +
+        `Refinement ratios r<sub>21</sub> = ${num(study.r21)} and r<sub>32</sub> = ${num(study.r32)} were derived from the solver's own cell counts (${study.dimension}-D).</p>` +
+        `<p>${esc(study.key_result.description)}</p>` +
+        `<div class="rp-verdict rp-verdict-${verdict.tone}">${esc(verdict.text)}</div>` +
+        (study.key_result.caveat ? `<p class="rp-note"><strong>Caveat.</strong> ${esc(study.key_result.caveat)}</p>` : '') +
+        `<table class="rp-table"><thead><tr><th>Level</th><th>Mesh</th><th>Cells</th><th>Nodes</th><th>h / h<sub>fine</sub></th><th>${esc(study.key_result.label)}${esc(unit ? ` (${study.key_result.unit})` : '')}</th></tr></thead><tbody>${study.levels
+          .map(
+            (lvl) =>
+              `<tr><td style="text-transform:capitalize">${esc(lvl.level)}</td><td class="rp-num">${
+                lvl.mesh_size !== null ? `${num(lvl.mesh_size)} m` : lvl.divisions ? `${lvl.divisions.x}×${lvl.divisions.y}×${lvl.divisions.z} divisions` : '—'
+              }</td><td class="rp-num">${num(lvl.cells)}</td><td class="rp-num">${num(lvl.nodes)}</td><td class="rp-num">${num(lvl.relative_size)}</td><td class="rp-num">${esc(formatNumber(lvl.key_result))}</td></tr>`,
+          )
+          .join('')}</tbody></table>` +
+        `<table class="rp-table"><thead><tr><th>GCI (fine)</th><th>GCI (medium)</th><th>Observed order p</th><th>Asymptotic ratio</th><th>Extrapolated value</th><th>Fine-grid uncertainty</th><th>Convergence</th></tr></thead><tbody><tr>` +
+        `<td class="rp-num">${study.gci_fine_percent === null ? '—' : `${num(study.gci_fine_percent)} %`}</td>` +
+        `<td class="rp-num">${study.gci_medium_percent === null ? '—' : `${num(study.gci_medium_percent)} %`}</td>` +
+        `<td class="rp-num">${num(study.observed_order)}</td>` +
+        `<td class="rp-num">${num(study.asymptotic_ratio)}</td>` +
+        `<td class="rp-num">${study.extrapolated_value === null ? '—' : `${num(study.extrapolated_value)}${esc(unit)}`}</td>` +
+        `<td class="rp-num">${study.uncertainty_fine === null ? '—' : `± ${num(study.uncertainty_fine)}${esc(unit)}`}</td>` +
+        `<td style="text-transform:capitalize">${esc(study.convergence_type ?? '—')}</td>` +
+        `</tr></tbody></table>` +
+        (study.warnings.length ? `<ul class="rp-list">${study.warnings.map((w) => `<li>${esc(w)}</li>`).join('')}</ul>` : '') +
+        (study.basis_note ? `<p class="rp-note">${esc(study.basis_note)}</p>` : '') +
+        (assets.meshStudyHtml ? `<div class="rp-figure">${assets.meshStudyHtml}</div><p class="rp-caption">Figure ${++figure}: ${esc(study.key_result.label)} against relative cell size; the hollow marker is the Richardson-extrapolated value and the bar is the fine-grid uncertainty.</p>` : ''),
+    );
+  }
+
+  // Validation: the real solver profile against user-supplied reference data.
+  if (report.validation) {
+    const v = report.validation;
+    const c = v.comparison;
+    const num = (value: number | undefined) => (value === undefined ? '—' : esc(formatNumber(value)));
+    const unit = v.unit ? ` ${v.unit}` : '';
+    parts.push(
+      heading('Validation against Reference Data', AR_TITLES.validation) +
+        `<p>${v.reference.points.length} reference points ("${esc(v.reference.label)}") are compared with the simulated field${v.fieldLabel ? ` (${esc(v.fieldLabel)})` : ''}` +
+        (v.profile ? ` along: <strong>${esc(v.profile.description)}</strong>. Reference X is expressed as <em>${esc(v.profile.abscissaLabel)}</em>; simulated values are bilinearly interpolated between nodes.</p>` : '.</p>') +
+        (v.error ? `<div class="rp-error"><strong>Validation could not be evaluated</strong> — ${esc(v.error)}</div>` : '') +
+        (assets.validationHtml ? `<div class="rp-figure">${assets.validationHtml}</div><p class="rp-caption">Figure ${++figure}: Simulated profile and reference data.</p>` : '') +
+        (c && c.compared > 0
+          ? `<table class="rp-table"><thead><tr><th>Points compared</th><th>Outside the cut</th><th>Mean |error|</th><th>Max |error|</th><th>RMSE</th><th>Max abs. error</th><th>NRMSE</th><th>R²</th></tr></thead><tbody><tr>` +
+            `<td class="rp-num">${c.compared}</td><td class="rp-num">${c.outOfRange}</td>` +
+            `<td class="rp-num">${c.meanAbsPercent === undefined ? '—' : `${num(c.meanAbsPercent)} %`}</td>` +
+            `<td class="rp-num">${c.maxAbsPercent === undefined ? '—' : `${num(c.maxAbsPercent)} %`}</td>` +
+            `<td class="rp-num">${num(c.rmse)}${esc(unit)}</td><td class="rp-num">${num(c.maxAbsError)}${esc(unit)}</td>` +
+            `<td class="rp-num">${c.nrmsePercent === undefined ? '—' : `${num(c.nrmsePercent)} %`}</td><td class="rp-num">${num(c.r2)}</td>` +
+            `</tr></tbody></table>`
+          : c
+            ? `<p class="rp-empty">No reference X value lies inside the simulated cut, so nothing was compared.</p>`
+            : '') +
+        (c
+          ? `<table class="rp-table"><thead><tr><th>x</th><th>Reference</th><th>Simulation</th><th>|Error|</th><th>|Error| %</th></tr></thead><tbody>${c.rows
+              .map(
+                (r) =>
+                  `<tr><td class="rp-num">${esc(formatNumber(r.x))}</td><td class="rp-num">${esc(formatNumber(r.ref))}</td>` +
+                  (r.status === 'compared'
+                    ? `<td class="rp-num">${num(r.sim)}</td><td class="rp-num">${num(r.absError)}</td><td class="rp-num">${r.percentError === undefined ? '—' : `${num(r.percentError)} %`}</td>`
+                    : `<td class="rp-note" colspan="3">outside the simulated cut — not compared</td>`) +
+                  `</tr>`,
+              )
+              .join('')}</tbody></table>` +
+            `<p class="rp-note">Percentage error is relative to each reference value, so it depends on the scale of the quantity (for example °C vs. K) and is undefined where the reference is zero; the absolute error is tabulated alongside. Reference points outside the simulated cut are never extrapolated.</p>`
+          : ''),
+    );
+  }
+
+  parts.push(
+    heading('Convergence', AR_TITLES.convergence) +
+      `<p>${esc(report.convergenceStatement)}</p>` +
+      rowsTable(report.convergenceRows, 'The backend reported no convergence metrics for this run.') +
+      (assets.residualsHtml
+        ? `<div class="rp-figure">${assets.residualsHtml}</div><p class="rp-caption">Figure ${++figure}: Residual history reported by the solver (logarithmic scale).</p>`
+        : ''),
+  );
+
+  parts.push(
+    heading('Solver Execution Log', AR_TITLES.log) +
+      (report.errors.length
+        ? report.errors.map((error) => `<div class="rp-error"><strong>${esc(error.code ?? 'ERROR')}</strong> — ${esc(error.message)}</div>`).join('')
+        : '') +
+      (report.logs.length
+        ? `<pre class="rp-log">${report.logs.map((line, index) => `${String(index + 1).padStart(3, ' ')}  ${esc(line)}`).join('\n')}</pre>`
+        : `<p class="rp-empty">The backend returned no log lines for this run.</p>`),
+  );
+
+  parts.push(heading('Provenance and Reproducibility', AR_TITLES.provenance) + rowsTable([...report.job, ...report.provenance]));
+
+  parts.push(
+    heading('Scope and Limitations', AR_TITLES.scope) +
+      `<p>This document records a single backend execution${report.jobId ? ` (job ${esc(report.jobId)})` : ''}. Every number was read from the stored solver result and the submitted parameters; nothing was estimated, defaulted or back-filled.</p>` +
+      (report.meshStudy
+        ? `<p>A mesh-independence (GCI) study of ${esc(report.meshStudy.key_result.label)} was performed and is reported above. Its outcome: ${esc(meshStudyVerdict(report.meshStudy).text)}</p>`
+        : `<p>This run did not include a grid-convergence (GCI) study, and none is claimed here.</p>`) +
+      (report.validation
+        ? report.validation.comparison && report.validation.comparison.compared > 0
+          ? `<p>A validation against user-supplied reference data was performed and is reported above; the reference data itself was entered by the user and has not been independently checked.</p>`
+          : `<p>Reference data was supplied but no point could be compared, so no validation is claimed.</p>`
+        : `<p>No experimental or benchmark validation was part of this run, and none is claimed here.</p>`) +
+      report.notes.map((note) => `<p>${esc(note)}</p>`).join('') +
+      `<p>${esc(AI_ASSISTANT_LABEL)} is the ${esc(PLATFORM_NAME)} assistant for interpreting results; it did not generate or alter any value in this report.</p>`,
+  );
+
+  parts.push(
+    `<div class="rp-footer">Generated by ${esc(PLATFORM_NAME)} · Interpretation assistant: ${esc(AI_ASSISTANT_NAME)} · Source: backend job ${esc(report.jobId ?? 'direct execution')}</div>`,
+  );
+  return `<div class="naseer-report">${parts.join('')}</div>`;
+}
+
+// ---------------------------------------------------------------------------------------------
+// Document builders and exporters
+// ---------------------------------------------------------------------------------------------
+
+export async function buildWordHtml(project: ThesisProject): Promise<string> {
+  const report = buildRealReport(project);
+  const assets = await buildRasterAssets(report);
+  return `<html xmlns:o='urn:schemas-microsoft-com:office:office' xmlns:w='urn:schemas-microsoft-com:office:word' xmlns='http://www.w3.org/TR/REC-html40'>
+<head>
+<meta charset='utf-8'>
+<title>${esc(report.title)} — ${esc(PLATFORM_NAME)}</title>
+<style>
+@page { size: A4; margin: 2.2cm 2cm 2.2cm 2cm; }
+body { margin: 0; }
+${REPORT_CSS}
+</style>
+</head>
+<body>
+${renderReportBody(report, assets)}
+</body>
+</html>`;
+}
+
+export function buildJournalHtml(project: ThesisProject): string {
+  const report = buildRealReport(project);
+  const assets = buildInlineAssets(report);
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>${esc(report.title)} — ${esc(PLATFORM_NAME)}</title>
+<style>
+body { background: #f1f5f9; margin: 0; padding: 24px 12px; }
+.paper { max-width: 960px; margin: 0 auto; background: #ffffff; border: 1px solid #e2e8f0; box-shadow: 0 8px 24px rgba(15,23,42,0.08); padding: 40px 52px; }
+${REPORT_CSS}
+@media print { body { background: #ffffff; padding: 0; } .paper { border: none; box-shadow: none; padding: 0; max-width: none; } }
+</style>
+</head>
+<body>
+<div class="paper">
+${renderReportBody(report, assets)}
+</div>
+</body>
+</html>`;
+}
+
+export async function exportToWordDocument(project: ThesisProject): Promise<void> {
+  const html = await buildWordHtml(project);
+  downloadBlob(new Blob(['\ufeff', html], { type: 'application/msword;charset=utf-8' }), `${safeFileStem(project)}.doc`);
+}
+
+export function exportToJournalHTML(project: ThesisProject): void {
+  downloadBlob(new Blob([buildJournalHtml(project)], { type: 'text/html;charset=utf-8' }), `${safeFileStem(project)}.html`);
+}
+
+// --- LaTeX ---------------------------------------------------------------------------------
+
+const LATEX_SYMBOLS: Record<string, string> = {
+  '°': '$^\\circ$',
+  '²': '$^2$',
+  '³': '$^3$',
+  '·': '$\\cdot$',
+  '×': '$\\times$',
+  '−': '-',
+  '…': '\\ldots{}',
+  '—': '---',
+  '–': '--',
+  '≈': '$\\approx$',
+  Δ: '$\\Delta$',
+};
+
+function latexEscape(value: unknown): string {
+  return String(value ?? '')
+    .replace(/[\\&%$#_{}~^]/g, (char) =>
+      char === '\\' ? '\\textbackslash{}' : char === '~' ? '\\textasciitilde{}' : char === '^' ? '\\textasciicircum{}' : `\\${char}`,
+    )
+    .replace(/[^\u0000-\u00ff]|[°²³·×]/g, (char) => LATEX_SYMBOLS[char] ?? '?');
+}
+
+function latexTable(rows: ReportRow[]): string {
+  if (rows.length === 0) return 'Not reported by the backend for this run.\n';
+  return (
+    '\\begin{longtable}{p{0.38\\textwidth}p{0.27\\textwidth}p{0.25\\textwidth}}\n\\toprule\nQuantity & Value & Unit / basis \\\\\n\\midrule\n\\endhead\n' +
+    rows
+      .map((item) => `${latexEscape(item.label)} & ${latexEscape(item.value)} & ${latexEscape([item.unit, item.note].filter(Boolean).join(' — '))} \\\\`)
+      .join('\n') +
+    '\n\\bottomrule\n\\end{longtable}\n'
+  );
+}
+
+export function buildLatexSource(project: ThesisProject): string {
+  const report = buildRealReport(project);
+  const residualPlot = report.series.length
+    ? `\\begin{figure}[h]\n\\centering\n\\begin{tikzpicture}\n\\begin{semilogyaxis}[width=0.9\\textwidth,height=7cm,xlabel={Iteration (solver log sample)},ylabel={Residual},legend pos=outer north east,grid=major]\n` +
+      report.series
+        .map(
+          (item) =>
+            `\\addplot coordinates {${item.points.map((point) => `(${point.iteration},${point.value})`).join(' ')}};\n\\addlegendentry{${latexEscape(item.name)}}`,
+        )
+        .join('\n') +
+      `\n\\end{semilogyaxis}\n\\end{tikzpicture}\n\\caption{Residual history reported by the solver.}\n\\end{figure}\n`
+    : '';
+  const authorLine = [report.preparedBy, report.institution].filter(Boolean).map(latexEscape).join(' \\\\ ');
+  const tex = (value: number | null | undefined) => (value === null || value === undefined ? '---' : latexEscape(formatNumber(value)));
+
+  const study = report.meshStudy;
+  const meshStudyTex = study
+    ? (() => {
+        const verdict = meshStudyVerdict(study);
+        const unit = study.key_result.unit ? ` (${study.key_result.unit})` : '';
+        const rows = study.levels
+          .map(
+            (l) =>
+              `${latexEscape(l.level)} & ${l.mesh_size !== null ? `${tex(l.mesh_size)} m` : l.divisions ? `${l.divisions.x}$\\times$${l.divisions.y}$\\times$${l.divisions.z}` : '---'} & ${tex(l.cells)} & ${tex(l.nodes)} & ${tex(l.relative_size)} & ${tex(l.key_result)} \\\\`,
+          )
+          .join('\n');
+        const points = study.levels.filter((l) => l.relative_size !== null).map((l) => `(${l.relative_size},${l.key_result})`).join(' ');
+        return (
+          `\\section{Mesh Independence Study (GCI)}\n` +
+          `Grid Convergence Index of \\textbf{${latexEscape(study.key_result.label)}} following Celik et al.\\ (2008), safety factor ${tex(study.safety_factor)}; ` +
+          `refinement ratios $r_{21}=${tex(study.r21)}$ and $r_{32}=${tex(study.r32)}$ from the solver's cell counts (${study.dimension}-D).\n\n` +
+          `\\noindent\\textbf{${latexEscape(verdict.text)}}\n\n` +
+          (study.key_result.caveat ? `\\noindent\\emph{Caveat.} ${latexEscape(study.key_result.caveat)}\n\n` : '') +
+          `\\begin{tabular}{llrrrr}\n\\toprule\nLevel & Mesh & Cells & Nodes & $h/h_{fine}$ & ${latexEscape(study.key_result.label + unit)} \\\\\n\\midrule\n${rows}\n\\bottomrule\n\\end{tabular}\n\n\\medskip\n` +
+          `\\begin{tabular}{lr}\n\\toprule\nQuantity & Value \\\\\n\\midrule\n` +
+          `GCI (fine) & ${study.gci_fine_percent === null ? '---' : `${tex(study.gci_fine_percent)}\\,\\%`} \\\\\n` +
+          `GCI (medium) & ${study.gci_medium_percent === null ? '---' : `${tex(study.gci_medium_percent)}\\,\\%`} \\\\\n` +
+          `Observed order $p$ & ${tex(study.observed_order)} \\\\\n` +
+          `Asymptotic ratio & ${tex(study.asymptotic_ratio)} \\\\\n` +
+          `Extrapolated value & ${tex(study.extrapolated_value)}${latexEscape(study.key_result.unit ? ` ${study.key_result.unit}` : '')} \\\\\n` +
+          `Fine-grid uncertainty & ${study.uncertainty_fine === null ? '---' : `$\\pm$ ${tex(study.uncertainty_fine)}`}${latexEscape(study.key_result.unit ? ` ${study.key_result.unit}` : '')} \\\\\n` +
+          `Convergence & ${latexEscape(study.convergence_type ?? '---')} \\\\\n\\bottomrule\n\\end{tabular}\n` +
+          (study.warnings.length ? `\n\\begin{itemize}\n${study.warnings.map((w) => `\\item ${latexEscape(w)}`).join('\n')}\n\\end{itemize}\n` : '') +
+          (points
+            ? `\n\\begin{figure}[h]\n\\centering\n\\begin{tikzpicture}\n\\begin{axis}[width=0.9\\textwidth,height=7cm,xlabel={Relative cell size $h/h_{fine}$},ylabel={${latexEscape(study.key_result.label + unit)}},grid=major,legend pos=north west]\n` +
+              `\\addplot[mark=*] coordinates {${points}};\n\\addlegendentry{Solver results}\n` +
+              (study.extrapolated_value !== null ? `\\addplot[only marks,mark=o] coordinates {(0,${study.extrapolated_value})};\n\\addlegendentry{Extrapolated ($h\\to 0$)}\n` : '') +
+              `\\end{axis}\n\\end{tikzpicture}\n\\caption{${latexEscape(study.key_result.label)} against relative cell size.}\n\\end{figure}\n`
+            : '')
+        );
+      })()
+    : '';
+
+  const val = report.validation;
+  const validationTex = val
+    ? (() => {
+        const c = val.comparison;
+        const unit = val.unit ? ` ${val.unit}` : '';
+        const compared = c && c.compared > 0;
+        return (
+          `\\section{Validation against Reference Data}\n` +
+          `${val.reference.points.length} reference points (``${latexEscape(val.reference.label)}'') are compared with the simulated field` +
+          (val.profile ? ` along: \\textbf{${latexEscape(val.profile.description)}}. Reference X is expressed as ${latexEscape(val.profile.abscissaLabel)}; simulated values are bilinearly interpolated between nodes.\n` : '.\n') +
+          (val.error ? `\n\\noindent\\textbf{Validation could not be evaluated:} ${latexEscape(val.error)}\n` : '') +
+          (compared
+            ? `\n\\begin{tabular}{lr}\n\\toprule\nMetric & Value \\\\\n\\midrule\n` +
+              `Points compared & ${c.compared} \\\\\nOutside the simulated cut & ${c.outOfRange} \\\\\n` +
+              `Mean absolute error & ${c.meanAbsPercent === undefined ? '---' : `${tex(c.meanAbsPercent)}\\,\\%`} \\\\\n` +
+              `Max absolute error & ${c.maxAbsPercent === undefined ? '---' : `${tex(c.maxAbsPercent)}\\,\\%`} \\\\\n` +
+              `RMSE & ${tex(c.rmse)}${latexEscape(unit)} \\\\\nMax absolute error (units) & ${tex(c.maxAbsError)}${latexEscape(unit)} \\\\\n` +
+              `NRMSE & ${c.nrmsePercent === undefined ? '---' : `${tex(c.nrmsePercent)}\\,\\%`} \\\\\n$R^2$ & ${tex(c.r2)} \\\\\n\\bottomrule\n\\end{tabular}\n` +
+              `\n\\begin{longtable}{rrrrr}\n\\toprule\n$x$ & Reference & Simulation & $|$Error$|$ & $|$Error$|$ \\% \\\\\n\\midrule\n\\endhead\n` +
+              c.rows
+                .map((r) =>
+                  r.status === 'compared'
+                    ? `${tex(r.x)} & ${tex(r.ref)} & ${tex(r.sim)} & ${tex(r.absError)} & ${r.percentError === undefined ? '---' : tex(r.percentError)} \\\\`
+                    : `${tex(r.x)} & ${tex(r.ref)} & \\multicolumn{3}{l}{outside the simulated cut (not compared)} \\\\`,
+                )
+                .join('\n') +
+              `\n\\bottomrule\n\\end{longtable}\n` +
+              `Percentage error is relative to each reference value and therefore depends on the scale of the quantity; the absolute error is tabulated alongside. Reference points outside the cut are never extrapolated.\n`
+            : c
+              ? `\nNo reference X value lies inside the simulated cut, so nothing was compared.\n`
+              : '') +
+          (val.profile
+            ? `\n\\begin{figure}[h]\n\\centering\n\\begin{tikzpicture}\n\\begin{axis}[width=0.9\\textwidth,height=7cm,xlabel={${latexEscape(val.profile.abscissaLabel)}},ylabel={${latexEscape(val.profile.valueLabel)}},grid=major,legend pos=north east]\n` +
+              `\\addplot[no marks,thick] coordinates {${val.profile.points.map((p) => `(${p.s},${p.value})`).join(' ')}};\n\\addlegendentry{Simulation}\n` +
+              `\\addplot[only marks,mark=*] coordinates {${val.reference.points.map((p) => `(${p.x},${p.y})`).join(' ')}};\n\\addlegendentry{${latexEscape(val.reference.label)}}\n` +
+              `\\end{axis}\n\\end{tikzpicture}\n\\caption{Simulated profile and reference data.}\n\\end{figure}\n`
+            : '')
+        );
+      })()
+    : '';
+  const scopeTex =
+    (study ? `A mesh-independence (GCI) study of ${latexEscape(study.key_result.label)} was performed: ${latexEscape(meshStudyVerdict(study).text)} ` : 'No grid-convergence study was part of this run. ') +
+    (val ? (val.comparison && val.comparison.compared > 0 ? 'A validation against user-supplied reference data, which has not been independently checked, was performed. ' : 'Reference data was supplied but no point could be compared. ') : 'No experimental or benchmark validation was part of this run. ');
+
+  return String.raw`\documentclass[a4paper,11pt]{article}
 \usepackage[utf8]{inputenc}
-\usepackage[arabic,english]{babel}
-\usepackage{amsmath,amssymb,amsfonts}
-\usepackage{graphicx}
-\usepackage{booktabs}
-\usepackage{geometry}
-\usepackage{hyperref}
+\usepackage[T1]{fontenc}
+\usepackage{booktabs,longtable,geometry,hyperref,amsmath,pgfplots}
+\pgfplotsset{compat=1.14}
 \geometry{margin=1in}
 
-\title{${project.titleEn}}
-\author{${project.author}}
-\date{${project.date}}
+\title{${latexEscape(report.titleEn ?? report.title)}\\[4pt]\large ${latexEscape(PLATFORM_NAME)} --- Computational Simulation Report}
+\author{${authorLine || latexEscape(PLATFORM_NAME)}}
+\date{${latexEscape(report.generatedAt.slice(0, 10))}}
 
 \begin{document}
 \maketitle
 
-\selectlanguage{arabic}
-\section*{الملخص (Abstract)}
-${project.abstractAr}
-\selectlanguage{english}
-\begin{abstract}
-${project.abstractEn}
-\end{abstract}
+\noindent Interpretation assistant: ${latexEscape(report.assistant)}.
 
-\section{Introduction}
-Project: ${project.title}
-Field: ${project.field}
-Software: ${project.softwareType}
+\section{Executive Summary}
+${report.summary.map(latexEscape).join('\n\n')}
 
-\section{Engineering Specifications}
-${project.cadSpecs ? `Shell: ${project.cadSpecs.shell}, Coil: ${project.cadSpecs.coil}, Fins: ${project.cadSpecs.fins}, PCM: ${project.cadSpecs.pcm}, Nano: ${project.cadSpecs.nano}, HTF: ${project.cadSpecs.htf}` : ''}
+\section{Simulation Setup}
+${latexTable(report.parameters)}
+\section{Numerical Method and Mesh}
+${latexTable([...report.solver, ...report.mesh])}
+\section{Results}
+${latexTable(report.results)}
+${
+  report.checks.length
+    ? `\\section{Verification Checks}\n\\begin{itemize}\n${report.checks.map((check) => `\\item \\textbf{${check.passed ? 'PASS' : 'FAIL'}} --- ${latexEscape(check.label)}: ${latexEscape(check.detail)}`).join('\n')}\n\\end{itemize}\n`
+    : ''
+}
+\section{Convergence}
+${latexEscape(report.convergenceStatement)}
 
-\section{Governing Equations}
-${project.governingEquations
-  .map(
-    (eq) => `
-\subsection{${eq.name}}
-${eq.description}
-\begin{equation}
-${eq.latex}
-\end{equation}
-`
-  )
-  .join('\n')}
+${latexTable(report.convergenceRows)}
+${residualPlot}
+${meshStudyTex}
+${validationTex}
+\section{Solver Execution Log}
+${report.errors.map((error) => `\\noindent\\textbf{${latexEscape(error.code ?? 'ERROR')}}: ${latexEscape(error.message)}\n`).join('\n')}
+\begin{verbatim}
+${report.logs.map((line, index) => `${String(index + 1).padStart(3, ' ')}  ${line.replace(/\\end\{verbatim\}/g, '')}`).join('\n')}
+\end{verbatim}
 
-\section{Boundary Conditions}
-\begin{table}[htbp]
-\centering
-\caption{Applied Boundary Conditions}
-\begin{tabular}{lllll}
-\toprule
-Zone & Type & Value & Unit & Description \\
-\midrule
-${project.boundaryConditions.map((bc) => `${bc.name} & ${bc.type} & ${bc.value} & ${bc.unit} & ${bc.description} \\`).join('\n')}
-\bottomrule
-\end{tabular}
-\end{table}
-
-\section{Contours Analysis}
-${project.contours
-  .map(
-    (c) => `\subsection{${c.name} (${c.field})}
-${c.physicalDescription}
-Range: ${c.minVal} to ${c.maxVal} ${c.unit}`
-  )
-  .join('\n')}
-
-\section{Validation Analysis}
-Benchmark Source: ${project.validation?.benchmarkSource || 'ASME Benchmark V&V 20'}
-$R^2 = ${project.validation?.rSquared ?? '0.998'}$, RMSE = ${project.validation?.rmse ?? '0.04'}
-
-\begin{table}[htbp]
-\centering
-\caption{Numerical Validation Table}
-\begin{tabular}{lrrr}
-\toprule
-Point & Experimental & Numerical & Error (\%) \\
-\midrule
-${(project.validation?.points || []).map((p) => `${p.independentLabel} & ${p.experimentalVal} & ${p.numericalCfdVal} & ${p.errorPercent}\\% \\`).join('\n')}
-\bottomrule
-\end{tabular}
-\end{table}
-
-\section{Quantitative Findings}
-${project.quantitativeFindings
-  ?.map(
-    (f) => `
-\subsection{${f.title}}
-${f.description}
-Value: ${f.value}
-`
-  )
-  .join('\n') || ''}
-
-\section{Defense Committee Discussion}
-${(project.supervisorDefensePoints || [])
-  .map(
-    (p) => `
-\subsection{${p.question}}
-${p.answer}
-\textit{Scientific Justification:} ${p.scientificJustification}
-`
-  )
-  .join('\n')}
-
-\section{Literature Review}
-\begin{tabular}{llll}
-\toprule
-Study & Configuration & Finding & Gap \\
-\midrule
-${project.literatureReview?.map((r) => `${r.study} & ${r.configuration} & ${r.keyFinding} & ${r.gap} \\`).join('\n') || ''}
-\bottomrule
-\end{tabular}
+\section{Provenance and Reproducibility}
+${latexTable([...report.job, ...report.provenance])}
+\section{Scope and Limitations}
+This document records a single backend execution${report.jobId ? ` (job ${latexEscape(report.jobId)})` : ''}. Every number was read from the stored solver result and the submitted parameters. ${scopeTex}${report.notes.map(latexEscape).join(' ')} ${latexEscape(report.assistant)} did not generate or alter any value in this report.
 
 \end{document}
 `;
-
-  const blob = new Blob([texContent], { type: 'text/plain;charset=utf-8' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = `${project.id}_full_thesis.tex`;
-  document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a);
-  URL.revokeObjectURL(url);
 }
 
-// Export as Excel CSV Dataset
-export function exportToCSV(project: ThesisProject) {
-  let csv = `\ufeff`; // UTF-8 BOM for Arabic support in Excel
-
-  // Section 1: Mesh Study
-  csv += `"1. دراسة استقلالية الميش (Roache GCI)"\n`;
-  csv += `"مستوى الشبكة","عدد العناصر (Elements)","عدد العقد (Nodes)","القيمة المحسوبة","نسبة الخطأ (%)","مؤشر GCI (%)"\n`;
-  for (const m of (project.meshStudy?.meshLevels || [])) {
-    csv += `"${m.levelName}",${m.elements},${m.nodes},${m.keyResultValue},"${m.percentageError}%","${m.gciPercent}%"\n`;
-  }
-  csv += `\n`;
-
-  // Section 2: Validation Points
-  csv += `"2. التحقق والمقارنة المرجعية (Validation Study)"\n`;
-  csv += `"${project.validation?.independentVarName || 'المتغير'}","القيمة التجريبية","القيمة العددية CFD","القيمة التجريبية المقارنة","نسبة الخطأ (%)"\n`;
-  for (const p of (project.validation?.points || [])) {
-    csv += `"${p.independentLabel}",${p.experimentalVal},${p.numericalCfdVal},${p.empiricalVal},"${p.errorPercent}%"\n`;
-  }
-  csv += `\n`;
-
-  // Section 3: Thesis Tables
-  for (const table of (project.thesisTables || [])) {
-    csv += `"${table.tableName}"\n`;
-    csv += table.headers.map((h) => `"${h}"`).join(',') + `\n`;
-    for (const row of table.rows) {
-      csv += row.map((cell) => `"${cell}"`).join(',') + `\n`;
-    }
-    csv += `\n`;
-  }
-
-  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = `${project.id}_thesis_data.csv`;
-  document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a);
-  URL.revokeObjectURL(url);
+export function exportToLatex(project: ThesisProject): void {
+  downloadBlob(new Blob([buildLatexSource(project)], { type: 'application/x-tex;charset=utf-8' }), `${safeFileStem(project)}.tex`);
 }
 
-// Export as Complete International Journal Paper HTML (.html)
-export function exportToJournalHTML(project: ThesisProject) {
-  const cadSvg = generateCadSchematicSvg(project);
-  const validationSvg = generateValidationPlotSvg(project);
-  const meshGciSvg = generateMeshGciPlotSvg(project);
-  const residualsSvg = generateResidualsPlotSvg();
-  const meltingSvg = (project.meltingComparison && project.field === 'Thermal') ? generateMeltingCurveSvg(project) : '';
-  const renderedContours: Array<{ contour: ContourField; pngDataUrl: string }> = (project.contours || []).map(
-    (c: ContourField) => ({
-      contour: c,
-      pngDataUrl: renderContourToDataUrl(c, 640, 280),
-    })
-  );
+// --- CSV -----------------------------------------------------------------------------------
 
-  const htmlDoc = `<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>${project.titleEn || project.title}</title>
-  <script src="https://polyfill.io/v3/polyfill.min.js?features=es6"></script>
-  <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
-  <style>
-    :root {
-      --primary: #003366;
-      --secondary: #006699;
-      --accent: #d97706;
-      --text-dark: #1e293b;
-      --text-muted: #475569;
-      --bg-page: #f8fafc;
-      --bg-card: #ffffff;
-      --border-color: #e2e8f0;
-      --table-header: #0f4c81;
+const csvCell = (value: unknown): string => `"${String(value ?? '').replace(/"/g, '""')}"`;
+const csvLine = (...cells: unknown[]): string => `${cells.map(csvCell).join(',')}\n`;
+
+export function buildCsv(project: ThesisProject): string {
+  const report = buildRealReport(project);
+  let csv = '\ufeff';
+  const rowsBlock = (title: string, rows: ReportRow[]) => {
+    csv += csvLine(title);
+    csv += csvLine('Quantity', 'Value', 'Unit', 'Basis');
+    rows.forEach((item) => (csv += csvLine(item.label, item.value, item.unit, item.note)));
+    csv += '\n';
+  };
+  csv += csvLine(`${report.platform} — real solver data export`);
+  csv += csvLine('Project', report.title);
+  csv += csvLine('Job ID', report.jobId ?? 'direct execution');
+  csv += csvLine('Generated', report.generatedAt);
+  csv += '\n';
+  rowsBlock('Simulation parameters', report.parameters);
+  rowsBlock('Solver and mesh', [...report.solver, ...report.mesh]);
+  rowsBlock('Results', report.results);
+  rowsBlock('Convergence', report.convergenceRows);
+  rowsBlock('Provenance', [...report.job, ...report.provenance]);
+  report.series.forEach((item) => {
+    csv += csvLine(`Residual series: ${item.name}`);
+    csv += csvLine('Iteration (solver log sample)', 'Residual');
+    item.points.forEach((point) => (csv += csvLine(point.iteration, point.value)));
+    csv += '\n';
+  });
+  report.matrices.forEach((matrix) => {
+    const xs = Array.from({ length: matrix.cols }, (_, c) => (matrix.widthM !== undefined && matrix.cols > 1 ? (matrix.widthM * c) / (matrix.cols - 1) : c));
+    csv += csvLine(`${matrix.label}${matrix.unit ? ` [${matrix.unit}]` : ''} — rows are y from the top (y = ${matrix.heightM !== undefined ? 'Ly' : 'last index'}) to the bottom (y = 0); columns are x`);
+    csv += csvLine('y \\ x', ...xs);
+    for (let r = matrix.rows - 1; r >= 0; r--) {
+      const y = matrix.heightM !== undefined && matrix.rows > 1 ? (matrix.heightM * r) / (matrix.rows - 1) : r;
+      csv += csvLine(y, ...matrix.data[r]);
     }
-    * { box-sizing: border-box; margin: 0; padding: 0; }
-    body {
-      font-family: 'Georgia', 'Cambria', 'Times New Roman', serif;
-      background-color: var(--bg-page);
-      color: var(--text-dark);
-      line-height: 1.75;
-      font-size: 15px;
-      padding: 20px 10px;
-    }
-    .container {
-      max-width: 960px;
-      margin: 0 auto;
-      background: var(--bg-card);
-      border: 1px solid var(--border-color);
-      box-shadow: 0 10px 25px rgba(0, 0, 0, 0.05);
-      border-radius: 4px;
-      padding: 40px 50px;
-    }
-    .journal-header {
-      border-bottom: 2px solid var(--primary);
-      padding-bottom: 15px;
-      margin-bottom: 30px;
-      display: flex;
-      justify-content: space-between;
-      align-items: flex-end;
-      font-family: 'Segoe UI', sans-serif;
-    }
-    .journal-meta h4 {
-      color: var(--primary);
-      font-size: 18px;
-      font-weight: 800;
-      text-transform: uppercase;
-    }
-    .journal-meta p { font-size: 12px; color: var(--text-muted); margin-top: 3px; }
-    .doi-box { text-align: right; font-size: 11px; color: var(--text-muted); font-family: monospace; }
-    .doi-badge { display: inline-block; background: #e0f2fe; color: #0369a1; padding: 3px 8px; border-radius: 3px; font-weight: bold; margin-bottom: 4px; }
-    h1.article-title {
-      font-family: 'Segoe UI', sans-serif;
-      font-size: 26px;
-      font-weight: 700;
-      color: var(--primary);
-      line-height: 1.35;
-      margin-bottom: 20px;
-    }
-    .authors-list { font-size: 16px; font-weight: 600; color: #0f172a; margin-bottom: 10px; font-family: 'Segoe UI', sans-serif; }
-    .affiliations { font-size: 12.5px; color: var(--text-muted); margin-bottom: 25px; border-bottom: 1px dashed var(--border-color); padding-bottom: 15px; font-style: italic; }
-    .article-history-box { background: #f1f5f9; border-radius: 4px; padding: 12px 18px; margin-bottom: 25px; font-size: 12px; color: #334155; font-family: 'Segoe UI', sans-serif; display: flex; flex-wrap: wrap; gap: 20px; }
-    .highlights-box { background: #f8fafc; border-left: 4px solid var(--accent); padding: 15px 20px; margin-bottom: 25px; }
-    .highlights-box h3 { font-family: 'Segoe UI', sans-serif; font-size: 14px; font-weight: 700; color: var(--accent); text-transform: uppercase; margin-bottom: 8px; }
-    .highlights-box ul { list-style-type: square; padding-left: 20px; font-size: 13.5px; }
-    .abstract-section { background: #ffffff; border: 1px solid var(--border-color); padding: 20px 25px; border-radius: 4px; margin-bottom: 30px; }
-    .abstract-title { font-family: 'Segoe UI', sans-serif; font-size: 15px; font-weight: 700; color: var(--primary); text-transform: uppercase; margin-bottom: 10px; }
-    .abstract-text { text-align: justify; font-size: 14px; line-height: 1.8; margin-bottom: 15px; }
-    .keywords { font-size: 13px; border-top: 1px solid var(--border-color); padding-top: 10px; }
-    h2.section-header { font-family: 'Segoe UI', sans-serif; font-size: 18px; font-weight: 700; color: var(--primary); border-bottom: 1px solid var(--border-color); padding-bottom: 6px; margin-top: 35px; margin-bottom: 15px; text-transform: uppercase; }
-    h3.sub-section-header { font-family: 'Segoe UI', sans-serif; font-size: 15px; font-weight: 600; color: #334155; margin-top: 22px; margin-bottom: 10px; }
-    p { text-align: justify; margin-bottom: 14px; }
-    .equation-container { margin: 18px 0; padding: 10px 15px; background: #f8fafc; border-left: 3px solid var(--secondary); border-radius: 0 4px 4px 0; overflow-x: auto; }
-    .figure-wrapper { margin: 25px 0; text-align: center; page-break-inside: avoid; }
-    .figure-wrapper svg, .figure-wrapper img { max-width: 100%; height: auto; border-radius: 4px; border: 1px solid var(--border-color); }
-    .figure-caption { font-family: 'Segoe UI', sans-serif; font-size: 12.5px; color: #334155; margin-top: 10px; text-align: center; font-weight: 500; }
-    .table-wrapper { margin: 25px 0; overflow-x: auto; }
-    .table-caption { font-family: 'Segoe UI', sans-serif; font-size: 13px; color: #1e293b; margin-bottom: 8px; font-weight: 600; }
-    table.academic-table { width: 100%; border-collapse: collapse; font-family: 'Segoe UI', sans-serif; font-size: 13px; }
-    table.academic-table thead th { background-color: var(--table-header); color: #ffffff; padding: 9px 12px; font-weight: 600; border-top: 2px solid #0b3254; border-bottom: 2px solid #0b3254; text-align: center; }
-    table.academic-table tbody td { padding: 8px 12px; border-bottom: 1px solid #e2e8f0; text-align: center; }
-    table.academic-table tbody tr:nth-child(even) { background-color: #f8fafc; }
-    .qa-box { background: #f8fafc; border-left: 3px solid #10b981; padding: 14px 18px; margin: 15px 0; border-radius: 0 4px 4px 0; font-size: 13.5px; }
-    .qa-question { font-weight: 700; color: #065f46; margin-bottom: 6px; font-family: 'Segoe UI', sans-serif; }
-    .qa-answer { color: #1e293b; margin-bottom: 6px; }
-    .qa-justification { font-size: 12px; color: #047857; font-style: italic; }
-    ol.references-list { padding-left: 20px; font-size: 12.5px; line-height: 1.6; }
-    ol.references-list li { margin-bottom: 8px; text-align: justify; }
-    .action-bar { position: sticky; top: 10px; z-index: 100; background: rgba(15, 23, 42, 0.92); backdrop-filter: blur(8px); padding: 10px 20px; border-radius: 50px; margin-bottom: 20px; display: flex; justify-content: space-between; align-items: center; color: #ffffff; font-family: 'Segoe UI', sans-serif; }
-    .action-bar button { background: #0284c7; color: #ffffff; border: none; padding: 7px 18px; border-radius: 20px; font-size: 13px; font-weight: 600; cursor: pointer; }
-    @media print {
-      body { background: #ffffff; padding: 0; }
-      .container { border: none; box-shadow: none; padding: 0; max-width: 100%; }
-      .action-bar { display: none; }
-    }
-  </style>
-</head>
-<body>
-  <div class="action-bar">
-    <div style="display:flex; align-items:center; gap:10px;">
-      <span style="background:#0284c7; font-size:11px; font-weight:bold; padding:2px 8px; border-radius:10px;">Q1 JOURNAL READY</span>
-      <span style="font-size:13px; font-weight:600;">International Journal Paper (${project.field})</span>
-    </div>
-    <button onclick="window.print()">Print / Save as PDF</button>
-  </div>
-
-  <div class="container">
-    <header class="journal-header">
-      <div class="journal-meta">
-        <h4>Applied Thermal Engineering & Multiphysics CAE</h4>
-        <p>Verified to ASME V&V 20-2009 Standards · Roache GCI &lt; 1%</p>
-      </div>
-      <div class="doi-box">
-        <span class="doi-badge">Peer-Reviewed Open Access</span>
-        <div>DOI: 10.1016/j.applthermaleng.2026.10428</div>
-      </div>
-    </header>
-
-    <h1 class="article-title">${project.titleEn || project.title}</h1>
-
-    <div class="authors-list">
-      <span class="author">${project.author}<sup>a, *</sup></span>
-      <span class="author">${project.supervisor}<sup>a, **</sup></span>
-      ${project.adviser ? `<span class="author">${project.adviser}<sup>a</sup></span>` : ''}
-    </div>
-
-    <div class="affiliations">
-      <sup>a</sup> ${project.department}, ${project.university}<br />
-      <sup>*</sup> Lead Research Engineer ${project.studentId ? `(ID: ${project.studentId})` : ''}<br />
-      <sup>**</sup> Academic Research Supervisor & Certified CAE Authority
-    </div>
-
-    <div class="article-history-box">
-      <div><strong>Status:</strong> Completed & ASME V&V 20 Verified</div>
-      <div><strong>Discretization Error:</strong> Roache GCI = ${project.meshStudy?.meshLevels?.[2]?.gciPercent || '0.88'}%</div>
-      <div><strong>Validation Fidelity:</strong> R² = ${project.validation?.rSquared ?? '0.998'}</div>
-      <div><strong>Solver:</strong> ${project.softwareType}</div>
-    </div>
-
-    <div class="highlights-box">
-      <h3>Highlights</h3>
-      <ul>
-        <li>Three-dimensional numerical simulation of ${project.field} model executed to rigorous ASME standards.</li>
-        <li>Mathematical governing equations fully resolved using ${project.solver?.solverType || (project.field === 'FEA' ? 'Direct Sparse Solver' : 'Coupled Solver')} with ${project.solver?.scheme || 'High-Resolution Formulation'}.</li>
-        <li>Grid independence verified across 4 systematic levels yielding Roache GCI of ${project.meshStudy?.meshLevels?.[2]?.gciPercent || '0.88'}%.</li>
-        <li>Experimental calibration demonstrates exceptional statistical correlation with R² = ${project.validation?.rSquared ?? '0.998'}.</li>
-        <li>Quantitative improvements delivered according to international peer-reviewed CAE practices.</li>
-      </ul>
-    </div>
-
-    <section class="abstract-section">
-      <div class="abstract-title">Abstract</div>
-      <p class="abstract-text">${project.abstractEn}</p>
-      <div class="keywords">
-        <strong>Keywords:</strong> ${project.field}; Computational Mechanics; ${project.softwareType.split(' ')[0]}; Roache GCI; ASME V&V 20; Numerical Verification.
-      </div>
-    </section>
-
-    <h2 class="section-header">1. Physical Model & Geometric Domain</h2>
-    <p>
-      The geometric domain and computational boundaries for the ${project.title} are illustrated below. All dimensions, coordinates, and physical boundary condition ports are systematically prescribed to guarantee reproducible numerical simulation.
-    </p>
-
-    <div class="figure-wrapper">
-      ${cadSvg}
-      <div class="figure-caption">
-        <strong>Figure 1:</strong> CAD blueprint and domain schematic with boundary conditions and physical coordinates.
-      </div>
-    </div>
-
-    <h2 class="section-header">2. Mathematical Formulation & Governing Equations</h2>
-    <p>
-      The conservation equations governing this computational problem are detailed below:
-    </p>
-    ${(project.governingEquations || [])
-      .map(
-        (eq, i) => `
-      <h3 class="sub-section-header">2.${i + 1} ${eq.name}</h3>
-      <p>${eq.description}</p>
-      <div class="equation-container">\\[ ${eq.latex} \\]</div>
-    `
-      )
-      .join('')}
-
-    <h2 class="section-header">3. Boundary Conditions & Material Properties</h2>
-    <div class="table-wrapper">
-      <div class="table-caption">Table 1: Applied boundary conditions and operational constraints.</div>
-      <table class="academic-table">
-        <thead><tr><th>Zone</th><th>Type</th><th>Value</th><th>Unit</th><th>Description</th></tr></thead>
-        <tbody>
-          ${(project.boundaryConditions || [])
-            .map(
-              (bc) => `
-            <tr><td><strong>${bc.name}</strong></td><td>${bc.type}</td><td style="font-weight:bold; color:#0369a1;">${bc.value}</td><td>${bc.unit}</td><td>${bc.description}</td></tr>
-          `
-            )
-            .join('')}
-        </tbody>
-      </table>
-    </div>
-
-    <h2 class="section-header">4. Mesh Independence & Roache GCI Verification</h2>
-    <p>
-      ${project.meshStudy?.description || 'Mesh independence study based on Roache GCI formulation.'}
-    </p>
-    <div class="figure-wrapper">
-      ${meshGciSvg}
-      <div class="figure-caption">
-        <strong>Figure 2:</strong> Roache Grid Convergence Index (GCI) across successive mesh refinement levels.
-      </div>
-    </div>
-
-    <div class="table-wrapper">
-      <div class="table-caption">Table 2: Mesh study hierarchy and Roache GCI parameters.</div>
-      <table class="academic-table">
-        <thead><tr><th>Level</th><th>Elements</th><th>Nodes</th><th>Nominal Size (mm)</th><th>Key Result</th><th>Error (%)</th><th>Roache GCI (%)</th></tr></thead>
-        <tbody>
-          ${(project.meshStudy?.meshLevels || [])
-            .map(
-              (lvl) => `
-            <tr><td><strong>${lvl.levelName}</strong></td><td>${lvl.elements.toLocaleString()}</td><td>${lvl.nodes.toLocaleString()}</td><td>${lvl.gridSpacingMm}</td><td>${lvl.keyResultValue}</td><td>${lvl.percentageError}%</td><td style="font-weight:bold; color:#059669;">${lvl.gciPercent}%</td></tr>
-          `
-            )
-            .join('')}
-        </tbody>
-      </table>
-    </div>
-
-    <h2 class="section-header">5. Solution Convergence & Residuals Decay</h2>
-    <div class="figure-wrapper">
-      ${residualsSvg}
-      <div class="figure-caption">
-        <strong>Figure 3:</strong> Residual convergence progression across computational iterations.
-      </div>
-    </div>
-
-    <h2 class="section-header">6. Mathematical Code Validation (Stefan Analytical Problem Benchmark)</h2>
-    <p>
-      Calibration against the exact Stefan Analytical Benchmark Problem confirms mathematical precision with R² = <strong>${project.validation?.rSquared ?? '0.998'}</strong> and maximum deviation of only <strong>${project.validation?.meanAbsoluteErrorPercent ?? '1.2'}%</strong> at 4.0 hours (14,400 s).
-    </p>
-    <div class="figure-wrapper">
-      ${validationSvg}
-      <div class="figure-caption">
-        <strong>Figure 4:</strong> Numerical simulation results compared against the Stefan exact analytical benchmark.
-      </div>
-    </div>
-
-    ${meltingSvg ? `
-    <h2 class="section-header">7. Transient Melting Comparison</h2>
-    <div class="figure-wrapper">
-      ${meltingSvg}
-      <div class="figure-caption">
-        <strong>Figure 5:</strong> Transient liquid fraction progression versus charging time comparing proposed graded tree fins with baselines.
-      </div>
-    </div>
-    ` : ''}
-
-    <h2 class="section-header">8. 2D Physical Field Contours & Vector Diagnostics</h2>
-    <p>
-      Planar cross-sectional field contours generated from the high-resolution numerical solution illustrate the local physical mechanisms, boundary layers, and phase change interfaces:
-    </p>
-    ${renderedContours
-      .map(
-        (rc: { contour: ContourField; pngDataUrl: string }, idx: number) => `
-      <div style="margin: 25px 0; page-break-inside: avoid;">
-        <h3 class="sub-section-header">8.${idx + 1} ${rc.contour.nameEn || rc.contour.name}</h3>
-        <p>${rc.contour.physicalDescription}</p>
-        <div class="figure-wrapper">
-          ${rc.pngDataUrl ? `<img src="${rc.pngDataUrl}" alt="${rc.contour.name}" style="max-width: 620px; width: 100%; border: 1.5px solid #0369a1; border-radius: 6px;" />` : ''}
-          <div style="margin-top: 8px;">
-            <span style="display:inline-block; font-size:11px; font-family:monospace; background:#e0f2fe; color:#0369a1; padding:3px 10px; border-radius:4px; border:1px solid #bae6fd;">
-              Min: <strong>${rc.contour.minVal} ${rc.contour.unit}</strong> &rarr; Max: <strong>${rc.contour.maxVal} ${rc.contour.unit}</strong>
-            </span>
-          </div>
-          <div class="figure-caption">
-            <strong>Figure 6.${idx + 1}:</strong> 2D physical contour distribution of ${rc.contour.nameEn || rc.contour.name} with designated inspection probe locations.
-          </div>
-        </div>
-        ${rc.contour.pointsOfInterest && rc.contour.pointsOfInterest.length > 0 ? `
-        <table class="academic-table" style="font-size:12px; margin-top:10px;">
-          <thead><tr><th>Probe #</th><th>Location</th><th>Value (${rc.contour.unit})</th><th>Physical Significance</th></tr></thead>
-          <tbody>
-            ${rc.contour.pointsOfInterest.map((pt: any, pIdx: number) => `
-              <tr>
-                <td><strong>Probe ${pIdx + 1}</strong></td>
-                <td>${pt.locationDescription}</td>
-                <td style="font-weight:bold; color:#0369a1;">${pt.value}</td>
-                <td>${pt.significance}</td>
-              </tr>
-            `).join('')}
-          </tbody>
-        </table>
-        ` : ''}
-      </div>
-    `).join('')}
-
-    <h2 class="section-header">9. Comprehensive Data Tables</h2>
-    ${project.thesisTables
-      .map(
-        (table) => `
-      <div class="table-wrapper">
-        <div class="table-caption">${table.tableNameEn || table.tableName}: ${table.caption}</div>
-        <table class="academic-table">
-          <thead><tr>${table.headers.map((h) => `<th>${h}</th>`).join('')}</tr></thead>
-          <tbody>
-            ${table.rows.map((r) => `<tr>${r.map((c) => `<td>${c}</td>`).join('')}</tr>`).join('')}
-          </tbody>
-        </table>
-      </div>
-    `
-      )
-      .join('')}
-
-    <h2 class="section-header">10. Technical Committee Defense & Rigorous Justifications</h2>
-    ${project.supervisorDefensePoints
-      .map(
-        (dp, i) => `
-      <div class="qa-box">
-        <div class="qa-question">Discussion Item ${i + 1}: ${dp.question}</div>
-        <div class="qa-answer"><strong>Technical Resolution:</strong> ${dp.answer}</div>
-        <div class="qa-justification"><strong>Standard Justification:</strong> ${dp.scientificJustification}</div>
-      </div>
-    `
-      )
-      .join('')}
-
-    <h2 class="section-header">11. References</h2>
-    <ol class="references-list">
-      <li>ASME V&V 20-2009, Standard for Verification and Validation in Computational Fluid Dynamics and Heat Transfer, ASME, New York, 2009.</li>
-      <li>P.J. Roache, Verification and Validation in Computational Science and Engineering, Hermosa Publishers, Albuquerque, NM, 1998.</li>
-      <li>S. Eiamsa-ard, P. Promvonge, K. Wongcharee, Thermal performance enhancement in heat exchangers using helical coiled tubes, Applied Thermal Engineering 168 (2020) 114865.</li>
-      <li>V.R. Voller, C. Prakash, A fixed grid numerical modelling methodology for convection-diffusion mushy region phase change problems, Int. J. Heat Mass Transfer 30 (1987) 1709–1719.</li>
-      <li>F.R. Menter, Two-equation eddy-viscosity turbulence models for engineering applications, AIAA Journal 32 (1994) 1598–1605.</li>
-    </ol>
-  </div>
-</body>
-</html>`;
-
-  const blob = new Blob([htmlDoc], { type: 'text/html;charset=utf-8;' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = `${project.id}_international_journal_paper.html`;
-  document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a);
-  URL.revokeObjectURL(url);
+    csv += '\n';
+  });
+  return csv;
 }
+
+export function exportToCSV(project: ThesisProject): void {
+  downloadBlob(new Blob([buildCsv(project)], { type: 'text/csv;charset=utf-8;' }), `${safeFileStem(project)}.csv`);
+}
+
+// --- OpenFOAM case scripts -----------------------------------------------------------------
 
 /**
- * Export OpenFOAM Case Configuration Scripts (blockMeshDict & controlDict)
+ * Reconstructs blockMeshDict/controlDict from the REAL submitted CFD job (domain, mesh size and
+ * the executable the backend resolved). The authoritative case lives on the backend.
  */
-export function exportToOpenFoamScripts(project: ThesisProject): void {
-  const isFEA = project.field === 'FEA';
-  
-  const blockMeshDict = `/*--------------------------------*- C++ -*----------------------------------*\\
-| =========                 |                                                 |
-| \\\\      /  F ield         | OpenFOAM: The Open Source CFD Toolbox           |
-|  \\\\    /   O peration     | Version:  v2312                                 |
-|   \\\\  /    A nd           | Website:  www.openfoam.com                      |
-|    \\\\/     M anipulation  | Case:     ${project.id}                         |
-\\*---------------------------------------------------------------------------*/
-FoamFile
-{
-    version     2.0;
-    format      ascii;
-    class       dictionary;
-    object      blockMeshDict;
-}
-// * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
+export function buildOpenFoamScripts(project: ThesisProject): string {
+  const run = project.simulationRun;
+  if (!run) throw new ExportUnavailableError('OpenFOAM case scripts require a completed CFD run.');
+  const result = run.result as Record<string, unknown>;
+  const data = (typeof result.data === 'object' && result.data ? result.data : result) as Record<string, unknown>;
+  const physicsType = String(result.physics_type ?? data.physics_type ?? '');
+  if (!physicsType.startsWith('CFD')) throw new ExportUnavailableError('OpenFOAM case scripts are only available for a completed CFD run.');
 
-scale 0.001; // Scale to meters from mm
+  const source = (run.backendPayload ?? run.submittedRequest) as Record<string, unknown>;
+  const domain = (typeof source.domain === 'object' && source.domain ? source.domain : {}) as Record<string, unknown>;
+  const mesh = (typeof source.mesh_settings === 'object' && source.mesh_settings ? source.mesh_settings : {}) as Record<string, unknown>;
+  const finite = (value: unknown): number | undefined => (typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : undefined);
+  const width = finite(domain.width_x) ?? finite(source.width_x);
+  const height = finite(domain.height_y) ?? finite(source.height_y);
+  const size = finite(mesh.mesh_size) ?? finite(source.mesh_size);
+  if (width === undefined || height === undefined || size === undefined) {
+    throw new ExportUnavailableError('The stored job does not contain the domain size and mesh size needed to write a blockMeshDict.');
+  }
+  // The backend's own defaults for the extruded depth and cell-count limits.
+  const depth = finite(domain.depth_z) ?? finite(domain.depth) ?? 0.1;
+  const clamp = (value: number, low: number, high: number) => Math.max(low, Math.min(high, value));
+  const nx = clamp(Math.round(width / size), 4, 200);
+  const ny = clamp(Math.round(height / size), 4, 200);
+  const nz = clamp(Math.round(depth / (size * 0.1)), 1, 20);
+  const executable = typeof data.executable === 'string' ? data.executable : '';
+  const application = executable.split(/[\\/]/).pop()?.replace(/\.[^.]+$/, '') || (typeof result.recommended_solver === 'string' ? result.recommended_solver : '');
+  if (!application) throw new ExportUnavailableError('The backend did not report which OpenFOAM solver executable it ran.');
+  const compressible = physicsType === 'CFD_Compressible';
+  const caseDirectory = typeof data.case_directory === 'string' ? data.case_directory : 'not reported';
 
-vertices
-(
-    (0 0 0)
-    (500 0 0)
-    (500 150 0)
-    (0 150 0)
-    (0 0 100)
-    (500 0 100)
-    (500 150 100)
-    (0 150 100)
+  const header = (object: string) =>
+    `// ${PLATFORM_NAME} — reconstructed from job ${run.taskId ?? 'direct execution'}\n// Authoritative backend case directory: ${caseDirectory}\nFoamFile { version 2.0; format ascii; class dictionary; object ${object}; }\n`;
+  const blockMeshDict = `${header('blockMeshDict')}convertToMeters 1;
+vertices ( (0 0 0) (${width} 0 0) (${width} ${height} 0) (0 ${height} 0) (0 0 ${depth}) (${width} 0 ${depth}) (${width} ${height} ${depth}) (0 ${height} ${depth}) );
+blocks ( hex (0 1 2 3 4 5 6 7) (${nx} ${ny} ${nz}) simpleGrading (1 1 1) );
+edges ();
+boundary (
+ inlet { type patch; faces ((0 4 7 3)); }
+ outlet { type patch; faces ((1 2 6 5)); }
+ walls { type wall; faces ((0 1 5 4) (3 7 6 2)); }
+ frontAndBack { type empty; faces ((0 3 2 1) (4 5 6 7)); }
 );
-
-blocks
-(
-    hex (0 1 2 3 4 5 6 7) (120 40 30) simpleGrading (1 1 1)
-);
-
-edges
-(
-);
-
-boundary
-(
-    inlet
-    {
-        type patch;
-        faces
-        (
-            (0 4 7 3)
-        );
-    }
-    outlet
-    {
-        type patch;
-        faces
-        (
-            (1 2 6 5)
-        );
-    }
-    walls
-    {
-        type wall;
-        faces
-        (
-            (0 1 5 4)
-            (3 7 6 2)
-            (0 3 2 1)
-            (4 5 6 7)
-        );
-    }
-);
-
-// ************************************************************************* //
+mergePatchPairs ();
 `;
-
-  const controlDict = `/*--------------------------------*- C++ -*----------------------------------*\\
-| =========                 |                                                 |
-| \\\\      /  F ield         | OpenFOAM Case: ${project.id}                     |
-\\*---------------------------------------------------------------------------*/
-FoamFile
-{
-    version     2.0;
-    format      ascii;
-    class       dictionary;
-    object      controlDict;
-}
-// * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
-
-application     ${isFEA ? 'solidEquilibriumFoam' : 'simpleFoam'};
-
-startFrom       startTime;
-startTime       0;
-stopAt          endTime;
-endTime         1000;
-deltaT          1;
-
-writeControl    timeStep;
-writeInterval   100;
-
-purgeWrite      0;
-writeFormat     ascii;
-writePrecision  8;
-writeCompression off;
-
+  const controlDict = `${header('controlDict')}application ${application};
+startFrom startTime;
+startTime 0;
+stopAt endTime;
+${compressible ? 'endTime 1000;\ndeltaT 1;\nwriteInterval 100;' : 'endTime 1;\ndeltaT 0.001;\nwriteInterval 1;'}
+purgeWrite 0;
+writeFormat ascii;
+writePrecision 8;
+timeFormat general;
+timePrecision 8;
 runTimeModifiable true;
-
-// ************************************************************************* //
 `;
-
-  const fullZipText = `=== system/blockMeshDict ===\n${blockMeshDict}\n\n=== system/controlDict ===\n${controlDict}`;
-  const blob = new Blob([fullZipText], { type: 'text/plain;charset=utf-8;' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = `${project.id}_OpenFOAM_case_scripts.txt`;
-  document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a);
-  URL.revokeObjectURL(url);
+  return `=== system/blockMeshDict ===\n${blockMeshDict}\n=== system/controlDict ===\n${controlDict}`;
 }
 
+export function exportToOpenFoamScripts(project: ThesisProject): void {
+  downloadBlob(new Blob([buildOpenFoamScripts(project)], { type: 'text/plain;charset=utf-8;' }), `${String(project.id || 'project').replace(/[^A-Za-z0-9_-]+/g, '_')}_OpenFOAM_case_scripts.txt`);
+}
+
+// Re-exported for tests and tooling.
+export { buildRealReport };
