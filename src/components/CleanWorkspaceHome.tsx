@@ -28,6 +28,7 @@ import {
   Cloud,
   Grid3X3,
   Plus,
+  Box,
 } from 'lucide-react';
 import { ThesisProject, IngestedFileItem, ApiKeyItem, EngineMode } from '../types/thesis';
 import { generateLocalEngineeringProject } from '../utils/physicsEngine';
@@ -352,6 +353,23 @@ export const CleanWorkspaceHome: React.FC<CleanWorkspaceHomeProps> = ({
           </div>
 
           <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3 shrink-0">
+            <button
+              type="button"
+              onClick={() => {
+                const defaultProj = generateLocalEngineeringProject(
+                  'Airfoil_NACA0012_Compressible_Flow.stl',
+                  'Aerodynamic compressible flow study and pressure distribution over airfoil',
+                  'CFD'
+                );
+                onStartProject(defaultProj);
+              }}
+              className="px-4 py-2.5 rounded-xl bg-gradient-to-r from-sky-600 via-indigo-600 to-sky-500 hover:from-sky-500 hover:to-indigo-500 text-white text-xs font-bold shadow-lg shadow-sky-950/50 flex items-center justify-center gap-2 transition-all active:scale-95 border border-sky-400/30"
+              title="الدخول الفوري إلى استوديو المحاكاة ثلاثي الأبعاد 3D Workbench"
+            >
+              <Box className="w-4 h-4 text-sky-200" />
+              <span>استوديو المحاكاة ثلاثي الأبعاد (3D Workbench)</span>
+            </button>
+
             {onOpenNewProjectWizard && (
               <button
                 type="button"

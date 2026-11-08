@@ -43,6 +43,7 @@ import {
   defaultSimulationTypeForField,
 } from './types/studio';
 import { exportToWordDocument, exportToCSV, exportToLatex, exportToJournalHTML, hasRealSimulationRun } from './utils/exporter';
+import { generateLocalEngineeringProject } from './utils/physicsEngine';
 import { CleanWorkspaceHome } from './components/CleanWorkspaceHome';
 import { OverviewTab } from './components/OverviewTab';
 import { MeshStudyTab } from './components/MeshStudyTab';
@@ -100,8 +101,14 @@ const toRealTemperatureMatrix = (value: unknown): number[][] | undefined => {
 };
 
 export default function App() {
-  // Start with clean workspace (null) so previous research does NOT stick to the app!
-  const [currentProject, setCurrentProject] = useState<ThesisProject | null>(null);
+  // Start with default 3D CAE Workbench model loaded immediately (SimScale Experience)
+  const [currentProject, setCurrentProject] = useState<ThesisProject | null>(() => {
+    return generateLocalEngineeringProject(
+      'Airfoil_NACA0012_Compressible_Flow.stl',
+      'Aerodynamic compressible flow study and pressure distribution over airfoil',
+      'CFD'
+    );
+  });
   const [activeTab, setActiveTab] = useState<TabType>('overview');
   const [isNewProjectModalOpen, setIsNewProjectModalOpen] = useState<boolean>(false);
   const [isMaterialsModalOpen, setIsMaterialsModalOpen] = useState<boolean>(false);
