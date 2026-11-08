@@ -693,7 +693,7 @@ export function buildLatexSource(project: ThesisProject): string {
         const compared = c && c.compared > 0;
         return (
           `\\section{Validation against Reference Data}\n` +
-          `${val.reference.points.length} reference points (``${latexEscape(val.reference.label)}'') are compared with the simulated field` +
+          `${val.reference.points.length} reference points (\`\`${latexEscape(val.reference.label)}'') are compared with the simulated field` +
           (val.profile ? ` along: \\textbf{${latexEscape(val.profile.description)}}. Reference X is expressed as ${latexEscape(val.profile.abscissaLabel)}; simulated values are bilinearly interpolated between nodes.\n` : '.\n') +
           (val.error ? `\n\\noindent\\textbf{Validation could not be evaluated:} ${latexEscape(val.error)}\n` : '') +
           (compared

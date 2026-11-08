@@ -877,6 +877,7 @@ export default function App() {
             <ViewportCanvas
               title={viewportTitles[activeStep]}
               subtitle={`${currentProject.title} · ${currentProject.field}`}
+              field={currentProject.field}
               showMeshOverlay={activeStep === 'mesh'}
               overlay={
                 <>
