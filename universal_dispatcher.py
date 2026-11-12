@@ -1005,12 +1005,16 @@ def execute_simulation(data: Dict[str, Any]) -> PhysicsResult:
             "CFD_Compressible": call_openfoam_compressible_solver,
             "Structural_Static": call_calculix_solver,
             "Structural_Dynamic": call_calculix_solver,
+            "Thermal_Transient": call_calculix_solver,     # تم توجيه المهام الحرارية للمحرك الحقيقي
+            "Thermal_Radiation": call_calculix_solver,     # تم توجيه الإشعاع الحراري للمحرك الحقيقي
+            "Multiphysics": call_calculix_solver,          # تم توجيه المهام المدمجة للمحرك الحقيقي
         }
 
-        if physics_type.startswith("Thermal_") or physics_type == "Multiphysics":
-            result = _thermal_fallback(data)
-        else:
+        # قطع الطريق تماماً على المحاكاة الوهمية وتوجيه المهام مباشرة للمسارات الحقيقية
+        if physics_type in routes:
             result = routes[physics_type](data)
+        else:
+            result = call_calculix_solver(data)
 
         elapsed_ms = round((perf_counter() - started) * 1000, 3)
         merged = result if isinstance(result, Mapping) else {}
@@ -1046,7 +1050,6 @@ def execute_simulation(data: Dict[str, Any]) -> PhysicsResult:
             "error": str(exc) if isinstance(exc, OpenFOAMVerificationError) else f"Universal dispatcher failed: {exc}",
             **failure,
         }, physics_type="Thermal_Transient", input_data=data, solver="unknown")
-
 
 _JOB_REPOSITORY: Optional[Any] = None
 

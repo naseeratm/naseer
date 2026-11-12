@@ -1,6 +1,8 @@
 FROM ubuntu:24.04
 
-# تثبيت أدوات التصنيع والشبكة والمحركات الهندسية المستخدمة داخل العامل.
+ENV DEBIAN_FRONTEND=noninteractive
+
+# تثبيت أدوات الشبكة والمحركات الهندسية ومكتبات الرسوميات
 RUN apt-get update && apt-get install -y \
     python3 \
     python3-pip \
@@ -31,4 +33,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY main.py physics_solver.py universal_dispatcher.py cae_repository.py ./
 COPY backend/ ./backend/
 
-CMD ["/opt/venv/bin/uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
+# تفعيل بيئة OpenFOAM تلقائياً لأي أمر يتم تنفيذه داخل الحاوية
+RUN echo "source /usr/share/openfoam/etc/bashrc" >> /etc/bash.bashrc
+ENV WM_PROJECT_DIR=/usr/share/openfoam
+
+CMD ["/opt/venv/bin/celery", "-A", "universal_dispatcher.celery_app", "worker", "--loglevel=INFO", "--concurrency=1"]
