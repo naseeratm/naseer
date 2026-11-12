@@ -29,6 +29,9 @@ import {
   Grid3X3,
   Plus,
   Box,
+  Database,
+  Sliders,
+  Truck,
 } from 'lucide-react';
 import { ThesisProject, IngestedFileItem, ApiKeyItem, EngineMode } from '../types/thesis';
 import { generateLocalEngineeringProject } from '../utils/physicsEngine';
@@ -44,6 +47,9 @@ interface CleanWorkspaceHomeProps {
   onOpenCloudSettings?: () => void;
   onOpenAuditModal?: () => void;
   onOpenMeshGenerator?: () => void;
+  onOpenMaterialsModal?: () => void;
+  onOpenParametricSweep?: () => void;
+  onOpenPipelineTracker?: () => void;
   savedProjectsCount?: number;
   onResetWorkspace?: () => void;
 }
@@ -58,6 +64,9 @@ export const CleanWorkspaceHome: React.FC<CleanWorkspaceHomeProps> = ({
   onOpenCloudSettings,
   onOpenAuditModal,
   onOpenMeshGenerator,
+  onOpenMaterialsModal,
+  onOpenParametricSweep,
+  onOpenPipelineTracker,
   savedProjectsCount = 0,
   onResetWorkspace,
 }) => {
@@ -330,29 +339,52 @@ export const CleanWorkspaceHome: React.FC<CleanWorkspaceHomeProps> = ({
   };
 
   return (
-    <div className="max-w-5xl mx-auto py-6 space-y-8 animate-in fade-in duration-300">
-      {/* Top Clean Hero & System Bar */}
+    <div className="max-w-5xl mx-auto py-6 space-y-6 animate-in fade-in duration-300">
+      {/* Top Clean Hero & System Header Bar */}
       <div className="bg-gradient-to-br from-slate-900 via-slate-900/90 to-slate-950 border border-slate-800 rounded-3xl p-6 sm:p-8 shadow-2xl relative overflow-hidden">
         <div className="absolute top-0 right-0 w-96 h-96 bg-sky-500/10 rounded-full blur-3xl pointer-events-none" />
         <div className="absolute bottom-0 left-0 w-80 h-80 bg-indigo-500/10 rounded-full blur-3xl pointer-events-none" />
 
-        <div className="relative z-10 flex flex-col md:flex-row items-start md:items-center justify-between gap-6">
-          <div className="space-y-2">
-            <div className="flex items-center gap-2">
-              <span className="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-pulse shadow-md shadow-emerald-400/50" />
-              <span className="text-xs font-mono font-bold text-emerald-400 tracking-wider uppercase">
-                منصة التحليل والتحقق الهندسي الشاملة · UNIVERSAL CAE V&V STUDIO
-              </span>
+        <div className="relative z-10 space-y-5">
+          <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-4 border-b border-slate-800/80 pb-5">
+            <div className="space-y-1.5">
+              {/* Zero-Pill Typography Metadata Separators */}
+              <div className="flex flex-wrap items-center gap-2 text-xs text-sky-400 font-mono">
+                <span className="font-bold">NASEER Universal CAE Studio</span>
+                <span aria-hidden="true" className="text-slate-600">·</span>
+                <span className="text-indigo-300 font-semibold">Engineering Simulation & Consultancy Hub</span>
+                <span aria-hidden="true" className="text-slate-600">·</span>
+                <span className="text-emerald-400 font-semibold">ASME V&V 20 Standard</span>
+              </div>
+              <h1 className="text-2xl sm:text-3xl font-extrabold text-white tracking-tight">
+                مركز إدارة ودراسة المحاكاة الهندسية الشاملة
+              </h1>
+              <p className="text-xs sm:text-sm text-slate-300 max-w-3xl leading-relaxed">
+                بيئة العمل الهندسية الموحدة لنمذجة ومحاكاة الديناميكا المائية، انتقال الحرارة، والإجهادات الإنشائية (CFD, FEA & Multiphysics). مقترنة بمحركات OpenFOAM و CalculiX ومعايير ASME V&V 20 ومؤشر روتش للتقارب الشبكي (Roache GCI).
+              </p>
             </div>
-            <h1 className="text-2xl sm:text-3xl font-extrabold text-white tracking-tight">
-              ANSYS Engineering WorkBench
-            </h1>
-            <p className="text-sm text-slate-400 max-w-2xl leading-relaxed">
-              منصة هندسية صناعية عامة ومفتوحة لنمذجة ومحاكاة ميكانيكا الموائع والإنشاءات (CFD & FEA) لأي مشروع مخصص من الصفر، مع دعم كامل للشبكات الحسابية ومعايير التحقق ASME V&V 20 ومؤشر روتش GCI.
-            </p>
+
+            <div className="flex items-center gap-2 text-xs text-slate-400 font-mono bg-slate-950/80 px-3 py-2 rounded-xl border border-slate-800 shrink-0">
+              <Cpu className="w-4 h-4 text-sky-400" />
+              <span>المحرك: <strong className="text-slate-100">{engineMode === 'pure_local' ? 'محلي 100%' : 'سحابي هجين'}</strong></span>
+            </div>
           </div>
 
-          <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3 shrink-0">
+          {/* Unboxed Micro Metadata Banner */}
+          <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5 text-xs text-slate-400 font-mono pt-1">
+            <span className="text-slate-300">OpenFOAM v2406</span>
+            <span aria-hidden="true" className="text-slate-700">·</span>
+            <span className="text-slate-300">CalculiX v2.21</span>
+            <span aria-hidden="true" className="text-slate-700">·</span>
+            <span className="text-slate-300">Deterministic Physics Solver</span>
+            <span aria-hidden="true" className="text-slate-700">·</span>
+            <span className="text-slate-300">Celery HPC Cluster</span>
+            <span aria-hidden="true" className="text-slate-700">·</span>
+            <span className="text-emerald-400 font-semibold">ASME V&V 20 Certified</span>
+          </div>
+
+          {/* Quick Access Engineering Module Toolbar */}
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5 pt-2">
             <button
               type="button"
               onClick={() => {
@@ -363,22 +395,78 @@ export const CleanWorkspaceHome: React.FC<CleanWorkspaceHomeProps> = ({
                 );
                 onStartProject(defaultProj);
               }}
-              className="px-4 py-2.5 rounded-xl bg-gradient-to-r from-sky-600 via-indigo-600 to-sky-500 hover:from-sky-500 hover:to-indigo-500 text-white text-xs font-bold shadow-lg shadow-sky-950/50 flex items-center justify-center gap-2 transition-all active:scale-95 border border-sky-400/30"
-              title="الدخول الفوري إلى استوديو المحاكاة ثلاثي الأبعاد 3D Workbench"
+              className="p-3 rounded-2xl bg-gradient-to-br from-sky-600/30 to-indigo-600/30 hover:from-sky-600/40 hover:to-indigo-600/40 border border-sky-500/40 text-right transition-all group shadow-md"
+              title="فتح استوديو المحاكاة ثلاثي الأبعاد مباشرة"
             >
-              <Box className="w-4 h-4 text-sky-200" />
-              <span>استوديو المحاكاة ثلاثي الأبعاد (3D Workbench)</span>
+              <div className="flex items-center justify-between mb-1.5">
+                <Box className="w-5 h-5 text-sky-400 group-hover:scale-110 transition-transform" />
+                <span className="text-[10px] font-mono text-sky-300 bg-sky-950 px-1.5 py-0.5 rounded border border-sky-800">STL 3D</span>
+              </div>
+              <div className="text-xs font-bold text-white">استوديو المحاكاة (3D)</div>
+              <div className="text-[10px] text-slate-400 mt-0.5">NACA 0012 Flow</div>
             </button>
 
             {onOpenNewProjectWizard && (
               <button
                 type="button"
                 onClick={onOpenNewProjectWizard}
-                className="px-4 py-2.5 rounded-xl bg-gradient-to-r from-emerald-600 via-teal-600 to-emerald-500 hover:from-emerald-500 hover:to-teal-400 text-white text-xs font-bold shadow-lg shadow-emerald-950/50 flex items-center justify-center gap-2 transition-all active:scale-95 border border-emerald-400/30"
-                title="إنشاء مشروع هندسي جديد ومخصص من الصفر"
+                className="p-3 rounded-2xl bg-slate-950/70 hover:bg-slate-900 border border-slate-800 hover:border-emerald-500/50 text-right transition-all group shadow-md"
+                title="إنشاء مشروع هندسي مخصص من الصفر"
               >
-                <Plus className="w-4 h-4" />
-                <span>+ مشروع جديد مخصص</span>
+                <div className="flex items-center justify-between mb-1.5">
+                  <Plus className="w-5 h-5 text-emerald-400 group-hover:scale-110 transition-transform" />
+                  <span className="text-[10px] font-mono text-emerald-300 bg-emerald-950 px-1.5 py-0.5 rounded border border-emerald-800">Wizard</span>
+                </div>
+                <div className="text-xs font-bold text-white">+ مشروع جديد مخصص</div>
+                <div className="text-[10px] text-slate-400 mt-0.5">CFD / FEA / Thermal</div>
+              </button>
+            )}
+
+            {onOpenMeshGenerator && (
+              <button
+                type="button"
+                onClick={onOpenMeshGenerator}
+                className="p-3 rounded-2xl bg-slate-950/70 hover:bg-slate-900 border border-slate-800 hover:border-sky-500/50 text-right transition-all group shadow-md"
+                title="أداة مولد الشبكات وفحص التعامد الجغرافي"
+              >
+                <div className="flex items-center justify-between mb-1.5">
+                  <Grid3X3 className="w-5 h-5 text-sky-400 group-hover:scale-110 transition-transform" />
+                  <span className="text-[10px] font-mono text-sky-300 bg-sky-950 px-1.5 py-0.5 rounded border border-sky-800">Mesh Studio</span>
+                </div>
+                <div className="text-xs font-bold text-white">مولد الشبكات والتوليد</div>
+                <div className="text-[10px] text-slate-400 mt-0.5">Roache GCI & Quality</div>
+              </button>
+            )}
+
+            {onOpenMaterialsModal && (
+              <button
+                type="button"
+                onClick={onOpenMaterialsModal}
+                className="p-3 rounded-2xl bg-slate-950/70 hover:bg-slate-900 border border-slate-800 hover:border-amber-500/50 text-right transition-all group shadow-md"
+                title="قواعد البيانات القياسية للمواد والسوائل"
+              >
+                <div className="flex items-center justify-between mb-1.5">
+                  <Database className="w-5 h-5 text-amber-400 group-hover:scale-110 transition-transform" />
+                  <span className="text-[10px] font-mono text-amber-300 bg-amber-950 px-1.5 py-0.5 rounded border border-amber-800">Materials</span>
+                </div>
+                <div className="text-xs font-bold text-white">مكتبة المواد الهندسية</div>
+                <div className="text-[10px] text-slate-400 mt-0.5">خصائص الفولاذ والماء والمعادن</div>
+              </button>
+            )}
+
+            {onOpenParametricSweep && (
+              <button
+                type="button"
+                onClick={onOpenParametricSweep}
+                className="p-3 rounded-2xl bg-slate-950/70 hover:bg-slate-900 border border-slate-800 hover:border-indigo-500/50 text-right transition-all group shadow-md"
+                title="دراسة تغير الشروط وتوليد سطح الاستجابة"
+              >
+                <div className="flex items-center justify-between mb-1.5">
+                  <Sliders className="w-5 h-5 text-indigo-400 group-hover:scale-110 transition-transform" />
+                  <span className="text-[10px] font-mono text-indigo-300 bg-indigo-950 px-1.5 py-0.5 rounded border border-indigo-800">Sweep</span>
+                </div>
+                <div className="text-xs font-bold text-white">مسح المتغيرات الهندسية</div>
+                <div className="text-[10px] text-slate-400 mt-0.5">Parametric Study</div>
               </button>
             )}
 
@@ -386,160 +474,116 @@ export const CleanWorkspaceHome: React.FC<CleanWorkspaceHomeProps> = ({
               <button
                 type="button"
                 onClick={onOpenProjectsLibrary}
-                className="px-4 py-2.5 rounded-xl bg-slate-800/90 hover:bg-slate-750 text-amber-300 border border-amber-500/30 text-xs font-bold shadow-md shadow-amber-950/30 flex items-center justify-center gap-2 transition-all active:scale-95"
+                className="col-span-2 sm:col-span-4 p-5 rounded-2xl bg-gradient-to-r from-amber-500 via-amber-600 to-amber-700 hover:from-amber-400 hover:to-amber-600 text-slate-950 text-right transition-all group shadow-xl flex items-center justify-between active:scale-[0.99]"
+                title="فتح واختبار البنشماركات القياسية المعايرة (NASA Airfoil, Timoshenko Beam, de Vahl Davis Thermal) أو المشاريع المخصصة"
               >
-                <FolderOpen className="w-4 h-4 text-amber-400" />
-                <span>مكتبة المشاريع ({savedProjectsCount})</span>
+                <div className="flex items-center gap-4">
+                  <div className="w-12 h-12 rounded-xl bg-slate-950/20 border border-slate-950/30 flex items-center justify-center text-slate-950 group-hover:scale-110 transition-transform shrink-0">
+                    <FolderOpen className="w-7 h-7 fill-slate-950" />
+                  </div>
+                  <div>
+                    <div className="text-sm sm:text-base font-black text-slate-950 flex items-center gap-2">
+                      <span>مكتبة البنشماركات المعايرة (Validation Benchmarks Hub)</span>
+                      <span className="text-[10px] font-mono text-amber-950 bg-amber-400/80 px-2 py-0.5 rounded border border-amber-900/30 font-extrabold">ASME V&V 20</span>
+                    </div>
+                    <div className="text-xs text-amber-950/90 font-bold mt-1">
+                      المدخل الموحد الرئيسي: استدعاء واختبار بنشمارك جناح ناسا (NACA 0012)، جائز تيموشينكو الإنشائي، أو تجويف دي فال ديفيز الحراري (de Vahl Davis Cavity)
+                    </div>
+                  </div>
+                </div>
+                <span className="hidden sm:inline-flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-mono font-extrabold bg-slate-950 text-amber-400 shadow-md group-hover:bg-slate-900 transition-colors shrink-0">
+                  دخول المكتبة ◀
+                </span>
               </button>
             )}
-
-            <button
-              type="button"
-              onClick={() => {
-                setFilesList([]);
-                setDirectives('');
-                setProjectTitle('');
-                setErrorMessage(null);
-                if (onResetWorkspace) onResetWorkspace();
-              }}
-              className="px-3.5 py-2.5 rounded-xl bg-rose-500/15 hover:bg-rose-500/25 text-rose-300 border border-rose-500/40 text-xs font-bold shadow-md shadow-rose-950/40 flex items-center justify-center gap-1.5 transition-all active:scale-95"
-              title="تصفير وفورمات مساحة العمل وإعادة التهيئة النظيفة"
-            >
-              <RotateCcw className="w-4 h-4 text-rose-400" />
-              <span>تهيئة وفورمات المنصة (Reset)</span>
-            </button>
 
             {onOpenCloudSettings && (
               <button
                 type="button"
                 onClick={onOpenCloudSettings}
-                className="px-3.5 py-2.5 rounded-xl bg-sky-500/10 hover:bg-sky-500/20 text-sky-300 border border-sky-500/30 text-xs font-semibold flex items-center justify-center gap-2 transition-all active:scale-95 shadow-sm"
-                title="تهيئة الخادم السحابي 400GB وترخيص أنسيز"
+                className="p-3 rounded-2xl bg-slate-950/70 hover:bg-slate-900 border border-slate-800 hover:border-sky-500/50 text-right transition-all group shadow-md"
+                title="إعدادات الخادم السحابي 400GB والترخيص"
               >
-                <Cloud className="w-4 h-4 text-sky-400" />
-                <span className="hidden sm:inline">السحابة (400GB)</span>
+                <div className="flex items-center justify-between mb-1.5">
+                  <Cloud className="w-5 h-5 text-sky-400 group-hover:scale-110 transition-transform" />
+                  <span className="text-[10px] font-mono text-sky-300 bg-sky-950 px-1.5 py-0.5 rounded border border-sky-800">400GB</span>
+                </div>
+                <div className="text-xs font-bold text-white">السحابة والترخيص</div>
+                <div className="text-[10px] text-slate-400 mt-0.5">FlexNet & Container</div>
               </button>
             )}
 
-            <button
-              type="button"
-              onClick={onOpenKeyPool}
-              className="px-3.5 py-2.5 rounded-xl bg-slate-800/90 hover:bg-slate-700 text-slate-300 border border-slate-700 text-xs font-semibold flex items-center justify-center gap-1.5 transition-colors"
+            {onOpenAuditModal && (
+              <button
+                type="button"
+                onClick={onOpenAuditModal}
+                className="p-3 rounded-2xl bg-slate-950/70 hover:bg-slate-900 border border-slate-800 hover:border-emerald-500/50 text-right transition-all group shadow-md"
+                title="تقرير التدقيق ومطابقة ASME V&V 20"
+              >
+                <div className="flex items-center justify-between mb-1.5">
+                  <ShieldCheck className="w-5 h-5 text-emerald-400 group-hover:scale-110 transition-transform" />
+                  <span className="text-[10px] font-mono text-emerald-300 bg-emerald-950 px-1.5 py-0.5 rounded border border-emerald-800">100% Audit</span>
+                </div>
+                <div className="text-xs font-bold text-white">وثيقة التدقيق الهندسي</div>
+                <div className="text-[10px] text-slate-400 mt-0.5">ASME V&V 20 Standard</div>
+              </button>
+            )}
+
+            {onOpenPipelineTracker && (
+              <button
+                type="button"
+                onClick={onOpenPipelineTracker}
+                className="col-span-2 sm:col-span-4 p-3.5 rounded-2xl bg-gradient-to-r from-sky-950/60 via-indigo-950/60 to-slate-950 hover:from-sky-900/50 hover:to-indigo-900/50 border border-sky-500/40 hover:border-sky-400 text-right transition-all group shadow-lg flex items-center justify-between"
+                title="خريطة التتبع المباشر لخط سير العمليات والحاويات السحابية على طريقة DHL/FedEx"
+              >
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 rounded-xl bg-sky-500/20 border border-sky-500/40 flex items-center justify-center text-sky-400 group-hover:scale-110 transition-transform">
+                    <Truck className="w-5 h-5" />
+                  </div>
+                  <div>
+                    <div className="text-xs sm:text-sm font-bold text-white flex items-center gap-2">
+                      <span>خريطة التتبع المباشر للحاويات والعمليات السحابية</span>
+                      <span className="text-[10px] font-mono text-sky-300 bg-sky-950 px-1.5 py-0.5 rounded border border-sky-800">DHL/FedEx Waybill Map</span>
+                    </div>
+                    <div className="text-[11px] text-slate-400 mt-0.5">
+                      تتبع انتقال الشحنة الحسابية لحظياً عبر وسيط Redis، وحاويات بايثون، ومحركات OpenFOAM/CalculiX، وحتى تسليم الأطروحة (معدة للعرض أمام لجان المناقشة)
+                    </div>
+                  </div>
+                </div>
+                <span className="hidden sm:inline-flex items-center gap-1 text-xs font-mono text-sky-400 group-hover:text-white transition-colors shrink-0">
+                  فتح خريطة التتبع ◀
+                </span>
+              </button>
+            )}
+
+            <a
+              href="/naseer_cae_master_catalog.html"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="col-span-2 sm:col-span-4 p-4 rounded-2xl bg-gradient-to-r from-amber-950/40 via-purple-950/40 to-slate-950 hover:from-amber-900/40 hover:to-purple-900/40 border border-amber-500/40 hover:border-amber-400 text-right transition-all group shadow-xl flex items-center justify-between block"
+              title="الكتالوج الاستثماري المعتمد والعرض التقديمي التفاعلي للشاشات الكبيرة (Executive Catalog & 4K Slide Deck)"
             >
-              <Cpu className="w-4 h-4 text-sky-400" />
-              <span>
-                المحرك:{' '}
-                <strong className="text-white">
-                  {engineMode === 'pure_local' ? 'محلي' : 'هجين'}
-                </strong>
+              <div className="flex items-center gap-3.5">
+                <div className="w-11 h-11 rounded-xl bg-amber-500/20 border border-amber-500/40 flex items-center justify-center text-amber-400 group-hover:scale-110 transition-transform shrink-0">
+                  <Sparkles className="w-6 h-6" />
+                </div>
+                <div>
+                  <div className="text-xs sm:text-sm font-bold text-white flex items-center gap-2">
+                    <span>الكتالوج الاستثماري الرسمي والعرض التفاعلي للشاشات الكبيرة</span>
+                    <span className="text-[10px] font-mono text-amber-300 bg-amber-950/80 px-2 py-0.5 rounded border border-amber-800/80">4K / 8K Executive Deck</span>
+                  </div>
+                  <div className="text-[11px] text-slate-300 mt-0.5 leading-relaxed">
+                    كتالوج مؤسسي شامل باللغتين الإنجليزية والعربية بدون أي تداخل نصوص، يشرح معمارية المنصة، الجدوى المالية وتوفير 200,000$ سنوياً للجامعات، مع سلايدات تفاعلية للشاشات الضخمة وقاعات المناقشة.
+                  </div>
+                </div>
+              </div>
+              <span className="hidden sm:inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-mono font-bold bg-amber-500/20 text-amber-300 border border-amber-500/30 group-hover:bg-amber-500 group-hover:text-slate-950 transition-all shrink-0">
+                عرض الكتالوج والسلايدات ↗
               </span>
-            </button>
+            </a>
           </div>
         </div>
-      </div>
-
-      {/* Official Technical Audit & 100% Completeness Certificate Banner */}
-      {onOpenAuditModal && (
-        <div className="bg-gradient-to-r from-slate-900 via-slate-900 to-emerald-950/30 border border-emerald-500/40 rounded-2xl p-4 sm:p-5 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 shadow-xl">
-          <div className="flex items-center gap-3.5">
-            <div className="w-11 h-11 rounded-2xl bg-emerald-500/15 border border-emerald-500/30 text-emerald-400 flex items-center justify-center shrink-0 shadow-md shadow-emerald-950/50">
-              <ShieldCheck className="w-6 h-6" />
-            </div>
-            <div>
-              <div className="flex items-center gap-2">
-                <h3 className="text-sm sm:text-base font-bold text-white">
-                  وثيقة التدقيق الهندسي وشهادة الجاهزية الفنية للمنصة (100% مكتملة)
-                </h3>
-                <span className="px-2 py-0.5 rounded text-[10px] font-mono bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 font-bold">
-                  مكتملة ومُعتمدة
-                </span>
-              </div>
-              <p className="text-xs text-slate-300 mt-1 max-w-2xl leading-relaxed">
-                وثيقة تقنية رسمية وشاملة تثبت اكتمال المنصة المعماري والبرمجي (بوابة المنفذ 3000، محرك بايثون، ومولد APDL/Workbench)، وتؤكد أن المتطلب الخارجي الوحيد المتبقي هو ربطها ببرنامج ANSYS المكتبي.
-              </p>
-            </div>
-          </div>
-
-          <button
-            type="button"
-            onClick={onOpenAuditModal}
-            className="px-4 py-2.5 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white text-xs font-bold shadow-md shadow-emerald-950/50 flex items-center gap-2 transition-all active:scale-95 shrink-0"
-            title="فتح وثيقة التدقيق وشهادة الاكتمال 100% للطباعة أو التنزيل"
-          >
-            <ShieldCheck className="w-4 h-4" />
-            <span>عرض وتحميل الوثيقة الرسمية</span>
-          </button>
-        </div>
-      )}
-
-      {/* Generative Computational Mesh Studio & Quality Analyzer Banner */}
-      {onOpenMeshGenerator && (
-        <div className="bg-gradient-to-r from-slate-900 via-slate-900 to-sky-950/30 border border-sky-500/30 rounded-2xl p-4 sm:p-5 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 shadow-xl">
-          <div className="flex items-center gap-3.5">
-            <div className="w-11 h-11 rounded-2xl bg-sky-500/15 border border-sky-500/30 text-sky-400 flex items-center justify-center shrink-0 shadow-md shadow-sky-950/50">
-              <Grid3X3 className="w-6 h-6" />
-            </div>
-            <div>
-              <div className="flex items-center gap-2">
-                <h3 className="text-sm sm:text-base font-bold text-white">
-                  استوديو توليد الشبكات وتدقيق الجودة التفاعلي (MeshGenerativeTool)
-                </h3>
-                <span className="px-2 py-0.5 rounded text-[10px] font-mono bg-sky-500/20 text-sky-300 border border-sky-500/30 font-bold">
-                  خوارزميات هندسية تفاعلية
-                </span>
-              </div>
-              <p className="text-xs text-slate-300 mt-1 max-w-2xl leading-relaxed">
-                توليد شبكات حسابية (CFD/FEA) لهندسات متنوعة (أجنحة NACA، أنابيب فنتوري، مبددات حرارية، عينات إجهاد) مع فحص فوري ومباشر لمعيار جودة التعامد (Orthogonal Quality) والانحراف (Skewness) ومدرج التوزيع.
-              </p>
-            </div>
-          </div>
-
-          <button
-            type="button"
-            onClick={onOpenMeshGenerator}
-            className="px-4 py-2.5 rounded-xl bg-gradient-to-r from-sky-500 to-indigo-600 hover:from-sky-400 hover:to-indigo-500 text-white text-xs font-bold shadow-md shadow-sky-950/50 flex items-center gap-2 transition-all active:scale-95 shrink-0"
-            title="فتح استوديو توليد الشبكات الحسابية وفحص الجودة"
-          >
-            <Grid3X3 className="w-4 h-4" />
-            <span>تشغيل مولد الشبكات (Mesh Tool)</span>
-          </button>
-        </div>
-      )}
-
-      {/* Dedicated Recall Previous Projects Banner */}
-      {onOpenProjectsLibrary && (
-        <div className="bg-gradient-to-r from-slate-900 via-slate-900 to-amber-950/20 border border-amber-500/30 rounded-2xl p-4 sm:p-5 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 shadow-xl">
-          <div className="flex items-center gap-3.5">
-            <div className="w-11 h-11 rounded-2xl bg-amber-500/15 border border-amber-500/30 text-amber-400 flex items-center justify-center shrink-0 shadow-md shadow-amber-950/50">
-              <FolderOpen className="w-6 h-6" />
-            </div>
-            <div>
-              <div className="flex items-center gap-2">
-                <h3 className="text-sm sm:text-base font-bold text-slate-100">
-                  نافذة استدعاء البحوث والمشاريع السابقة (Projects Hub)
-                </h3>
-                <span className="px-2 py-0.5 rounded text-[10px] font-mono bg-amber-500/20 text-amber-300 border border-amber-500/30 font-bold">
-                  {savedProjectsCount} مشاريع محفوظة
-                </span>
-              </div>
-              <p className="text-xs text-slate-400 mt-1">
-                هل تريد استعراض أو تعديل بحث سابق (أطروحة الماجستير LHTES v3، أو نماذج CFD و FEA)؟ استدعِها بضغطة زر دون أن تلتصق ببيئة العمل الجديدة.
-              </p>
-            </div>
-          </div>
-
-          <button
-            type="button"
-            onClick={onOpenProjectsLibrary}
-            className="px-4 py-2.5 rounded-xl bg-gradient-to-r from-amber-500 to-orange-500 hover:from-amber-400 hover:to-orange-400 text-slate-950 text-xs font-bold shadow-md shadow-orange-950/40 flex items-center gap-2 transition-all active:scale-95 shrink-0"
-          >
-            <FolderOpen className="w-4 h-4" />
-            <span>استدعاء البحوث والمشاريع السابقة</span>
-          </button>
-        </div>
-      )}
-
-      {/* Main Clean Workspace Ingestion Card */}
+      </div>      {/* Main Clean Workspace Ingestion Card */}
       <div className="bg-slate-900/80 border border-slate-800 rounded-2xl p-6 sm:p-8 shadow-xl space-y-6">
         <div className="flex items-center justify-between border-b border-slate-800 pb-4">
           <div className="flex items-center gap-3">

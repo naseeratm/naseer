@@ -170,15 +170,15 @@ export function CloudServerSettingsModal({
   };
 
   const copyLicenseSetupBash = () => {
-    const text = `# إعدادات ترخيص أنسيز والمتغيرات البيئية على خادمك السحابي:
-export ANSYSLMD_LICENSE_FILE=${formData.licenseFlexNetPort}@${formData.licenseServerHost}
-export ANSYSLI_SERVERS=${formData.licenseAnsysLiPort}@${formData.licenseServerHost}
-export AWP_ROOT241=/ansys_inc/v241
-export PATH=$AWP_ROOT241/ansys/bin:$PATH
+    const text = `# إعدادات بيئة الحوسبة العالية OpenFOAM v2406 و CalculiX v2.21 على الخادم السحابي:
+source /usr/lib/openfoam/openfoam2406/etc/bashrc
+export OMP_NUM_THREADS=${formData.parallelCores}
+export CCX_NPROC_STIFFNESS=${formData.parallelCores}
 
-# تشغيل خادم بايثون السحابي المتكامل مع المعالجة المتوازية:
+# تهيئة مجلد العمل السحابي (400GB NVMe Workspace):
 mkdir -p ${formData.workingDirectory}
-cd /path/to/ansys-workbench
+
+# تشغيل خادم الحساب السحابي المتكامل مع المعالجة المتوازية (FastAPI / Uvicorn):
 uvicorn main:app --host 0.0.0.0 --port 8000 --workers 4`;
     navigator.clipboard.writeText(text);
     setCopiedBash(true);
@@ -197,14 +197,14 @@ uvicorn main:app --host 0.0.0.0 --port 8000 --workers 4`;
             <div>
               <div className="flex items-center gap-2">
                 <h2 className="text-base sm:text-lg font-bold text-slate-100">
-                  إعدادات الخادم السحابي وترخيص أنسيز (400GB Cloud & ANSYS Engine)
+                  إعدادات الحوسبة السحابية وعناقيد المعالجة (OpenFOAM & CalculiX HPC Cluster)
                 </h2>
-                <span className="text-xs px-2 py-0.5 rounded-full font-mono bg-sky-500/10 text-sky-400 border border-sky-500/20">
-                  High Performance CAE
+                <span className="text-xs px-2 py-0.5 rounded-full font-mono bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
+                  Zero-License Freedom
                 </span>
               </div>
               <p className="text-xs text-slate-400">
-                تهيئة الاتصال بين واجهة المستخدم وخادم الحساب السحابي، إدارة تراخيص FlexNet، والتحكم بالمعالجة المتوازية
+                تهيئة الاتصال بين واجهة المستخدم وخوادم الحوسبة السحابية (HPC)، إدارة أنوية MPI المتوازية، وتشغيل محركات OpenFOAM و CalculiX بدون قيود تراخيص تجارية
               </p>
             </div>
           </div>
@@ -405,35 +405,35 @@ uvicorn main:app --host 0.0.0.0 --port 8000 --workers 4`;
             </div>
           </div>
 
-          {/* Section 2: ANSYS License Manager & FlexNet */}
+          {/* Section 2: CAE Solvers & HPC Cluster Management */}
           <div className="p-4 rounded-xl bg-slate-950/40 border border-slate-800 space-y-4">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2">
-                <Key className="w-4 h-4 text-amber-400" />
+                <Shield className="w-4 h-4 text-emerald-400" />
                 <h3 className="text-sm font-bold text-slate-200">
-                  2. إعدادات ترخيص أنسيز (ANSYS License Server & FlexNet)
+                  2. بيئة محركات المحاكاة والحرية البرمجية (Open-Source HPC Engine Freedom)
                 </h3>
               </div>
-              <span className="text-xs text-amber-400/90 font-mono bg-amber-500/10 px-2 py-0.5 rounded border border-amber-500/20">
-                FlexNet Port 1055 / 2325
+              <span className="text-xs text-emerald-400/90 font-mono bg-emerald-500/10 px-2 py-0.5 rounded border border-emerald-500/20">
+                OpenFOAM v2406 + CalculiX v2.21 Native
               </span>
             </div>
 
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
               <div>
-                <label className="block text-xs text-slate-400 mb-1">نوع الترخيص المعتمد:</label>
+                <label className="block text-xs text-slate-400 mb-1">بيئة المحرك المشغل (Solver Runtime):</label>
                 <select
                   value={formData.licenseType}
                   onChange={(e) =>
                     setFormData({ ...formData, licenseType: e.target.value as any })
                   }
-                  className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-xs text-slate-200 focus:border-amber-500 focus:outline-none"
+                  className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-xs text-slate-200 focus:border-emerald-500 focus:outline-none"
                 >
-                  <option value="academic">ترخيص أكاديمي بحثي (ANSYS Academic)</option>
-                  <option value="commercial">ترخيص تجاري صناعي (ANSYS Commercial)</option>
                   <option value="open_source_unlicensed">
-                    بدون ترخيص (محرك OpenFOAM + CalculiX المفتوح)
+                    (موصى به) حرية مفتوحة المصدر 100% (OpenFOAM + CalculiX)
                   </option>
+                  <option value="academic">ربط اختياري مع عنقود أكاديمي جامعي خارجي</option>
+                  <option value="commercial">ربط اختياري مع خادم محاكاة صناعي خارجي</option>
                 </select>
               </div>
 
@@ -481,10 +481,16 @@ uvicorn main:app --host 0.0.0.0 --port 8000 --workers 4`;
                 type="button"
                 onClick={handleTestLicense}
                 disabled={isTestingLicense}
-                className="w-full sm:w-auto flex items-center justify-center gap-1.5 px-4 py-2 rounded-lg text-xs font-semibold bg-amber-500/10 hover:bg-amber-500/20 text-amber-300 border border-amber-500/30 transition-all disabled:opacity-50"
+                className="w-full sm:w-auto flex items-center justify-center gap-1.5 px-4 py-2 rounded-lg text-xs font-semibold bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 transition-all disabled:opacity-50"
               >
                 <Shield className={`w-3.5 h-3.5 ${isTestingLicense ? 'animate-spin' : ''}`} />
-                <span>{isTestingLicense ? 'جارِ فحص الترخيص...' : 'فحص الاتصال بخادم الترخيص'}</span>
+                <span>
+                  {isTestingLicense
+                    ? 'جارِ فحص الجاهزية...'
+                    : formData.licenseType === 'open_source_unlicensed'
+                    ? 'فحص جاهزية محركات OpenFOAM & CalculiX'
+                    : 'فحص الاتصال بخادم الترخيص الخارجي'}
+                </span>
               </button>
             </div>
 
@@ -538,8 +544,9 @@ uvicorn main:app --host 0.0.0.0 --port 8000 --workers 4`;
               </button>
             </div>
             <pre className="p-3 rounded-lg bg-slate-950 border border-slate-800 text-[11px] font-mono text-emerald-400 overflow-x-auto text-left dir-ltr">
-              {`export ANSYSLMD_LICENSE_FILE=${formData.licenseFlexNetPort}@${formData.licenseServerHost}
-export ANSYSLI_SERVERS=${formData.licenseAnsysLiPort}@${formData.licenseServerHost}
+              {`source /usr/lib/openfoam/openfoam2406/etc/bashrc
+export OMP_NUM_THREADS=${formData.parallelCores}
+export CCX_NPROC_STIFFNESS=${formData.parallelCores}
 mkdir -p ${formData.workingDirectory}
 uvicorn main:app --host 0.0.0.0 --port 8000 --workers 4`}
             </pre>

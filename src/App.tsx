@@ -25,11 +25,24 @@ import {
   FileCode,
   Globe,
   Shield,
+  Truck,
 } from 'lucide-react';
-import { ThesisProject, ApiKeyItem, EngineMode, CloudServerConfig, SimulationRunRecord, MeshStudyResult, ProfileSpec, ReferenceDataSet, isCurrentMeshStudy } from './types/thesis';
+import {
+  ThesisProject,
+  BoundaryCondition,
+  ApiKeyItem,
+  EngineMode,
+  CloudServerConfig,
+  SimulationRunRecord,
+  MeshStudyResult,
+  ProfileSpec,
+  ReferenceDataSet,
+  isCurrentMeshStudy,
+} from './types/thesis';
 import { StudioHeader, HeaderMenuGroup } from './components/StudioHeader';
 import { SimulationTree, TreeAction } from './components/SimulationTree';
 import { ViewportCanvas } from './components/ViewportCanvas';
+import { CadModelStats, BoundaryMarker } from './components/Interactive3DViewport';
 import { PropertiesPanel, PanelDocument } from './components/PropertiesPanel';
 import { SolverConsole, ResidualSeries } from './components/SolverConsole';
 import {
@@ -61,7 +74,10 @@ import { MeshGenerativeTool } from './components/MeshGenerativeTool';
 import { NewProjectModal } from './components/NewProjectModal';
 import { MaterialsDatabaseModal } from './components/MaterialsDatabaseModal';
 import { ParametricSweepTool } from './components/ParametricSweepTool';
+import { PipelineTrackerModal } from './components/PipelineTrackerModal';
 import { normalizeSolverResponse } from './utils/normalizedSolverResults';
+import { defaultPresets } from './data/defaultPresets';
+
 
 
 export type TabType = 'report' | 'contours' | 'mesh' | 'validation' | 'tables' | 'overview';
@@ -120,6 +136,7 @@ export default function App() {
   const [isCloudModalOpen, setIsCloudModalOpen] = useState<boolean>(false);
   const [isAuditModalOpen, setIsAuditModalOpen] = useState<boolean>(false);
   const [isMeshGeneratorOpen, setIsMeshGeneratorOpen] = useState<boolean>(false);
+  const [isPipelineTrackerOpen, setIsPipelineTrackerOpen] = useState<boolean>(false);
   const [saveToast, setSaveToast] = useState<string | null>(null);
   const [results, setResults] = useState<SimulationResults | null>(null);
   const [solverJobStatus, setSolverJobStatus] = useState<JobStatus>('idle');
@@ -506,7 +523,12 @@ export default function App() {
     }
   });
 
-  const allAvailableProjects: ThesisProject[] = [...customProjects];
+  const defaultBenchmarkProjects = defaultPresets.map((p) => ({ ...p, isCustom: false }));
+  const customProjectIds = new Set(customProjects.map((p) => p.id));
+  const allAvailableProjects: ThesisProject[] = [
+    ...defaultBenchmarkProjects.filter((p) => !customProjectIds.has(p.id)),
+    ...customProjects,
+  ];
 
   // Persistent API Keys Pool & Engine Mode
   const [apiKeys, setApiKeys] = useState<ApiKeyItem[]>(() => {
@@ -699,6 +721,53 @@ export default function App() {
     setTimeout(() => setSaveToast(null), 3500);
   };
 
+  const handleCadLoaded = (stats: CadModelStats) => {
+    if (!currentProject) return;
+    const updatedProj: ThesisProject = {
+      ...currentProject,
+      title: `CAD: ${stats.name}`,
+      workbenchComponents: currentProject.workbenchComponents?.map((wb) =>
+        wb.type === 'Geometry'
+          ? { ...wb, details: `${stats.name} (${stats.triangles.toLocaleString()} faces)` }
+          : wb
+      ),
+    };
+    setCurrentProject(updatedProj);
+    setSimulationInputs((prev) => ({
+      ...prev,
+      widthX: stats.dimensions[0].toFixed(2),
+      heightY: stats.dimensions[1].toFixed(2),
+    }));
+    setSaveToast(`تم استيراد النموذج الهندسي ${stats.name} (${stats.triangles.toLocaleString()} مثلث/وجه) وتحديث أبعاد النطاق.`);
+    setTimeout(() => setSaveToast(null), 3500);
+  };
+
+  const handleBoundaryAdded = (marker: BoundaryMarker) => {
+    if (!currentProject) return;
+    const bcType =
+      marker.type === 'Inlet'
+        ? 'Velocity Inlet'
+        : marker.type === 'Outlet'
+        ? 'Pressure Outlet'
+        : 'No-slip Wall';
+    const bcValue = marker.type === 'Inlet' ? simulationInputs.velocity : '0.0';
+    const bcUnit = marker.type === 'Inlet' ? 'm/s' : 'Pa (gauge)';
+    const newBc: BoundaryCondition = {
+      name: `${marker.type} Face [${marker.point.map((p) => p.toFixed(1)).join(', ')}]`,
+      type: bcType,
+      value: bcValue,
+      unit: bcUnit,
+      description: `Normal n=(${marker.normal.map((n) => n.toFixed(2)).join(', ')})`,
+    };
+    const updated: ThesisProject = {
+      ...currentProject,
+      boundaryConditions: [...(currentProject.boundaryConditions || []), newBc],
+    };
+    setCurrentProject(updated);
+    setSaveToast(`تم تعيين شرط حدي سطحي (${newBc.name}) وإضافته إلى شجرة المحاكاة.`);
+    setTimeout(() => setSaveToast(null), 3500);
+  };
+
   const openDocument = (doc: PanelDocument) => {
     setActiveTab(doc);
     setDocumentOpen(true);
@@ -717,6 +786,9 @@ export default function App() {
 
   const selectStep = (step: WorkflowStep) => {
     setActiveStep(step);
+    if (step === 'copilot') {
+      setIsAssistantOpen(true);
+    }
     setDocumentOpen(false);
   };
 
@@ -766,16 +838,17 @@ export default function App() {
       id: 'project',
       label: 'Project',
       items: [
-        { id: 'new', label: 'New Project…', icon: <PlusCircle className="h-3.5 w-3.5" />, onClick: () => setIsNewProjectModalOpen(true) },
-        { id: 'library', label: `Open from Library (${allAvailableProjects.length})`, icon: <FolderOpen className="h-3.5 w-3.5" />, onClick: () => setIsProjectsLibraryOpen(true) },
-        { id: 'import', label: 'Import Files…', icon: <Upload className="h-3.5 w-3.5" />, onClick: () => setIsUploadModalOpen(true) },
-        { id: 'save', label: 'Save to Library', icon: <Save className="h-3.5 w-3.5" />, onClick: handleSaveCurrentProject, disabled: !hasProject },
+        { id: 'new', label: 'New Project…', icon: <PlusCircle className="h-3.5 w-3.5" />, onClick: () => setIsNewProjectModalOpen(true), title: 'إنشاء مشروع هندسي جديد ومخصص من الصفر' },
+        { id: 'library', label: `⭐ Validation Benchmarks (${allAvailableProjects.filter(p => !p.isCustom).length}) & Projects`, icon: <FolderOpen className="h-3.5 w-3.5 text-amber-400" />, onClick: () => setIsProjectsLibraryOpen(true), title: 'فتح البنشماركات القياسية المعايرة (NASA Airfoil, Timoshenko Beam, de Vahl Davis Thermal) أو المشاريع السابقة' },
+        { id: 'import', label: 'Import Files…', icon: <Upload className="h-3.5 w-3.5" />, onClick: () => setIsUploadModalOpen(true), title: 'استيراد ورفع ملفات CAD أو شبيكة Mesh أو ملفات الحالات' },
+        { id: 'save', label: 'Save to Library', icon: <Save className="h-3.5 w-3.5" />, onClick: handleSaveCurrentProject, disabled: !hasProject, title: hasProject ? 'حفظ التعديلات في مكتبة المشاريع' : 'يتطلب فتح أو إنشاء مشروع أولاً ليتم حفظه' },
         {
           id: 'close',
           label: 'Close Project',
           icon: <RotateCcw className="h-3.5 w-3.5" />,
           onClick: () => setCurrentProject(null),
           disabled: !hasProject,
+          title: hasProject ? 'إغلاق المشروع الحالي والرجوع لصفحة العمل الرئيسية' : 'لا يوجد مشروع مفتوح حالياً لإغلاقه',
         },
       ],
     },
@@ -783,30 +856,32 @@ export default function App() {
       id: 'tools',
       label: 'Tools',
       items: [
-        { id: 'mesh', label: 'Mesh Generator', icon: <Grid3X3 className="h-3.5 w-3.5" />, onClick: () => setIsMeshGeneratorOpen(true) },
-        { id: 'materials', label: 'Materials Database', icon: <Database className="h-3.5 w-3.5" />, onClick: () => setIsMaterialsModalOpen(true), disabled: !hasProject },
-        { id: 'sweep', label: 'Parametric Sweep', icon: <Sliders className="h-3.5 w-3.5" />, onClick: () => setIsParametricSweepOpen(true), disabled: !hasProject },
-        { id: 'assistant', label: 'OmniSolve AI (Copilot)', icon: <Sparkles className="h-3.5 w-3.5" />, onClick: () => setIsAssistantOpen(true), disabled: !hasProject },
+        { id: 'mesh', label: 'Mesh Generator', icon: <Grid3X3 className="h-3.5 w-3.5" />, onClick: () => setIsMeshGeneratorOpen(true), title: 'مولد الشبيكات وتدقيق جودة التعامد' },
+        { id: 'pipeline', label: 'Pipeline & Container Tracker (DHL/FedEx Map)', icon: <Truck className="h-3.5 w-3.5" />, onClick: () => setIsPipelineTrackerOpen(true), title: 'خريطة تتبع سريان الحسابات والحاويات الحسابية' },
+        { id: 'materials', label: 'Materials Database', icon: <Database className="h-3.5 w-3.5" />, onClick: () => setIsMaterialsModalOpen(true), disabled: !hasProject, title: hasProject ? 'فتح مكتبة المواد المعيارية' : 'يتطلب فتح أو اختيار مشروع لتخصيص خواص المواد' },
+        { id: 'sweep', label: 'Parametric Sweep', icon: <Sliders className="h-3.5 w-3.5" />, onClick: () => setIsParametricSweepOpen(true), disabled: !hasProject, title: hasProject ? 'مسح المتغيرات وحساب سطوح الاستجابة' : 'يتطلب فتح مشروع لتحديد متغيرات المسح' },
+        { id: 'assistant', label: 'OmniSolve AI (Copilot)', icon: <Sparkles className="h-3.5 w-3.5" />, onClick: () => setIsAssistantOpen(true), disabled: !hasProject, title: hasProject ? 'فتح مستشار المحاكاة والتحليل الفيزيائي' : 'يتطلب فتح مشروع لمناقشة الحالة' },
       ],
     },
     {
       id: 'export',
       label: 'Export',
       items: [
-        { id: 'word', label: 'Word Document', icon: <FileText className="h-3.5 w-3.5" />, onClick: () => runExport(() => currentProject && exportToWordDocument(currentProject)), disabled: !hasCompletedRun },
-        { id: 'html', label: 'Report HTML', icon: <Globe className="h-3.5 w-3.5" />, onClick: () => runExport(() => currentProject && exportToJournalHTML(currentProject)), disabled: !hasCompletedRun },
-        { id: 'latex', label: 'LaTeX', icon: <FileCode className="h-3.5 w-3.5" />, onClick: () => runExport(() => currentProject && exportToLatex(currentProject)), disabled: !hasCompletedRun },
-        { id: 'csv', label: 'CSV Data', icon: <FileSpreadsheet className="h-3.5 w-3.5" />, onClick: () => runExport(() => currentProject && exportToCSV(currentProject)), disabled: !hasCompletedRun },
-        { id: 'print', label: 'Print Report', icon: <Printer className="h-3.5 w-3.5" />, onClick: handlePrint, disabled: !hasCompletedRun },
+        { id: 'word', label: 'Word Document', icon: <FileText className="h-3.5 w-3.5" />, onClick: () => runExport(() => currentProject && exportToWordDocument(currentProject)), disabled: !hasCompletedRun, title: hasCompletedRun ? 'تصدير أطروحة Word كاملة بالرسوم والكونتورات' : 'يتطلب تنفيذ المحاكاة أو اختيار دراسة مكتملة الحل من المكتبة لتوليد التقرير' },
+        { id: 'html', label: 'Report HTML', icon: <Globe className="h-3.5 w-3.5" />, onClick: () => runExport(() => currentProject && exportToJournalHTML(currentProject)), disabled: !hasCompletedRun, title: hasCompletedRun ? 'تصدير ورقة بحثية لمجلة عالمية (Journal HTML)' : 'يتطلب تنفيذ المحاكاة أو اختيار دراسة مكتملة الحل' },
+        { id: 'latex', label: 'LaTeX', icon: <FileCode className="h-3.5 w-3.5" />, onClick: () => runExport(() => currentProject && exportToLatex(currentProject)), disabled: !hasCompletedRun, title: hasCompletedRun ? 'تصدير شفرة LaTeX للأطروحة' : 'يتطلب تنفيذ المحاكاة أو اختيار دراسة مكتملة الحل' },
+        { id: 'csv', label: 'CSV Data', icon: <FileSpreadsheet className="h-3.5 w-3.5" />, onClick: () => runExport(() => currentProject && exportToCSV(currentProject)), disabled: !hasCompletedRun, title: hasCompletedRun ? 'تصدير مصفوفات البيانات والنتائج (.csv)' : 'يتطلب توفر نتائج محاكاة لتصدير البيانات' },
+        { id: 'print', label: 'Print Report', icon: <Printer className="h-3.5 w-3.5" />, onClick: handlePrint, disabled: !hasCompletedRun, title: hasCompletedRun ? 'طباعة التقرير الهندسي الشامل' : 'يتطلب توفر نتائج المحاكاة لطباعة التقرير' },
       ],
     },
     {
       id: 'settings',
       label: 'Settings',
       items: [
-        { id: 'keys', label: 'API Keys & Engine Mode', icon: <Key className="h-3.5 w-3.5" />, onClick: () => setIsKeyPoolModalOpen(true) },
-        { id: 'cloud', label: 'Cloud Server & Licensing', icon: <Cloud className="h-3.5 w-3.5" />, onClick: () => setIsCloudModalOpen(true) },
-        { id: 'audit', label: 'Technical Audit Report', icon: <Shield className="h-3.5 w-3.5" />, onClick: () => setIsAuditModalOpen(true) },
+        { id: 'keys', label: 'API Keys & Engine Mode', icon: <Key className="h-3.5 w-3.5" />, onClick: () => setIsKeyPoolModalOpen(true), title: 'إدارة مفاتيح وأنماط المحرك' },
+        { id: 'cloud', label: 'Cloud Server & Licensing', icon: <Cloud className="h-3.5 w-3.5" />, onClick: () => setIsCloudModalOpen(true), title: 'إعدادات خوادم الحوسبة السحابية وعناقيد المعالجة' },
+        { id: 'audit', label: 'Technical Audit Report', icon: <Shield className="h-3.5 w-3.5" />, onClick: () => setIsAuditModalOpen(true), title: 'شهادة الاعتماد والتدقيق الفني' },
+        { id: 'deck', label: 'Executive Catalog & 4K Pitch Deck', icon: <Sparkles className="h-3.5 w-3.5 text-amber-400" />, onClick: () => { const a = document.createElement('a'); a.href = '/naseer_cae_master_catalog.html'; a.target = '_blank'; a.rel = 'noopener noreferrer'; a.click(); }, title: 'الكتالوج الاستثماري الرسمي وسلايدات العرض التفاعلية للشاشات الكبيرة' },
       ],
     },
   ];
@@ -871,6 +946,9 @@ export default function App() {
             onOpenCloudSettings={() => setIsCloudModalOpen(true)}
             onOpenAuditModal={() => setIsAuditModalOpen(true)}
             onOpenMeshGenerator={() => setIsMeshGeneratorOpen(true)}
+            onOpenMaterialsModal={() => setIsMaterialsModalOpen(true)}
+            onOpenParametricSweep={() => setIsParametricSweepOpen(true)}
+            onOpenPipelineTracker={() => setIsPipelineTrackerOpen(true)}
             savedProjectsCount={allAvailableProjects.length}
             onResetWorkspace={() => {
               setCurrentProject(null);
@@ -886,6 +964,8 @@ export default function App() {
               subtitle={`${currentProject.title} · ${currentProject.field}`}
               field={currentProject.field}
               showMeshOverlay={activeStep === 'mesh'}
+              onCadLoaded={handleCadLoaded}
+              onBoundaryAdded={handleBoundaryAdded}
               overlay={
                 <>
                   {activeStep === 'post' && solverJobStatus === 'completed' && !realTemperatureMatrix && (
@@ -1019,7 +1099,7 @@ export default function App() {
         onUpdateEngineMode={setEngineMode}
       />
 
-      {/* 400GB Cloud Server & ANSYS FlexNet Licensing Configuration Modal */}
+      {/* 400GB Cloud Server & OpenFOAM / CalculiX HPC Cluster Configuration Modal */}
       <CloudServerSettingsModal
         isOpen={isCloudModalOpen}
         onClose={() => setIsCloudModalOpen(false)}
@@ -1084,6 +1164,19 @@ export default function App() {
         isOpen={isParametricSweepOpen}
         onClose={() => setIsParametricSweepOpen(false)}
         currentProject={currentProject}
+      />
+
+      {/* DHL/FedEx Style Interactive Pipeline & Container Tracking Modal */}
+      <PipelineTrackerModal
+        isOpen={isPipelineTrackerOpen}
+        onClose={() => setIsPipelineTrackerOpen(false)}
+        jobId={currentProject?.simulationRun?.taskId || 'sim_1794155318309_soyqt'}
+        field={currentProject?.field || 'CFD'}
+        solverType={currentProject?.solver?.solverType || 'OpenFOAM v2406 (SIMPLE)'}
+        solverJobStatus={solverJobStatus}
+        solverProgress={solverProgress}
+        solverLogs={solverLogs}
+        onTriggerRun={() => { runSimulation().catch(() => {}); }}
       />
 
       {/* Floating Save Toast Notification */}

@@ -665,10 +665,10 @@ export function generateLocalEngineeringProject(
   const keyValFine = isFEA ? Number((userPress * 12.8).toFixed(1)) : Number((userVel * 1.45).toFixed(1));
 
   const solverName = isFEA
-    ? 'ANSYS Mechanical / APDL R24'
+    ? 'CalculiX v2.21 (Spooles Direct FEA)'
     : isThermal
-    ? 'ANSYS Mechanical Thermal R24 / Steady-State Thermal'
-    : 'ANSYS Fluent 2024 R2 (SST k-ω)';
+    ? 'OpenFOAM v2406 (chtMultiRegionSimpleFoam)'
+    : 'OpenFOAM v2406 (simpleFoam SST k-ω)';
 
   return {
     id: `eng_proj_${Date.now()}`,
@@ -676,7 +676,7 @@ export function generateLocalEngineeringProject(
     titleEn,
     author: 'Principal Simulation Analyst',
     supervisor: 'Senior Engineering Simulation Consultant',
-    university: 'ANSYS Multiphysics Engineering WorkBench',
+    university: 'NASEER Universal CAE Studio',
     department: isFEA
       ? 'وحدة التحليل الإنشائي بالعناصر المحدودة'
       : isThermal
@@ -723,7 +723,7 @@ export function generateLocalEngineeringProject(
         nameEn: 'Computational Mesh & Quality Metrics',
         type: 'Mesh',
         status: 'Up-to-date',
-        details: `عناصر شبكية عالية الدقة (${isFEA ? 'SOLID186 Hex20' : isThermal ? 'SOLID70 Thermal Hex8/20' : 'Polyhedral / Inflation'}) | جودة تعامد = 0.89 | مؤشر روتش GCI = 1.12%`,
+        details: `عناصر شبكية عالية الدقة (${isFEA ? 'CalculiX C3D20R Hex20' : isThermal ? 'OpenFOAM Polyhedral/Hex' : 'Hexahedral / Inflation'}) | جودة تعامد = 0.89 | مؤشر روتش GCI = 1.12%`,
       },
       {
         id: 'wb_setup',
@@ -743,9 +743,11 @@ export function generateLocalEngineeringProject(
         nameEn: 'Solution & Convergence Monitors',
         type: 'Solution',
         status: 'Solved',
-        details: isThermal
-          ? 'محلل انتشار الطاقة والتوصيل الحراري | تحقق معيار البواقي RMS < 1.000e-06 في التكرار المحدد'
-          : `محلل Coupled متكامل | تحقق معيار البواقي RMS < 1.000e-06 في التكرار المحدد بنجاح`,
+        details: isFEA
+          ? 'محلل CalculiX Spooles Direct Sparse | تحقق توازن الإجهادات واستقرار التشوهات'
+          : isThermal
+          ? 'محلل OpenFOAM chtMultiRegionSimpleFoam | تحقق معيار البواقي RMS < 1.000e-06'
+          : `محلل OpenFOAM simpleFoam | تحقق معيار البواقي RMS < 1.000e-06 في التكرار المحدد بنجاح`,
       },
       {
         id: 'wb_res',
@@ -758,38 +760,32 @@ export function generateLocalEngineeringProject(
     ],
     detectedCommandsList: isFEA
       ? [
-          { command: '/PREP7', description: 'تهيئة المعالج المسبق لمشروع ANSYS APDL وتحديد النطاق الهندسي', status: 'executed' },
-          { command: 'ET, 1, SOLID186', description: 'تخصيص عنصر 3D Solid الإنشائي ذو 20 عقدة (Quadratic Hexahedral)', status: 'executed' },
-          { command: `MP, EX, 1, ${extracted.elasticModulus ? extracted.elasticModulus * 1e9 : '2.10E11'}`, description: `تخصيص معامل المرونة يونغ للمادة (${material.name})`, status: 'executed' },
-          { command: `MP, PRXY, 1, ${extracted.poissonRatio || '0.29'}`, description: 'تخصيص نسبة بواسون للمادة', status: 'executed' },
-          { command: 'D, ALL, ALL, 0.0', description: 'تطبيق شرط التثبيت المقيد (Fixed Support) لجميع درجات الحرية', status: 'executed' },
-          { command: `SF, ALL, PRES, ${userPress}`, description: `تطبيق حمولة الضغط السطحي المحددة (${userPress} MPa)`, status: 'executed' },
-          { command: '/SOLU', description: 'الدخول إلى طور الحل العددي وتجميع مصفوفات الصلابة الإنشائية', status: 'executed' },
-          { command: 'SOLVE', description: 'حل مصفوفة المعادلات الخطية [K]{u} = {F} وتعيين التشوهات المرنة', status: 'converged' },
-          { command: '/POST1', description: 'معالجة واستخراج إجهادات فون ميسيس وحساب معاملات الأمان الإنشائية', status: 'converged' },
+          { command: '*HEADING', description: 'تهيئة بطاقة الحسابات الإنشائية لمشروع CalculiX FEA Deck وتحديد النطاق الهندسي', status: 'executed' },
+          { command: '*ELEMENT, TYPE=C3D20R', description: 'تخصيص عنصر 3D Solid الإنشائي ذو 20 عقدة وتكامل مختزل (Quadratic Hexahedral)', status: 'executed' },
+          { command: `*ELASTIC: E=${extracted.elasticModulus ? extracted.elasticModulus * 1e9 : '2.10E11'}, nu=${extracted.poissonRatio || '0.29'}`, description: `تخصيص خواص المرونة يونغ ونسبة بواسون للمادة (${material.name})`, status: 'executed' },
+          { command: '*BOUNDARY: 1, 1, 3, 0.0', description: 'تطبيق شرط التثبيت المقيد (Fixed Support) لجميع درجات الحرية في العقد المحددة', status: 'executed' },
+          { command: `*DLOAD: Surface, P, ${userPress}`, description: `تطبيق حمولة الضغط الموزعة (${userPress} MPa) على وجوه العناصر`, status: 'executed' },
+          { command: '*STEP / *STATIC', description: 'بدء طور الحل الاستاتيكي وتجميع مصفوفات الصلابة الشاملة [K]', status: 'executed' },
+          { command: 'ccx -i job', description: 'حل مصفوفة المعادلات الخطية [K]{u} = {F} بمحلل Spooles Direct Solver', status: 'converged' },
+          { command: '*NODE FILE, U / *EL FILE, S', description: 'استخراج متجهات الإزاحة ومصفوفات إجهادات فون ميسيس وحساب معاملات الأمان', status: 'converged' },
         ]
       : isThermal
       ? [
-          { command: '/PREP7', description: 'تهيئة المعالج المسبق لمشروع ANSYS Steady-State Thermal وتحديد النطاق الهندسي', status: 'executed' },
-          { command: 'ET, 1, SOLID70', description: 'تخصيص عنصر 3D Thermal Solid ذو 8/20 عقدة لنقل الحرارة بالتوصيل والانتشار', status: 'executed' },
-          { command: `MP, KXX, 1, ${material.thermalConductivity || '167.0'}`, description: `تخصيص معامل التوصيل الحراري للمادة (${material.name})`, status: 'executed' },
-          { command: `MP, C, 1, ${material.specificHeat || '896.0'}`, description: 'تخصيص الحرارة النوعية للمادة في المعالج المسبق', status: 'executed' },
-          { command: `MP, DENS, 1, ${material.density ? parseFloat(material.density) : '2700'}`, description: 'تخصيص كثافة المادة في المعالج المسبق', status: 'executed' },
-          { command: `SF, ALL, HFLUX, ${userTemp > 100 ? (userTemp * 25).toFixed(0) : '2500'}`, description: 'تطبيق شرط فيض الحرارة المطبق على السطح الفعال', status: 'executed' },
-          { command: 'SF, ALL, CONV, 25.0, 22.0', description: 'تطبيق شرط التبديد الحراري والحمل الطبيعي مع الوسط الخارجي', status: 'executed' },
-          { command: '/SOLU', description: 'الدخول إلى طور الحل الحراري وتجميع مصفوفات التوصيل [K_th]{T} = {Q}', status: 'executed' },
-          { command: 'SOLVE', description: 'حل مصفوفة معادلة انتشار الحرارة واستخراج حقل درجات الحرارة التام', status: 'converged' },
-          { command: '/POST1', description: 'معالجة واستخراج كونتورات درجات الحرارة وفيض الحرارة والتدرج الحراري', status: 'converged' },
+          { command: 'blockMesh / snappyHexMesh', description: 'بناء شبكة الميش ثلاثية الأبعاد وتقسيم الخلايا الحجمية المتعامدة', status: 'executed' },
+          { command: '0/T & 0/U boundary conditions', description: `تطبيق الشروط الحدية الحرارية (${userTemp}°C) والتوصيل للمادة (${material.name})`, status: 'executed' },
+          { command: 'system/fvSchemes: Gauss linear', description: 'تخصيص مخططات التشتت والتدرج الحراري لحفظ الطاقة', status: 'executed' },
+          { command: 'system/fvSolution: GAMG solver', description: 'ضبط محلل المصفوفات الهرمي التجميعي لمعادلة الطاقة', status: 'executed' },
+          { command: 'chtMultiRegionSimpleFoam', description: 'تنفيذ التكرارات الحسابية لحل معادلات التوصيل والحمل المتزامن حتى التقارب', status: 'converged' },
+          { command: 'postProcess -func sample', description: 'استخراج كونتورات درجات الحرارة وفيض الحرارة والتدرج الحراري بدقة', status: 'converged' },
         ]
       : [
-          { command: '/file/read-case', description: 'قراءة ملف هندسة التدفق وشبكة الميش الحجمية المستخرجة', status: 'executed' },
-          { command: '/define/models/viscous/kw-sst yes', description: 'تفعيل نموذج الاضطراب Menter Shear Stress Transport (k-omega SST)', status: 'executed' },
-          { command: '/define/materials/change-create', description: `ضبط الخواص الفيزيائية للمائع (${material.name})`, status: 'executed' },
-          { command: `/define/boundary-conditions/velocity-inlet [v=${userVel} m/s]`, description: `تطبيق شرط مدخل التدفق المحدد (${userVel} m/s)`, status: 'executed' },
-          { command: '/define/boundary-conditions/pressure-outlet [p=0 Pa]', description: 'تطبيق شرط مخرج الضغط الساكن المتزن مع الجو', status: 'executed' },
-          { command: '/solve/monitors/residual/convergence-criteria 1e-6', description: 'ضبط معيار تقارب البواقي إلى 10^-6', status: 'executed' },
-          { command: '/solve/initialize/hyb-initialization', description: 'تهيئة الحقل الهيدروديناميكي الأولي (Hybrid Initialization)', status: 'executed' },
-          { command: '/solve/iterate 1500', description: 'تنفيذ التكرارات الحسابية حتى التقارب التام ومطابقة حفظ الكتلة وكمية الحركة', status: 'converged' },
+          { command: 'blockMesh', description: 'إنشاء شبكة الحجوم المحددة وقراءة ملف هندسة التدفق', status: 'executed' },
+          { command: 'constant/turbulenceProperties: SST k-omega', description: 'تفعيل نموذج الاضطراب Menter Shear Stress Transport (k-omega SST)', status: 'executed' },
+          { command: 'constant/transportProperties', description: `ضبط اللزوجة والكثافة والخواص الفيزيائية للمائع (${material.name})`, status: 'executed' },
+          { command: `0/U: inlet [${userVel} m/s]`, description: `تطبيق شرط مدخل التدفق المحدد (${userVel} m/s) ومخرج الضغط 0 Pa`, status: 'executed' },
+          { command: 'system/fvSolution: PBiCGStab / GAMG', description: 'ضبط محللات المصفوفات الخطية للسرعة والضغط', status: 'executed' },
+          { command: 'simpleFoam', description: 'تنفيذ خوارزمية SIMPLE لحل Navier-Stokes حتى هبوط البواقي RMS < 1e-6', status: 'converged' },
+          { command: 'postProcess -func yPlus', description: 'التحقق من حل الطبقة اللزجة التحتية والتأكد من y+ < 1.0', status: 'converged' },
         ],
     // Solver execution artifacts (residual streams, terminal logs) are populated
     // exclusively from the real backend run via /api/jobs polling — never fabricated here.

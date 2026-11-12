@@ -26,27 +26,28 @@ export type ViewPreset = 'iso' | 'front' | 'top' | 'right';
 export type ActiveField = 'CFD' | 'FEA' | 'Thermal';
 export type Colormap = 'turbo' | 'jet' | 'viridis' | 'coolwarm';
 
-interface BoundaryMarker {
+export interface BoundaryMarker {
   id: string;
   type: 'Inlet' | 'Outlet' | 'Wall' | 'Load' | 'Fixed';
   point: [number, number, number];
   normal: [number, number, number];
 }
 
-interface CadModelStats {
+export interface CadModelStats {
   name: string;
   triangles: number;
   vertices: number;
   dimensions: [number, number, number];
 }
 
-interface Interactive3DViewportProps {
+export interface Interactive3DViewportProps {
   field?: string;
   shadingMode?: ShadingMode;
   showMeshOverlay?: boolean;
   activePreset?: ViewPreset;
   onPresetChange?: (preset: ViewPreset) => void;
   onCadLoaded?: (stats: CadModelStats) => void;
+  onBoundaryAdded?: (marker: BoundaryMarker) => void;
 }
 
 const CUBE_ROTATIONS: Record<ViewPreset, string> = {
@@ -85,6 +86,7 @@ export const Interactive3DViewport: React.FC<Interactive3DViewportProps> = ({
   activePreset: propPreset = 'iso',
   onPresetChange,
   onCadLoaded,
+  onBoundaryAdded,
 }) => {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
@@ -571,6 +573,9 @@ export const Interactive3DViewport: React.FC<Interactive3DViewportProps> = ({
           normal: [norm.x, norm.y, norm.z],
         };
         setBoundaryMarkers((prev) => [...prev, newMarker]);
+        if (onBoundaryAdded) {
+          onBoundaryAdded(newMarker);
+        }
       }
     };
 

@@ -205,7 +205,7 @@ export const OverviewTab: React.FC<OverviewTabProps> = ({ project, onRunSolver, 
 
   return (
     <div className="space-y-6">
-      {/* ANSYS Workbench Master Banner */}
+      {/* NASEER Universal CAE Workbench Master Banner */}
       <div className="bg-gradient-to-br from-slate-900 via-slate-850 to-slate-900 rounded-2xl border border-sky-500/40 p-6 shadow-2xl relative overflow-hidden">
         <div className="absolute top-0 left-0 w-96 h-96 bg-sky-500/10 rounded-full blur-3xl pointer-events-none" />
         <div className="absolute bottom-0 right-0 w-80 h-80 bg-indigo-500/10 rounded-full blur-3xl pointer-events-none" />
@@ -328,7 +328,7 @@ export const OverviewTab: React.FC<OverviewTabProps> = ({ project, onRunSolver, 
                 </span>
                 <span className="inline-flex items-center gap-1 text-[10px] font-mono font-bold text-emerald-400 bg-emerald-950/60 px-2 py-0.5 rounded border border-emerald-500/30">
                   <Cpu className="w-3 h-3 text-emerald-400" />
-                  {project.activeSolverBadge || 'ANSYS Mechanical APDL'}
+                  {project.activeSolverBadge || (project.field === 'FEA' ? 'CalculiX v2.21 (Spooles Direct)' : 'OpenFOAM v2406 (SIMPLE)')}
                 </span>
               </div>
             </div>
@@ -358,7 +358,7 @@ export const OverviewTab: React.FC<OverviewTabProps> = ({ project, onRunSolver, 
         </div>
       </div>
 
-      {/* ANSYS Workbench Interactive Modules Selector */}
+      {/* CAE Workbench Interactive Modules Selector (OpenFOAM / CalculiX / Python) */}
       <div className="bg-slate-900/90 border border-slate-800 rounded-2xl p-2 shadow-xl">
         <div className="flex flex-wrap items-center gap-1.5 border-b border-slate-800/80 pb-2 mb-3 text-xs">
           <button
@@ -374,20 +374,6 @@ export const OverviewTab: React.FC<OverviewTabProps> = ({ project, onRunSolver, 
             <span>مصفوفة الحالات والتشغيل (Cases Matrix & Runs)</span>
           </button>
 
-          {(project.id === 'lhtes_v3_master' || project.id === 'lhtes-v3-master') && project.meltingComparison && project.meltingComparison.length > 0 && (
-            <button
-              type="button"
-              onClick={() => setWorkbenchView('lhtes_charts' as any)}
-              className={`px-3.5 py-2 rounded-xl font-bold flex items-center gap-2 transition-all ${
-                (workbenchView as string) === 'lhtes_charts'
-                  ? 'bg-amber-500 text-slate-950 shadow-md shadow-amber-500/30'
-                  : 'text-amber-400 hover:text-amber-200 hover:bg-slate-800/60'
-              }`}
-            >
-              <Flame className="w-4 h-4" />
-              <span>خرائط الانصهار والحرارة (Figures 2, 6, 7 & Literature)</span>
-            </button>
-          )}
 
           <button
             type="button"
@@ -425,7 +411,7 @@ export const OverviewTab: React.FC<OverviewTabProps> = ({ project, onRunSolver, 
             }`}
           >
             <Terminal className="w-4 h-4 text-amber-400" />
-            <span>سجل تنفيذ المحلل ({project.softwareType || 'ANSYS Solver Log'})</span>
+            <span>سجل تنفيذ المحلل ({project.softwareType || 'OpenFOAM / CalculiX Solver Log'})</span>
           </button>
 
           <button
@@ -528,7 +514,7 @@ export const OverviewTab: React.FC<OverviewTabProps> = ({ project, onRunSolver, 
                       purpose: idx === 2 ? 'تحقيق استقلالية الشبكة Roache GCI' : 'فحص حساسية التقارب العددي',
                       meshElements: lvl.elements,
                       meshNodes: lvl.nodes,
-                      solverEngine: project.softwareType || 'ANSYS Solver',
+                      solverEngine: project.softwareType || (isFEA ? 'CalculiX v2.21' : 'OpenFOAM v2406'),
                       keyOutputName: project.contours[0]?.name || (isFEA ? 'أقصى إجهاد مكافئ' : 'القيمة المخرجة'),
                       keyOutputValue: lvl.keyResultValue,
                       keyOutputUnit: project.contours[0]?.unit || (isFEA ? 'MPa' : 'm/s'),
@@ -547,8 +533,10 @@ export const OverviewTab: React.FC<OverviewTabProps> = ({ project, onRunSolver, 
                         </td>
                         <td className="py-3 px-4 text-center">
                           <span className={`inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11px] font-mono font-bold border ${
-                            c.solverEngine.includes('ANSYS') || c.solverEngine.includes('Fluent')
-                              ? 'bg-amber-500/10 text-amber-300 border-amber-500/30'
+                            c.solverEngine.includes('CalculiX')
+                              ? 'bg-purple-500/10 text-purple-300 border-purple-500/30'
+                              : c.solverEngine.includes('OpenFOAM')
+                              ? 'bg-sky-500/10 text-sky-300 border-sky-500/30'
                               : 'bg-emerald-500/10 text-emerald-300 border-emerald-500/30'
                           }`}>
                             <Cpu className="w-3 h-3" />
@@ -649,7 +637,7 @@ export const OverviewTab: React.FC<OverviewTabProps> = ({ project, onRunSolver, 
           </div>
         )}
 
-        {/* LHTES v3 Heatmaps, Charts & Literature Matrix View */}
+        {/* Thermal Heatmaps, Charts & Literature Matrix View */}
         {workbenchView === 'lhtes_charts' && (
           <div className="p-4 space-y-8">
             {/* Section 1: Figure 2 Melting Comparison */}
@@ -860,7 +848,7 @@ export const OverviewTab: React.FC<OverviewTabProps> = ({ project, onRunSolver, 
           <div className="p-4 space-y-4">
             <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-slate-400 pb-2 border-b border-slate-800">
               <span className="font-bold text-slate-200">
-                مخطط تدفق المشروع الهندسي المتكامل في ANSYS Workbench R24
+                مخطط تدفق المشروع الهندسي المتكامل في OpenFOAM / CalculiX Workbench
               </span>
               <span className="text-emerald-400 font-mono">
                 ✓ جميع المنظومات الفرعية محدثة ومحلولة (All Systems Up to Date)
@@ -914,7 +902,7 @@ export const OverviewTab: React.FC<OverviewTabProps> = ({ project, onRunSolver, 
               <div>
                 <h3 className="font-bold text-sm text-slate-100 flex items-center gap-2">
                   <TrendingDown className="w-4 h-4 text-emerald-400" />
-                  <span>منحنى تقارب البواقي اللوغاريتمي لمصفوفات الحفظ (ANSYS Residuals Monitor)</span>
+                  <span>منحنى تقارب البواقي اللوغاريتمي لمصفوفات الحفظ (OpenFOAM / CalculiX Residuals Monitor)</span>
                 </h3>
                 <p className="text-slate-400 text-xs mt-0.5">
                   {isThermal
@@ -1031,14 +1019,14 @@ export const OverviewTab: React.FC<OverviewTabProps> = ({ project, onRunSolver, 
           </div>
         )}
 
-        {/* 3. ANSYS Solver Execution Console */}
+        {/* 3. OpenFOAM & CalculiX Solver Execution Console */}
         {workbenchView === 'console' && (
           <div className="p-4 space-y-3">
             <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
               <div className="flex items-center gap-2">
                 <Terminal className="w-4 h-4 text-emerald-400" />
                 <span className="font-bold text-slate-200">
-                  سجل موجه الأوامر ومخرجات المحلل العددي (ANSYS Solver Run Log)
+                  سجل موجه الأوامر ومخرجات المحلل العددي (OpenFOAM / CalculiX Solver Run Log)
                 </span>
                 <span className="px-2 py-0.5 rounded text-[10px] bg-slate-800 text-slate-300 font-mono">
                   16 Cores | Double Precision
@@ -1062,7 +1050,7 @@ export const OverviewTab: React.FC<OverviewTabProps> = ({ project, onRunSolver, 
                 <div className="text-slate-600">$ no solver output yet — run the simulation to stream real logs.</div>
               )}
               {(project.scriptExecutionLog || []).map((line, lIdx) => {
-                const isHeader = line.startsWith('[ANSYS') || line.startsWith('===');
+                const isHeader = line.startsWith('[OpenFOAM') || line.startsWith('[CalculiX') || line.startsWith('[HPC') || line.startsWith('===');
                 const isConverged = line.includes('CONVERGED') || line.includes('SUCCESS');
                 const isIter = line.trim().match(/^\d+/);
                 return (
@@ -1548,7 +1536,7 @@ export const OverviewTab: React.FC<OverviewTabProps> = ({ project, onRunSolver, 
             <Atom className="w-5 h-5 text-sky-400" />
             <span>المعادلات الحاكمة والنمذجة الرياضية (Governing Equations)</span>
           </div>
-          <span className="text-xs text-slate-400">معادلات فيزيائية معتمدة في ANSYS</span>
+          <span className="text-xs text-slate-400">معادلات فيزيائية معتمدة في OpenFOAM / CalculiX</span>
         </div>
 
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">

@@ -130,7 +130,7 @@ export interface CaseStudyItem {
   purpose: string;
   meshElements: number;
   meshNodes: number;
-  solverEngine: 'ANSYS Mechanical APDL' | 'Python SciPy Benchmark' | 'Fluent' | 'PyMAPDL';
+  solverEngine: 'OpenFOAM v2406' | 'CalculiX 2.21' | 'Python SciPy Benchmark' | string;
   keyOutputName: string;
   keyOutputValue: number;
   keyOutputUnit: string;
@@ -173,7 +173,7 @@ export interface SimulationJobManifest {
   jobId: string;
   projectId: string;
   caseId: string;
-  solver: 'ANSYS Mechanical APDL' | 'Python SciPy Benchmark' | 'Fluent' | 'PyMAPDL';
+  solver: 'OpenFOAM v2406' | 'CalculiX 2.21' | 'Python SciPy Benchmark' | string;
   solverVersion: string;
   status: 'queued' | 'running' | 'completed' | 'failed' | 'diverged';
   startTime: string;
@@ -348,7 +348,7 @@ export interface ThesisProject {
   university: string; // المنشأة الهندسية أو المنصة
   department: string;
   date: string;
-  field: 'CFD' | 'FEA' | 'Thermal' | 'Multiphysics';
+  field: 'CFD' | 'FEA' | 'Thermal' | 'Multiphysics' | 'FSI' | 'Supersonic' | 'PCM' | 'TopologyOptimization';
   softwareType: string; // e.g. ANSYS Fluent 2024 R2, ANSYS APDL, ANSYS Mechanical
   abstractAr: string;
   abstractEn: string;
@@ -373,9 +373,9 @@ export interface ThesisProject {
   verificationDossier?: AnalyticalVerificationDossier;
   roacheGciDetails?: RoacheGciCalculation;
   jobsHistory?: SimulationJobManifest[];
-  activeSolverBadge?: 'ANSYS Mechanical APDL' | 'Python SciPy Benchmark';
+  activeSolverBadge?: 'CalculiX v2.21' | 'OpenFOAM v2406' | 'Python SciPy Benchmark' | string;
   engineeringAudit?: EngineeringAudit; // NEW: Rigorous Audit Addition
-  projectType?: 'Industrial Simulation' | 'R&D Verification' | 'Certified CAE Report' | 'Failure Analysis';
+  projectType?: 'Industrial Simulation' | 'R&D Verification' | 'Certified CAE Report' | 'Failure Analysis' | 'International ASME Benchmark';
   standardsCompliance?: string[];
   directivesApplied?: string;
   attachedFilesCount?: number;
@@ -397,7 +397,7 @@ export interface ThesisProject {
     status: 'Up-to-date' | 'Solved' | 'Ready';
     details: string;
   }[];
-  // LHTES v3 Specific Academic & Physical Attributes
+  // Academic & Physical Thesis Attributes
   studentId?: string;
   adviser?: string;
   meltingComparison?: {

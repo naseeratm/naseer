@@ -18,8 +18,7 @@ export const EngineeringModelViewer3D: React.FC<EngineeringModelViewer3DProps> =
   const isFEA = project.field === 'FEA';
   const isCFD = project.field === 'CFD';
   const isThermal = project.field === 'Thermal';
-  const isLHTES = project.id === 'lhtes_v3_master' || project.id === 'lhtes-v3-master';
-  const [activeLayer, setActiveLayer] = useState<'lhtes_assembly' | 'pcm_melt' | 'temperature_field'>('lhtes_assembly');
+  const [activeLayer, setActiveLayer] = useState<'lhtes_assembly' | 'pcm_melt' | 'temperature_field'>('temperature_field');
 
   const defaultEq = isThermal
     ? '\\mathbf{q}\'\' = -k \\nabla T'
@@ -239,137 +238,86 @@ export const EngineeringModelViewer3D: React.FC<EngineeringModelViewer3DProps> =
       cfdGroup.add(streamTubes);
 
       modelGroup.add(cfdGroup);
-    } else if (isLHTES) {
-      // Flagship LHTES Helical Coiled Cylindrical Storage Unit
-      const shellGeo = new THREE.CylinderGeometry(1.8, 1.8, 4.5, 32, 1, true);
-      const shellMat = new THREE.MeshPhysicalMaterial({
-        color: 0x38bdf8,
+    } else {
+      // 3D Differentially Heated Square Cavity Model (de Vahl Davis ASME Benchmark)
+      const thermalGroup = new THREE.Group();
+
+      // Main Enclosure Frame (Outer Square Glass/Cavity Frame H=1m, L=1m, W=1m)
+      const cavityFrameGeo = new THREE.BoxGeometry(3.2, 3.2, 3.2);
+      const cavityFrameMat = new THREE.MeshPhysicalMaterial({
+        color: 0x94a3b8,
         metalness: 0.1,
         roughness: 0.1,
         transmission: 0.85,
-        thickness: 1.2,
+        thickness: 1.0,
         transparent: true,
-        opacity: 0.35,
+        opacity: 0.25,
         side: THREE.DoubleSide,
       });
-      shellMeshRef.current = new THREE.Mesh(shellGeo, shellMat);
-      modelGroup.add(shellMeshRef.current);
-
-      const pcmGeo = new THREE.CylinderGeometry(1.6, 1.6, 4.2, 32);
-      const pcmMat = new THREE.MeshPhysicalMaterial({
-        color: 0xf59e0b,
-        roughness: 0.3,
-        transmission: 0.6,
-        thickness: 0.8,
-        transparent: true,
-        opacity: 0.65,
-      });
-      pcmMeshRef.current = new THREE.Mesh(pcmGeo, pcmMat);
-      modelGroup.add(pcmMeshRef.current);
-
-      class HelicalCurve extends THREE.Curve<THREE.Vector3> {
-        constructor(private turns = 4, private height = 3.6, private radius = 0.9) {
-          super();
-        }
-        getPoint(t: number, optionalTarget = new THREE.Vector3()): THREE.Vector3 {
-          const theta = 2 * Math.PI * this.turns * t;
-          const x = Math.cos(theta) * this.radius;
-          const y = (t - 0.5) * this.height;
-          const z = Math.sin(theta) * this.radius;
-          return optionalTarget.set(x, y, z);
-        }
-      }
-
-      const path = new HelicalCurve(4.5, 3.8, 0.85);
-      const tubeGeo = new THREE.TubeGeometry(path, 128, 0.12, 16, false);
-      const tubeMat = new THREE.MeshStandardMaterial({
-        color: 0xef4444,
-        metalness: 0.9,
-        roughness: 0.2,
-      });
-      coilMeshRef.current = new THREE.Mesh(tubeGeo, tubeMat);
-      modelGroup.add(coilMeshRef.current);
-
-      const pipeGeo = new THREE.CylinderGeometry(0.15, 0.15, 1.2, 16);
-      const pipeMat = new THREE.MeshStandardMaterial({ color: 0x94a3b8, metalness: 0.8, roughness: 0.3 });
-      const topPipe = new THREE.Mesh(pipeGeo, pipeMat);
-      topPipe.position.y = 2.6;
-      modelGroup.add(topPipe);
-      const bottomPipe = new THREE.Mesh(pipeGeo, pipeMat);
-      bottomPipe.position.y = -2.6;
-      modelGroup.add(bottomPipe);
-
-      // Graded Tree Fins Representation (139 lower, 65 upper)
-      const finCount = 204;
-      const finGeo = new THREE.BoxGeometry(0.3, 0.05, 0.3);
-      const finMat = new THREE.MeshStandardMaterial({ color: 0x64748b, metalness: 0.5, roughness: 0.5 });
-      const finInstanced = new THREE.InstancedMesh(finGeo, finMat, finCount);
-      const dummy = new THREE.Object3D();
-      for (let i = 0; i < finCount; i++) {
-        let t;
-        if (i < 139) {
-          t = (i / 138) * 0.5;
-        } else {
-          t = 0.5 + ((i - 139) / 64) * 0.5;
-        }
-        const pos = path.getPoint(t);
-        dummy.position.copy(pos);
-        dummy.lookAt(new THREE.Vector3(0, pos.y, 0));
-        dummy.updateMatrix();
-        finInstanced.setMatrixAt(i, dummy.matrix);
-      }
-      modelGroup.add(finInstanced);
-    } else {
-      // 3D Solid Thermal Conduction & Fin Heat Sink Model
-      const thermalGroup = new THREE.Group();
-
-      // Base Solid Conduction Block
-      const baseBlockGeo = new THREE.BoxGeometry(4.0, 0.8, 3.0);
-      const baseBlockMat = new THREE.MeshStandardMaterial({
-        color: 0xd97706,
-        metalness: 0.6,
-        roughness: 0.35,
-      });
-      shellMeshRef.current = new THREE.Mesh(baseBlockGeo, baseBlockMat);
-      shellMeshRef.current.position.set(0, -0.6, 0);
-      shellMeshRef.current.castShadow = true;
-      shellMeshRef.current.receiveShadow = true;
+      shellMeshRef.current = new THREE.Mesh(cavityFrameGeo, cavityFrameMat);
       thermalGroup.add(shellMeshRef.current);
 
-      // Bottom Heat Influx Pad (Glowing hot red/orange)
-      const heatSourceGeo = new THREE.BoxGeometry(3.6, 0.15, 2.6);
-      const heatSourceMat = new THREE.MeshStandardMaterial({
+      // Left Wall: Isothermal Hot Boundary Wall (Red / Orange Glowing)
+      const hotWallGeo = new THREE.BoxGeometry(0.15, 3.15, 3.15);
+      const hotWallMat = new THREE.MeshStandardMaterial({
         color: 0xef4444,
         emissive: 0xd97706,
         emissiveIntensity: 0.8,
+        roughness: 0.3,
       });
-      pcmMeshRef.current = new THREE.Mesh(heatSourceGeo, heatSourceMat);
-      pcmMeshRef.current.position.set(0, -1.05, 0);
+      const hotWallMesh = new THREE.Mesh(hotWallGeo, hotWallMat);
+      hotWallMesh.position.set(-1.55, 0, 0);
+      thermalGroup.add(hotWallMesh);
+
+      // Right Wall: Isothermal Cold Boundary Wall (Blue)
+      const coldWallGeo = new THREE.BoxGeometry(0.15, 3.15, 3.15);
+      const coldWallMat = new THREE.MeshStandardMaterial({
+        color: 0x0284c7,
+        emissive: 0x0369a1,
+        emissiveIntensity: 0.4,
+        roughness: 0.3,
+      });
+      const coldWallMesh = new THREE.Mesh(coldWallGeo, coldWallMat);
+      coldWallMesh.position.set(1.55, 0, 0);
+      thermalGroup.add(coldWallMesh);
+
+      // Top & Bottom Adiabatic Insulated Walls (Dark Slate)
+      const topBottomGeo = new THREE.BoxGeometry(3.25, 0.15, 3.25);
+      const insulatedMat = new THREE.MeshStandardMaterial({
+        color: 0x475569,
+        roughness: 0.7,
+        metalness: 0.3,
+      });
+      const topWallMesh = new THREE.Mesh(topBottomGeo, insulatedMat);
+      topWallMesh.position.set(0, 1.55, 0);
+      thermalGroup.add(topWallMesh);
+
+      const bottomWallMesh = new THREE.Mesh(topBottomGeo, insulatedMat);
+      bottomWallMesh.position.set(0, -1.55, 0);
+      thermalGroup.add(bottomWallMesh);
+
+      // Convective Thermal Recirculation Flow Core inside Cavity (Isotherm Gradient Volume)
+      const coreFluidGeo = new THREE.BoxGeometry(2.9, 2.9, 2.9);
+      const coreFluidMat = new THREE.MeshPhysicalMaterial({
+        color: 0xf59e0b,
+        transmission: 0.7,
+        thickness: 0.5,
+        transparent: true,
+        opacity: 0.45,
+      });
+      pcmMeshRef.current = new THREE.Mesh(coreFluidGeo, coreFluidMat);
       thermalGroup.add(pcmMeshRef.current);
 
-      // Array of 7 vertical cooling fins conducting heat upwards
-      const finsGroup = new THREE.Group();
-      const finGeo = new THREE.BoxGeometry(0.18, 2.2, 2.8);
-      const finMat = new THREE.MeshStandardMaterial({
-        color: 0x38bdf8,
-        metalness: 0.8,
-        roughness: 0.25,
+      // Recirculation Vortex Ring showing Natural Convection Plume
+      const ringGeo = new THREE.TorusGeometry(1.1, 0.08, 16, 64);
+      const ringMat = new THREE.MeshStandardMaterial({
+        color: 0x10b981,
+        emissive: 0x059669,
+        emissiveIntensity: 0.5,
       });
-      for (let i = -3; i <= 3; i++) {
-        const finMesh = new THREE.Mesh(finGeo, finMat);
-        finMesh.position.set(i * 0.55, 0.9, 0);
-        finMesh.castShadow = true;
-        finsGroup.add(finMesh);
-      }
-      coilMeshRef.current = finsGroup as any;
-      thermalGroup.add(finsGroup);
-
-      // Heat flux indicator arrows pointing upward from heat source
-      const arrowDir = new THREE.Vector3(0, 1, 0);
-      for (let k = -2; k <= 2; k += 2) {
-        const arrow = new THREE.ArrowHelper(arrowDir, new THREE.Vector3(k * 0.8, -0.2, 0), 1.0, 0xf59e0b, 0.3, 0.15);
-        thermalGroup.add(arrow);
-      }
+      coilMeshRef.current = new THREE.Mesh(ringGeo, ringMat);
+      coilMeshRef.current.rotation.y = Math.PI / 2;
+      thermalGroup.add(coilMeshRef.current);
 
       modelGroup.add(thermalGroup);
     }
@@ -436,21 +384,17 @@ export const EngineeringModelViewer3D: React.FC<EngineeringModelViewer3DProps> =
     ? 'عارض المجسم ثلاثي الأبعاد (3D Structural FEA Engine)'
     : isCFD
     ? 'عارض المجسم ثلاثي الأبعاد (3D Aerodynamics CFD Engine)'
-    : isLHTES
-    ? 'عارض المجسم ثلاثي الأبعاد (LHTES Phase Change Engine)'
-    : 'عارض المجسم ثلاثي الأبعاد (3D Thermal Conduction Engine)';
+    : 'عارض المجسم ثلاثي الأبعاد (3D Thermal Conduction & Convection Engine)';
 
   const viewerSubtitle = isFEA
     ? 'نموذج إنشائي تفاعلي: جائز كابولي I-Beam، قاعدة التثبيت، ونواة تركيز الإجهادات فون ميسيس'
     : isCFD
     ? 'نموذج جريان وهوائي تفاعلي: مقطع الجناح، قمة الامتصاص، وتدرج السرعة'
-    : isLHTES
-    ? 'نموذج حراري تفاعلي: الغلاف، الكويل الحلزوني (HTF)، ووسط انصهار الـ NePCM'
-    : 'نموذج حراري تفاعلي: كتلة التوصيل الحراري، شريحة التسخين، وزعانف التبديد بالحمل';
+    : 'نموذج حراري تفاعلي: تجويف التدفئة المربع، شروط الجدران، وتوزيع خطوط تساوي درجات الحرارة (Isotherms)';
 
-  const layer1Label = isFEA ? 'كامل الجائز (I-Beam)' : isCFD ? 'السطح الانسيابي (Airfoil)' : isLHTES ? 'تجميع المنظومة' : 'الهيكل الحراري (Solid Block)';
-  const layer2Label = isFEA ? 'إجهادات فون ميسيس (Von Mises)' : isCFD ? 'قمة امتصاص الضغط (Suction)' : isLHTES ? 'منطقة انصهار PCM' : 'فيض الحرارة (Heat Flux)';
-  const layer3Label = isFEA ? 'حمولة وركيزة التثبيت (BCs)' : isCFD ? 'حقل السرعة (Velocity Field)' : isLHTES ? 'حقل درجات الحرارة' : 'تدرج درجات الحرارة (Isotherms)';
+  const layer1Label = isFEA ? 'كامل الجائز (I-Beam)' : isCFD ? 'السطح الانسيابي (Airfoil)' : 'هيكل التجويف الحراري (Solid Cavity)';
+  const layer2Label = isFEA ? 'إجهادات فون ميسيس (Von Mises)' : isCFD ? 'قمة امتصاص الضغط (Suction)' : 'حقل درجات الحرارة (Isotherms)';
+  const layer3Label = isFEA ? 'حمولة وركيزة التثبيت (BCs)' : isCFD ? 'حقل السرعة (Velocity Field)' : 'حقل سرعة الحمل الحراري';
 
   return (
     <div className="bg-slate-900/90 rounded-[2.5rem] border border-slate-800 p-8 shadow-2xl space-y-6">
@@ -636,7 +580,7 @@ export const EngineeringModelViewer3D: React.FC<EngineeringModelViewer3DProps> =
 
           <div className="p-3 rounded-xl bg-slate-900/60 border border-slate-800 flex items-center gap-2 text-[11px] text-slate-400">
             <Info className="w-4 h-4 text-amber-400 shrink-0" />
-            <span>المجسم يوضح بدقة هندسة الخزن الحراري الكامن (LHTES) مع الكويل الحلزوني ومادة NePCM.</span>
+            <span>المجسم يوضح بدقة الشروط الحدية والفيزيائية للنموذج المعتمد وفق معايير ASME V&V 20.</span>
           </div>
         </div>
       </div>

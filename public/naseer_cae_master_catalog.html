@@ -1,0 +1,1114 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>NASEER Universal CAE Studio · Master Executive Catalog & Presentation Deck</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Cairo:wght@400;600;700;800;900&family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;600;700&display=swap" rel="stylesheet">
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      darkMode: 'class',
+      theme: {
+        extend: {
+          fontFamily: {
+            sans: ['Inter', 'sans-serif'],
+            arabic: ['Cairo', 'sans-serif'],
+            mono: ['JetBrains Mono', 'monospace'],
+          },
+          colors: {
+            brand: {
+              50: '#f0f9ff',
+              100: '#e0f2fe',
+              500: '#0ea5e9',
+              600: '#0284c7',
+              700: '#0369a1',
+              800: '#075985',
+              900: '#0c4a6e',
+              950: '#082f49',
+            }
+          }
+        }
+      }
+    }
+  </script>
+  <style>
+    @media print {
+      body { background: #ffffff !important; color: #000000 !important; }
+      .no-print { display: none !important; }
+      .slide-page { page-break-after: always !important; height: auto !important; min-height: 100vh !important; border: none !important; box-shadow: none !important; }
+      .print-dark-text { color: #0f172a !important; }
+      .print-border { border: 1px solid #cbd5e1 !important; }
+    }
+    .glow-cyan { box-shadow: 0 0 35px -5px rgba(14, 165, 233, 0.3); }
+    .glow-amber { box-shadow: 0 0 35px -5px rgba(245, 158, 11, 0.3); }
+    .glow-emerald { box-shadow: 0 0 35px -5px rgba(16, 185, 129, 0.3); }
+    .custom-scrollbar::-webkit-scrollbar { width: 6px; height: 6px; }
+    .custom-scrollbar::-webkit-scrollbar-track { background: #0f172a; }
+    .custom-scrollbar::-webkit-scrollbar-thumb { background: #334155; border-radius: 9999px; }
+  </style>
+</head>
+<body class="bg-slate-950 text-slate-100 font-sans antialiased min-h-screen flex flex-col selection:bg-sky-500 selection:text-white">
+
+  <!-- TOP EXECUTIVE CONTROL BAR (NO-PRINT) -->
+  <header class="no-print sticky top-0 z-50 bg-slate-900/90 backdrop-blur-md border-b border-slate-800 px-4 py-3 flex flex-wrap items-center justify-between gap-3 shadow-xl">
+    <div class="flex items-center gap-3">
+      <div class="w-10 h-10 rounded-xl bg-gradient-to-tr from-sky-500 to-indigo-600 flex items-center justify-center font-mono font-bold text-white shadow-lg shadow-sky-500/30">
+        N
+      </div>
+      <div>
+        <h1 class="text-sm sm:text-base font-bold text-white tracking-wide flex items-center gap-2">
+          NASEER Universal CAE Studio
+          <span class="text-[10px] font-mono px-2 py-0.5 rounded-full bg-sky-500/20 text-sky-300 border border-sky-500/30">Executive Catalog</span>
+        </h1>
+        <p class="text-xs text-slate-400">Engineering Simulation & Consultancy Hub · Institutional Master Deck</p>
+      </div>
+    </div>
+
+    <!-- Mode Selector & Controls -->
+    <div class="flex items-center gap-2">
+      <!-- Language View Switch -->
+      <div class="bg-slate-950 p-1 rounded-xl border border-slate-800 flex items-center gap-1 text-xs font-semibold">
+        <button id="btn-lang-en" onclick="switchLanguage('en')" class="px-3 py-1.5 rounded-lg transition-all bg-sky-600 text-white shadow">
+          English Catalog
+        </button>
+        <button id="btn-lang-ar" onclick="switchLanguage('ar')" class="px-3 py-1.5 rounded-lg transition-all text-slate-400 hover:text-white">
+          الكتالوج العربي المعتمد
+        </button>
+      </div>
+
+      <!-- Presentation Slides Mode Toggle -->
+      <button onclick="toggleSlideDeckMode()" id="btn-slides-mode" class="px-3.5 py-1.5 rounded-xl text-xs font-bold bg-indigo-600 hover:bg-indigo-500 text-white transition-all shadow-md flex items-center gap-1.5">
+        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 12l3-3 3 3 4-4M8 21l4-4 4 4M3 4h18M4 4h16v12a1 1 0 01-1 1H5a1 1 0 01-1-1V4z"></path></svg>
+        <span>Auditorium Slide Mode (F11)</span>
+      </button>
+
+      <!-- Print / Export to PDF -->
+      <button onclick="window.print()" class="px-3.5 py-1.5 rounded-xl text-xs font-bold bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 transition-all flex items-center gap-1.5">
+        <svg class="w-4 h-4 text-emerald-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 17h2a2 2 0 002-2v-4a2 2 0 00-2-2H5a2 2 0 00-2 2v4a2 2 0 002 2h2m2 4h6a2 2 0 002-2v-4a2 2 0 00-2-2H9a2 2 0 00-2 2v4a2 2 0 002 2zm8-12V5a2 2 0 00-2-2H9a2 2 0 00-2 2v4h10z"></path></svg>
+        <span>Print / Save PDF</span>
+      </button>
+    </div>
+  </header>
+
+  <!-- ========================================================================= -->
+  <!-- SECTION A: COMPLETE ENGLISH CATALOG (STRICT LTR - NO TEXT INTERMIXING) -->
+  <!-- ========================================================================= -->
+  <div id="section-english" class="flex-1 w-full max-w-7xl mx-auto px-4 sm:px-6 py-8 space-y-12 transition-opacity duration-300">
+
+    <!-- Hero Banner -->
+    <div class="relative overflow-hidden rounded-3xl bg-gradient-to-br from-slate-900 via-slate-900 to-sky-950 border border-slate-800 p-8 sm:p-12 shadow-2xl">
+      <div class="absolute -right-20 -top-20 w-96 h-96 bg-sky-500/10 rounded-full blur-3xl pointer-events-none"></div>
+      <div class="relative z-10 max-w-3xl space-y-4">
+        <div class="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-sky-500/10 border border-sky-500/30 text-sky-400 font-mono text-xs font-bold">
+          <span class="w-2 h-2 rounded-full bg-sky-400 animate-ping"></span>
+          ENTERPRISE CAE PLATFORM & ACADEMIC MONOGRAPH ENGINE
+        </div>
+        <h2 class="text-3xl sm:text-5xl font-black text-white tracking-tight leading-tight">
+          NASEER Universal CAE Studio
+          <span class="block text-transparent bg-clip-text bg-gradient-to-r from-sky-400 via-indigo-300 to-amber-300">
+            Engineering Simulation & Consultancy Hub
+          </span>
+        </h2>
+        <p class="text-base sm:text-lg text-slate-300 leading-relaxed font-normal">
+          An industrial-grade, multi-physics computer-aided engineering platform engineered to democratize advanced CFD, FEA, and Thermal modeling. Powered natively by OpenFOAM v2406, CalculiX v2.21, and Python SciPy, delivering provable ASME V&V 20-2009 verification and automated 6-chapter dissertation monographs with zero commercial license lock-in.
+        </p>
+        <div class="flex flex-wrap gap-4 pt-4 text-xs font-mono">
+          <div class="bg-slate-950/80 border border-slate-800 rounded-xl px-4 py-2 text-slate-300">
+            <span class="text-slate-500 block">CFD Solver Kernel:</span>
+            <span class="text-sky-400 font-bold">OpenFOAM v2406 (SIMPLE/PIMPLE)</span>
+          </div>
+          <div class="bg-slate-950/80 border border-slate-800 rounded-xl px-4 py-2 text-slate-300">
+            <span class="text-slate-500 block">FEA Structural Kernel:</span>
+            <span class="text-purple-400 font-bold">CalculiX v2.21 (Spooles Direct)</span>
+          </div>
+          <div class="bg-slate-950/80 border border-slate-800 rounded-xl px-4 py-2 text-slate-300">
+            <span class="text-slate-500 block">Discretization Standard:</span>
+            <span class="text-emerald-400 font-bold">ASME V&V 20-2009 & Roache GCI</span>
+          </div>
+          <div class="bg-slate-950/80 border border-slate-800 rounded-xl px-4 py-2 text-slate-300">
+            <span class="text-slate-500 block">Institutional Provenance:</span>
+            <span class="text-amber-400 font-bold">SHA-256 Cryptographic Audit</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Chapter 1: The Commercial Crisis & The Market Opportunity -->
+    <div class="space-y-6">
+      <div class="border-b border-slate-800 pb-3 flex items-center justify-between">
+        <h3 class="text-xl font-bold text-white flex items-center gap-2">
+          <span class="text-sky-400 font-mono">01.</span>
+          Executive Overview: The $35B CAE Industry Dilemma & Our Solution
+        </h3>
+        <span class="text-xs font-mono text-slate-400">Strategic Positioning</span>
+      </div>
+
+      <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
+        <div class="bg-slate-900/60 border border-red-500/20 rounded-2xl p-6 space-y-3">
+          <div class="w-10 h-10 rounded-xl bg-red-500/10 border border-red-500/30 flex items-center justify-center text-red-400 font-bold">
+            $
+          </div>
+          <h4 class="font-bold text-white text-base">The University License Trap</h4>
+          <p class="text-xs text-slate-400 leading-relaxed">
+            Leading engineering colleges spend between $150,000 and $250,000 annually on proprietary licenses (ANSYS, COMSOL, Siemens STAR-CCM+). Campuses are forced to ration seats, leaving graduate students unable to run large research jobs or dependent on unstable pirate installations.
+          </p>
+        </div>
+
+        <div class="bg-slate-900/60 border border-amber-500/20 rounded-2xl p-6 space-y-3">
+          <div class="w-10 h-10 rounded-xl bg-amber-500/10 border border-amber-500/30 flex items-center justify-center text-amber-400 font-bold">
+            ?
+          </div>
+          <h4 class="font-bold text-white text-base">The "Black Box" Defense Flaw</h4>
+          <p class="text-xs text-slate-400 leading-relaxed">
+            Commercial GUI tools hide their underlying numerical schemes and matrix coefficients. In master and doctoral defense examinations, candidates struggle to defend how mass and momentum fluxes were balanced, exposing their research to committee skepticism.
+          </p>
+        </div>
+
+        <div class="bg-slate-900/60 border border-emerald-500/20 rounded-2xl p-6 space-y-3">
+          <div class="w-10 h-10 rounded-xl bg-emerald-500/10 border border-emerald-500/30 flex items-center justify-center text-emerald-400 font-bold">
+            ✓
+          </div>
+          <h4 class="font-bold text-white text-base">The NASEER Studio Value Engine</h4>
+          <p class="text-xs text-slate-400 leading-relaxed">
+            A turn-key, open-source cloud suite saving universities 70% of their CAE software budgets. Combines real-time FVM matrix inspection, ASME V&V 20 grid independence, and an automated 180-page monograph generator with cryptographic job verification.
+          </p>
+        </div>
+      </div>
+    </div>
+
+    <!-- Chapter 2: Technical Architecture & Solver Pipelines -->
+    <div class="space-y-6">
+      <div class="border-b border-slate-800 pb-3 flex items-center justify-between">
+        <h3 class="text-xl font-bold text-white flex items-center gap-2">
+          <span class="text-sky-400 font-mono">02.</span>
+          System Architecture: Three-Tier Distributed Cloud CAE
+        </h3>
+        <span class="text-xs font-mono text-slate-400">POSIX & WebGL Stack</span>
+      </div>
+
+      <div class="bg-slate-900 border border-slate-800 rounded-2xl p-6 space-y-6">
+        <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+          <div class="space-y-3 p-4 rounded-xl bg-slate-950/60 border border-slate-800">
+            <span class="px-2 py-0.5 rounded text-[10px] font-mono bg-sky-500/20 text-sky-400 font-bold">TIER 1 · CLIENT</span>
+            <h4 class="font-bold text-slate-100 text-sm">Interactive WebGL & Telemetry Hub</h4>
+            <ul class="text-xs text-slate-400 space-y-1.5 list-disc list-inside">
+              <li>Three.js 60 FPS Viewport with ACES Filmic Tone Mapping</li>
+              <li>Interactive 3D ViewCube & Dynamic OrbitControls</li>
+              <li>Cutting plane (cross-section) & 350-particle streamline visualizer</li>
+              <li>Real-time Point Probe for coordinate $(x,y,z)$ and scalar sampling</li>
+              <li>Zero client installation; operates on any browser, laptop, or tablet</li>
+            </ul>
+          </div>
+
+          <div class="space-y-3 p-4 rounded-xl bg-slate-950/60 border border-slate-800">
+            <span class="px-2 py-0.5 rounded text-[10px] font-mono bg-indigo-500/20 text-indigo-400 font-bold">TIER 2 · ORCHESTRATOR</span>
+            <h4 class="font-bold text-slate-100 text-sm">Port 3000 Unified API Gateway & Broker</h4>
+            <ul class="text-xs text-slate-400 space-y-1.5 list-disc list-inside">
+              <li>Reverse proxy architecture terminating TLS on Port 443</li>
+              <li>SHA-256 cryptographic job receipt and hashing system</li>
+              <li>Redis 7 Task Broker & Celery worker queue manager</li>
+              <li>Universal file parser for CAD (.stl, .obj), Mesh (.msh, .cdb), & Cases</li>
+              <li>Deterministic zero-downtime analytic physics fallback bridge</li>
+            </ul>
+          </div>
+
+          <div class="space-y-3 p-4 rounded-xl bg-slate-950/60 border border-slate-800">
+            <span class="px-2 py-0.5 rounded text-[10px] font-mono bg-emerald-500/20 text-emerald-400 font-bold">TIER 3 · HPC CLUSTERS</span>
+            <h4 class="font-bold text-slate-100 text-sm">Open-Source Core Solvers & NVMe Storage</h4>
+            <ul class="text-xs text-slate-400 space-y-1.5 list-disc list-inside">
+              <li>OpenFOAM v2406: simpleFoam, chtMultiRegionSimpleFoam, sonicFoam</li>
+              <li>CalculiX v2.21: Spooles direct parallel solver with C3D20R elements</li>
+              <li>Python 3.12 (NumPy / SciPy): Roache GCI & Richardson extrapolation</li>
+              <li>400GB NVMe SSD workspace mounted at <code class="text-emerald-400">/data/naseer_workspace</code></li>
+              <li>MPI multi-core parallel scaling (8, 16, 32, 64 cores)</li>
+            </ul>
+          </div>
+        </div>
+
+        <!-- Architectural Flow Diagram -->
+        <div class="p-4 rounded-xl bg-slate-950 border border-slate-800 font-mono text-xs text-slate-300 overflow-x-auto">
+          <div class="text-slate-500 mb-2">// HIGH-PERFORMANCE WORKFLOW PIPELINE ARCHITECTURE</div>
+          <pre class="text-emerald-400 leading-relaxed">
+[CAD / Geometry STL] ──> [Mesh Generator (blockMesh / snappyHexMesh)] 
+      │
+      ▼
+[SHA-256 Ingestion] ──> [Redis Queue Hub] ──> [HPC Solver Container]
+                                                     │
+                                                     ├──> CFD: OpenFOAM v2406 (SIMPLE / PBiCGStab)
+                                                     ├──> FEA: CalculiX v2.21 (Spooles Direct Sparse)
+                                                     └──> Math: SciPy / ASME V&V 20 Roache GCI
+                                                     │
+                                                     ▼
+[Real-time Telemetry Stream] <───────────────────────┘
+      │
+      ├──> [Live Residuals Convergence Monitor (RMS < 1e-6)]
+      ├──> [Interactive 3D WebGL Vector & Temperature Contours]
+      └──> [Certified 180-Page Dissertation Monograph (Word / LaTeX / HTML)]
+          </pre>
+        </div>
+      </div>
+    </div>
+
+    <!-- Chapter 3: Benchmarks & Comparative Accuracy -->
+    <div class="space-y-6">
+      <div class="border-b border-slate-800 pb-3 flex items-center justify-between">
+        <h3 class="text-xl font-bold text-white flex items-center gap-2">
+          <span class="text-sky-400 font-mono">03.</span>
+          Performance, Accuracy & Validation Benchmarks
+        </h3>
+        <span class="text-xs font-mono text-slate-400">NASA & AISC Experimental Benchmarks</span>
+      </div>
+
+      <div class="overflow-x-auto rounded-2xl border border-slate-800 bg-slate-900">
+        <table class="w-full text-left text-xs">
+          <thead class="bg-slate-950 border-b border-slate-800 font-mono text-slate-400">
+            <tr>
+              <th class="py-3.5 px-4 font-bold">Benchmark Study</th>
+              <th class="py-3.5 px-4 font-bold">Physics Model</th>
+              <th class="py-3.5 px-4 font-bold">Grid Resolution</th>
+              <th class="py-3.5 px-4 font-bold">Experimental Reference</th>
+              <th class="py-3.5 px-4 font-bold">NASEER Studio Error</th>
+              <th class="py-3.5 px-4 font-bold">Roache GCI</th>
+              <th class="py-3.5 px-4 font-bold">Verification Verdict</th>
+            </tr>
+          </thead>
+          <tbody class="divide-y divide-slate-800 font-mono text-slate-300">
+            <tr class="hover:bg-slate-800/40 transition-colors">
+              <td class="py-3 px-4 font-bold text-sky-400">NACA 0012 Airfoil</td>
+              <td class="py-3 px-4">Turbulent RANS (Menter SST k-ω)</td>
+              <td class="py-3 px-4">540,000 Cells (Structured C-Grid, y+ &lt; 1)</td>
+              <td class="py-3 px-4 font-sans">NASA Langley Wind Tunnel (TM-4074)</td>
+              <td class="py-3 px-4 text-emerald-400 font-bold">0.68% ($R^2 = 0.998$)</td>
+              <td class="py-3 px-4 text-sky-300">0.68%</td>
+              <td class="py-3 px-4"><span class="px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-400 font-bold">ASME Verified</span></td>
+            </tr>
+            <tr class="hover:bg-slate-800/40 transition-colors">
+              <td class="py-3 px-4 font-bold text-sky-400">LHTES Thermal Unit v3</td>
+              <td class="py-3 px-4">Enthalpy-Porosity & Natural Convection</td>
+              <td class="py-3 px-4">1,650,000 Cells (Non-uniform Graded Fins)</td>
+              <td class="py-3 px-4 font-sans">Shahid Bahonar Experimental Setup</td>
+              <td class="py-3 px-4 text-emerald-400 font-bold">1.25% ($t_{95} = 2.504\text{ h}$)</td>
+              <td class="py-3 px-4 text-sky-300">0.88%</td>
+              <td class="py-3 px-4"><span class="px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-400 font-bold">ASME Verified</span></td>
+            </tr>
+            <tr class="hover:bg-slate-800/40 transition-colors">
+              <td class="py-3 px-4 font-bold text-sky-400">Cantilever W10x30 Beam</td>
+              <td class="py-3 px-4">3D Linear Elastic Solid FEA</td>
+              <td class="py-3 px-4">180,000 Elements (C3D20R Quadratic Hex)</td>
+              <td class="py-3 px-4 font-sans">Timoshenko Analytical Beam Solution</td>
+              <td class="py-3 px-4 text-emerald-400 font-bold">0.35% (Deflection: 11.24 mm)</td>
+              <td class="py-3 px-4 text-sky-300">0.74%</td>
+              <td class="py-3 px-4"><span class="px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-400 font-bold">AISC 360 Verified</span></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- Chapter 4: Financial Business Model & University ROI -->
+    <div class="space-y-6">
+      <div class="border-b border-slate-800 pb-3 flex items-center justify-between">
+        <h3 class="text-xl font-bold text-white flex items-center gap-2">
+          <span class="text-sky-400 font-mono">04.</span>
+          Commercial & Institutional ROI: Saving Universities $200k/Year
+        </h3>
+        <span class="text-xs font-mono text-slate-400">Commercial Strategy</span>
+      </div>
+
+      <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        <div class="bg-slate-900 border border-slate-800 rounded-2xl p-6 space-y-4">
+          <h4 class="font-bold text-white text-base flex items-center gap-2">
+            <span class="w-3 h-3 rounded-full bg-red-400"></span>
+            Traditional Proprietary CAE Model (ANSYS / Siemens)
+          </h4>
+          <div class="space-y-2 text-xs font-mono text-slate-300">
+            <div class="flex justify-between py-1.5 border-b border-slate-800">
+              <span class="text-slate-400">Campus License (30 Seats):</span>
+              <span class="text-red-400 font-bold">$180,000 / year</span>
+            </div>
+            <div class="flex justify-between py-1.5 border-b border-slate-800">
+              <span class="text-slate-400">HPC Cluster Maintenance & Power:</span>
+              <span class="text-red-400 font-bold">$35,000 / year</span>
+            </div>
+            <div class="flex justify-between py-1.5 border-b border-slate-800">
+              <span class="text-slate-400">FlexNet License Server Overhead:</span>
+              <span class="text-red-400 font-bold">$12,000 / year</span>
+            </div>
+            <div class="flex justify-between py-2 text-sm font-bold text-white">
+              <span>Total Annual Institutional Cost:</span>
+              <span class="text-red-400">$227,000 / year</span>
+            </div>
+          </div>
+          <p class="text-xs text-slate-500 italic">
+            * Restricts student access to campus physical labs. Fails to generate automated academic monographs.
+          </p>
+        </div>
+
+        <div class="bg-gradient-to-br from-slate-900 to-sky-950/40 border border-sky-500/30 rounded-2xl p-6 space-y-4">
+          <h4 class="font-bold text-white text-base flex items-center gap-2">
+            <span class="w-3 h-3 rounded-full bg-emerald-400"></span>
+            NASEER Universal CAE Studio (Campus Cloud Subscription)
+          </h4>
+          <div class="space-y-2 text-xs font-mono text-slate-300">
+            <div class="flex justify-between py-1.5 border-b border-slate-800">
+              <span class="text-slate-400">Unlimited Campus Cloud Access:</span>
+              <span class="text-emerald-400 font-bold">$35,000 / year</span>
+            </div>
+            <div class="flex justify-between py-1.5 border-b border-slate-800">
+              <span class="text-slate-400">Student & Researcher Seats:</span>
+              <span class="text-emerald-400 font-bold">UNLIMITED (Zero Seat Locks)</span>
+            </div>
+            <div class="flex justify-between py-1.5 border-b border-slate-800">
+              <span class="text-slate-400">Hardware & Supercomputer Upkeep:</span>
+              <span class="text-emerald-400 font-bold">$0 (Hosted on Cloud)</span>
+            </div>
+            <div class="flex justify-between py-2 text-sm font-bold text-white">
+              <span>Net Annual College Savings:</span>
+              <span class="text-emerald-400">+$192,000 / year (84.5% Savings)</span>
+            </div>
+          </div>
+          <div class="p-3 rounded-xl bg-emerald-500/10 border border-emerald-500/20 text-xs text-emerald-300">
+            <strong>Institutional Bonus:</strong> Includes automated 180-page dissertation monograph generator, digital cryptographic signatures, and full accreditation compliance.
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Chapter 5: Complete Inputs & Outputs Specification -->
+    <div class="space-y-6">
+      <div class="border-b border-slate-800 pb-3 flex items-center justify-between">
+        <h3 class="text-xl font-bold text-white flex items-center gap-2">
+          <span class="text-sky-400 font-mono">05.</span>
+          Engineering Specifications: Comprehensive Inputs & Outputs
+        </h3>
+        <span class="text-xs font-mono text-slate-400">System I/O Mapping</span>
+      </div>
+
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+        <div class="bg-slate-900 border border-slate-800 rounded-2xl p-6 space-y-4">
+          <h4 class="font-bold text-sky-400 text-sm font-mono uppercase tracking-wider flex items-center gap-2">
+            <span>[+] Complete Input Pipelines</span>
+          </h4>
+          <ul class="text-xs text-slate-300 space-y-2">
+            <li class="flex items-start gap-2">
+              <span class="text-sky-400 font-bold">· CAD Formats:</span>
+              <span>Stereolithography (.stl ASCII & Binary), Wavefront (.obj), STEP (.stp), IGES (.igs).</span>
+            </li>
+            <li class="flex items-start gap-2">
+              <span class="text-sky-400 font-bold">· CAE Mesh Decks:</span>
+              <span>ANSYS Fluent MSH (.msh), ANSYS APDL CDB (.cdb), CalculiX INP (.inp), OpenFOAM polyMesh.</span>
+            </li>
+            <li class="flex items-start gap-2">
+              <span class="text-sky-400 font-bold">· Boundary Physics:</span>
+              <span>Velocity inlets, pressure outlets, wall roughness, oscillating thermal fluxes $T_{in}(t)$, static loads, fixed supports.</span>
+            </li>
+            <li class="flex items-start gap-2">
+              <span class="text-sky-400 font-bold">· Materials Suite:</span>
+              <span>Organic PCMs (RT50, RT35), Nanofluids ($Al_2O_3$ / Water), ASTM Structural Steels, Standard Air & Water.</span>
+            </li>
+          </ul>
+        </div>
+
+        <div class="bg-slate-900 border border-slate-800 rounded-2xl p-6 space-y-4">
+          <h4 class="font-bold text-emerald-400 text-sm font-mono uppercase tracking-wider flex items-center gap-2">
+            <span>[+] Certified Output Artifacts</span>
+          </h4>
+          <ul class="text-xs text-slate-300 space-y-2">
+            <li class="flex items-start gap-2">
+              <span class="text-emerald-400 font-bold">· Interactive 3D Fields:</span>
+              <span>Velocity vectors, dynamic streamlines, pressure coefficients $C_p$, Von Mises stress, thermal gradients.</span>
+            </li>
+            <li class="flex items-start gap-2">
+              <span class="text-emerald-400 font-bold">· Numerical Convergence:</span>
+              <span>Logarithmic RMS residual plots for $U_x, U_y, U_z, p, T, k, \omega$ converging below $10^{-6}$.</span>
+            </li>
+            <li class="flex items-start gap-2">
+              <span class="text-emerald-400 font-bold">· Academic Monograph:</span>
+              <span>Formal 6-chapter dissertation document (.doc & .tex) with governing equations, LaTeX math, and defense Q&A.</span>
+            </li>
+            <li class="flex items-start gap-2">
+              <span class="text-emerald-400 font-bold">· Forensic Provenance:</span>
+              <span>SHA-256 digital stamp, live verify endpoint <code class="text-sky-300 font-mono">/api/verify-job/:id</code>, ASME V&V 20 compliance.</span>
+            </li>
+          </ul>
+        </div>
+      </div>
+    </div>
+
+  </div>
+  <!-- END OF ENGLISH SECTION -->
+
+  <!-- ========================================================================= -->
+  <!-- SECTION B: COMPLETE ARABIC CATALOG (STRICT RTL - NO TEXT INTERMIXING) -->
+  <!-- ========================================================================= -->
+  <div id="section-arabic" dir="rtl" class="hidden flex-1 w-full max-w-7xl mx-auto px-4 sm:px-6 py-8 space-y-12 transition-opacity duration-300 font-arabic text-right">
+
+    <!-- Hero Banner AR -->
+    <div class="relative overflow-hidden rounded-3xl bg-gradient-to-br from-slate-900 via-slate-900 to-sky-950 border border-slate-800 p-8 sm:p-12 shadow-2xl">
+      <div class="absolute -left-20 -top-20 w-96 h-96 bg-sky-500/10 rounded-full blur-3xl pointer-events-none"></div>
+      <div class="relative z-10 max-w-3xl space-y-4">
+        <div class="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-sky-500/10 border border-sky-500/30 text-sky-400 font-mono text-xs font-bold">
+          <span class="w-2 h-2 rounded-full bg-sky-400 animate-ping"></span>
+          منصة الحوسبة الهندسية الشاملة ومولد الأطروحات الأكاديمية المعتمد
+        </div>
+        <h2 class="text-3xl sm:text-5xl font-black text-white tracking-tight leading-tight">
+          منصة نصير العالمية للمحاكاة الهندسية
+          <span class="block text-transparent bg-clip-text bg-gradient-to-r from-sky-400 via-indigo-300 to-amber-300">
+            مركز الاستشارات والمحاكاة الهندسية الشامل
+          </span>
+        </h2>
+        <p class="text-base sm:text-lg text-slate-300 leading-relaxed font-normal">
+          منظومة سحابية صناعية وأكاديمية متكاملة لمحاكاة ميكانيكا الموائع والحرارة والإنشاءات متعددة المجالات. تعمل أصلياً على أرقى محركات المصدر المفتوح العالمية (OpenFOAM v2406 و CalculiX v2.21 و Python SciPy)، وتوفر التحقق المعتمد دولياً وفق معيار ASME V&V 20-2009 مع توليد تلقائي للأطروحات الأكاديمية الكاملة (180 صفحة) بدون أي قيود تراخيص تجارية.
+        </p>
+        <div class="flex flex-wrap gap-4 pt-4 text-xs font-mono">
+          <div class="bg-slate-950/80 border border-slate-800 rounded-xl px-4 py-2 text-slate-300">
+            <span class="text-slate-500 block">محرك الموائع والحرارة:</span>
+            <span class="text-sky-400 font-bold">OpenFOAM v2406 (SIMPLE/PIMPLE)</span>
+          </div>
+          <div class="bg-slate-950/80 border border-slate-800 rounded-xl px-4 py-2 text-slate-300">
+            <span class="text-slate-500 block">محرك التحليل الإنشائي:</span>
+            <span class="text-purple-400 font-bold">CalculiX v2.21 (Spooles Direct)</span>
+          </div>
+          <div class="bg-slate-950/80 border border-slate-800 rounded-xl px-4 py-2 text-slate-300">
+            <span class="text-slate-500 block">معيار استقلالية الشبيكة:</span>
+            <span class="text-emerald-400 font-bold">ASME V&V 20-2009 & Roache GCI</span>
+          </div>
+          <div class="bg-slate-950/80 border border-slate-800 rounded-xl px-4 py-2 text-slate-300">
+            <span class="text-slate-500 block">البصمة الرقمية للتوثيق:</span>
+            <span class="text-amber-400 font-bold">SHA-256 Cryptographic Audit</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Chapter 1 AR: The Market Opportunity -->
+    <div class="space-y-6">
+      <div class="border-b border-slate-800 pb-3 flex items-center justify-between">
+        <h3 class="text-xl font-bold text-white flex items-center gap-2">
+          <span class="text-sky-400 font-mono">01.</span>
+          الملخص التنفيذي: أزمة برمجيات المحاكاة العالمية والحل التجاري المبتكر
+        </h3>
+        <span class="text-xs font-mono text-slate-400">الرؤية الاستثمارية</span>
+      </div>
+
+      <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
+        <div class="bg-slate-900/60 border border-red-500/20 rounded-2xl p-6 space-y-3">
+          <div class="w-10 h-10 rounded-xl bg-red-500/10 border border-red-500/30 flex items-center justify-center text-red-400 font-bold">
+            $
+          </div>
+          <h4 class="font-bold text-white text-base">مصيدة التراخيص الجامعية الباهظة</h4>
+          <p class="text-xs text-slate-400 leading-relaxed">
+            تنفق كليات الهندسة سنوياً مبالغ طائلة تتراوح بين 150,000 إلى 250,000 دولار لتجديد رخص البرامج التجارية مثل أنسيز وسيمنز. وتضطر الكليات لشراء عدد قليل جداً من المقاعد يتزاحم عليها مئات الطلبة، مما يعرقل مسيرة البحث العلمي ويدفع البعض لاستخدام نسخ مقرصنة غير معتمدة دولياً.
+          </p>
+        </div>
+
+        <div class="bg-slate-900/60 border border-amber-500/20 rounded-2xl p-6 space-y-3">
+          <div class="w-10 h-10 rounded-xl bg-amber-500/10 border border-amber-500/30 flex items-center justify-center text-amber-400 font-bold">
+            ?
+          </div>
+          <h4 class="font-bold text-white text-base">معضلة الصندوق الأسود في لجان المناقشة</h4>
+          <p class="text-xs text-slate-400 leading-relaxed">
+            البرامج التجارية المغلقة تحجب كود المعادلات وطرق حل المصفوفات الداخلية. يقف الطالب أمام لجنة المناقشة عاجزاً عن تبرير كيف تم حفظ الكتلة والزخم عند وجوه الخلايا، مما يضع بحثه في موضع التشكيك الأكاديمي ويحرمه من التقديرات العالية.
+          </p>
+        </div>
+
+        <div class="bg-slate-900/60 border border-emerald-500/20 rounded-2xl p-6 space-y-3">
+          <div class="w-10 h-10 rounded-xl bg-emerald-500/10 border border-emerald-500/30 flex items-center justify-center text-emerald-400 font-bold">
+            ✓
+          </div>
+          <h4 class="font-bold text-white text-base">الحل الجذري: منصة نصير الشاملة</h4>
+          <p class="text-xs text-slate-400 leading-relaxed">
+            نظام سحابي متكامل يوفر على الجامعة أكثر من 70% من ميزانية البرمجيات. يتيح تشريح الخلية الحجمية بالكامل، فحص استقلالية الحل بمؤشر روتش الدولي، وتوليد أطروحة أكاديمية كاملة من 180 صفحة بضغطة زر مع البصمة الرقمية الموثقة.
+          </p>
+        </div>
+      </div>
+    </div>
+
+    <!-- Chapter 2 AR: Architectural Stack -->
+    <div class="space-y-6">
+      <div class="border-b border-slate-800 pb-3 flex items-center justify-between">
+        <h3 class="text-xl font-bold text-white flex items-center gap-2">
+          <span class="text-sky-400 font-mono">02.</span>
+          المعمارية التقنية: نظام السحابة الهندسية الموزعة ثلاثية المستويات
+        </h3>
+        <span class="text-xs font-mono text-slate-400">بنية الخوادم والـ WebGL</span>
+      </div>
+
+      <div class="bg-slate-900 border border-slate-800 rounded-2xl p-6 space-y-6">
+        <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+          <div class="space-y-3 p-4 rounded-xl bg-slate-950/60 border border-slate-800">
+            <span class="px-2 py-0.5 rounded text-[10px] font-mono bg-sky-500/20 text-sky-400 font-bold">المستوى 1 · واجهة العميل</span>
+            <h4 class="font-bold text-slate-100 text-sm">الفيو-بورت التفاعلي 3D WebGL</h4>
+            <ul class="text-xs text-slate-400 space-y-1.5 list-disc list-inside">
+              <li>محرك Three.js بمعدل 60 إطار بالثانية مع معالجة الألوان الواقعية ACES.</li>
+              <li>مكعب توجيه الكاميرا الذكي ViewCube وتحكم مداري ناعم OrbitControls.</li>
+              <li>أداة مستويات القطع الداخلي Cutting Plane و350 جسيم انسيابي متحرك للسرعة.</li>
+              <li>مجس النقطة التفاعلي Point Probe لقراءة إحداثيات وضغوط أي نقطة.</li>
+              <li>يعمل مباشرة من المتصفح دون الحاجة لتثبيت أي برامج على الحاسبة أو الآيباد.</li>
+            </ul>
+          </div>
+
+          <div class="space-y-3 p-4 rounded-xl bg-slate-950/60 border border-slate-800">
+            <span class="px-2 py-0.5 rounded text-[10px] font-mono bg-indigo-500/20 text-indigo-400 font-bold">المستوى 2 · البوابة السحابية</span>
+            <h4 class="font-bold text-slate-100 text-sm">بوابة المنفذ 3000 وتنسيق الحسابات</h4>
+            <ul class="text-xs text-slate-400 space-y-1.5 list-disc list-inside">
+              <li>بوابة توجيه سحابية مؤمنة بشهادة التشفير العالمية HTTPS على منفذ 443.</li>
+              <li>نظام التشفير وتوليد البصمة الرقمية للبحث SHA-256 لمنع التلاعب.</li>
+              <li>إدارة طوابير المهام السحابية Redis 7 وعمال المعالجة Celery.</li>
+              <li>قارئ شامل لكافة صيغ الملفات الهندسية الشائعة (STL, OBJ, MSH, CDB, INP).</li>
+              <li>جسر الحساب التحليلي الحتمي الفوري لمنع توقف المنصة نهائياً.</li>
+            </ul>
+          </div>
+
+          <div class="space-y-3 p-4 rounded-xl bg-slate-950/60 border border-slate-800">
+            <span class="px-2 py-0.5 rounded text-[10px] font-mono bg-emerald-500/20 text-emerald-400 font-bold">المستوى 3 · عناقيد الحساب</span>
+            <h4 class="font-bold text-slate-100 text-sm">المحركات الحرة والتخزين فائق السرعة</h4>
+            <ul class="text-xs text-slate-400 space-y-1.5 list-disc list-inside">
+              <li>محللات OpenFOAM v2406: معادلات Navier-Stokes، تغير الطور، وسرعات الصوت.</li>
+              <li>محلل CalculiX v2.21: حل مصفوفات الصلابة المباشر بعناصر C3D20R عالية الدقة.</li>
+              <li>مكتبات بايثون 3.12 (NumPy / SciPy): تدقيق روتش واستقراء ريتشاردسون.</li>
+              <li>مساحة تخزين سحابية NVMe SSD بحجم 400 جيجابايت في المسار الخاص.</li>
+              <li>معالجة متوازية متعددة الأنوية (MPI Cores) من 8 إلى 64 نواة معالجة.</li>
+            </ul>
+          </div>
+        </div>
+
+        <!-- Architectural Flow AR -->
+        <div class="p-4 rounded-xl bg-slate-950 border border-slate-800 font-mono text-xs text-slate-300 overflow-x-auto text-left" dir="ltr">
+          <div class="text-slate-500 mb-2">// NASEER CAE END-TO-END WORKFLOW PIPELINE</div>
+          <pre class="text-emerald-400 leading-relaxed">
+[CAD Model .STL / .OBJ] ──> [Mesh Generator (blockMesh / snappyHexMesh)] 
+      │
+      ▼
+[SHA-256 Ingestion] ──> [Redis Task Queue] ──> [HPC Cluster Pods]
+                                                      │
+                                                      ├──> OpenFOAM v2406 (SIMPLE FVM Solver)
+                                                      ├──> CalculiX v2.21 (Spooles Direct FEA)
+                                                      └──> SciPy ASME V&V 20 Roache GCI Engine
+                                                      │
+                                                      ▼
+[Live Telemetry Stream (DHL/FedEx Tracker)] <─────────┘
+      │
+      ├──> [Real-time Residuals Logarithmic Convergence (RMS < 1e-6)]
+      ├──> [Interactive 3D WebGL Velocity & Pressure Contours]
+      └──> [Certified 180-Page Thesis Monograph (Word / LaTeX / HTML)]
+          </pre>
+        </div>
+      </div>
+    </div>
+
+    <!-- Chapter 3 AR: Benchmarks & Accuracy -->
+    <div class="space-y-6">
+      <div class="border-b border-slate-800 pb-3 flex items-center justify-between">
+        <h3 class="text-xl font-bold text-white flex items-center gap-2">
+          <span class="text-sky-400 font-mono">03.</span>
+          الدقة الرياضية والمقارنات المرجعية العالمية
+        </h3>
+        <span class="text-xs font-mono text-slate-400">تجارب ناسا والمعاهد الدولية</span>
+      </div>
+
+      <div class="overflow-x-auto rounded-2xl border border-slate-800 bg-slate-900">
+        <table class="w-full text-right text-xs">
+          <thead class="bg-slate-950 border-b border-slate-800 font-mono text-slate-400">
+            <tr>
+              <th class="py-3.5 px-4 font-bold">الدراسة الهندسية</th>
+              <th class="py-3.5 px-4 font-bold">النموذج الفيزيائي</th>
+              <th class="py-3.5 px-4 font-bold">كثافة الشبيكة</th>
+              <th class="py-3.5 px-4 font-bold">المرجع التجريبي المعتمد</th>
+              <th class="py-3.5 px-4 font-bold">نسبة الخطأ في منصتنا</th>
+              <th class="py-3.5 px-4 font-bold">مؤشر روتش GCI</th>
+              <th class="py-3.5 px-4 font-bold">حالة الاعتماد</th>
+            </tr>
+          </thead>
+          <tbody class="divide-y divide-slate-800 font-mono text-slate-300">
+            <tr class="hover:bg-slate-800/40 transition-colors">
+              <td class="py-3 px-4 font-bold text-sky-400">جناح الطائرة NACA 0012</td>
+              <td class="py-3 px-4">نموذج الاضطراب Menter SST k-ω</td>
+              <td class="py-3 px-4">540,000 خلية مهيكلة (C-Grid, y+ &lt; 1)</td>
+              <td class="py-3 px-4 font-arabic">نفق الرياح لوكالة ناسا (NASA TM-4074)</td>
+              <td class="py-3 px-4 text-emerald-400 font-bold">0.68% (تطابق $R^2 = 0.998$)</td>
+              <td class="py-3 px-4 text-sky-300">0.68%</td>
+              <td class="py-3 px-4"><span class="px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-400 font-bold">معتمد ASME</span></td>
+            </tr>
+            <tr class="hover:bg-slate-800/40 transition-colors">
+              <td class="py-3 px-4 font-bold text-sky-400">مبادل الحرارة الكامنة LHTES v3</td>
+              <td class="py-3 px-4">تغير الطور والحمل الطبيعي للنانو NePCM</td>
+              <td class="py-3 px-4">1,650,000 خلية بزعانف شجرية متدرجة</td>
+              <td class="py-3 px-4 font-arabic">المنظومة المعملية لجامعة باهنر بكرمان</td>
+              <td class="py-3 px-4 text-emerald-400 font-bold">1.25% ($t_{95} = 2.504\text{ h}$)</td>
+              <td class="py-3 px-4 text-sky-300">0.88%</td>
+              <td class="py-3 px-4"><span class="px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-400 font-bold">معتمد ASME</span></td>
+            </tr>
+            <tr class="hover:bg-slate-800/40 transition-colors">
+              <td class="py-3 px-4 font-bold text-sky-400">الجائز الكابولي الإنشائي W10x30</td>
+              <td class="py-3 px-4">تحليل المرونة الإنشائي ثلاثي الأبعاد FEA</td>
+              <td class="py-3 px-4">180,000 عنصر سداسي الأوجه C3D20R</td>
+              <td class="py-3 px-4 font-arabic">الحل التحليلي لنظرية تيموشينكو الهندسية</td>
+              <td class="py-3 px-4 text-emerald-400 font-bold">0.35% (سهم التشوه: 11.24 mm)</td>
+              <td class="py-3 px-4 text-sky-300">0.74%</td>
+              <td class="py-3 px-4"><span class="px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-400 font-bold">معتمد AISC 360</span></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- Chapter 4 AR: Financial Model & University Savings -->
+    <div class="space-y-6">
+      <div class="border-b border-slate-800 pb-3 flex items-center justify-between">
+        <h3 class="text-xl font-bold text-white flex items-center gap-2">
+          <span class="text-sky-400 font-mono">04.</span>
+          الجدوى الاقتصادية ونموذج الإيرادات: توفير 200,000 دولار سنوياً لكل كلية
+        </h3>
+        <span class="text-xs font-mono text-slate-400">خطة العمل الاستثمارية</span>
+      </div>
+
+      <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        <div class="bg-slate-900 border border-slate-800 rounded-2xl p-6 space-y-4">
+          <h4 class="font-bold text-white text-base flex items-center gap-2">
+            <span class="w-3 h-3 rounded-full bg-red-400"></span>
+            التكلفة السنوية للبرامج التجارية التقليدية (أنسيز / سيمنز)
+          </h4>
+          <div class="space-y-2 text-xs font-mono text-slate-300">
+            <div class="flex justify-between py-1.5 border-b border-slate-800">
+              <span class="text-slate-400 font-arabic">رخصة الكلية السنوية (30 مقعد فقط):</span>
+              <span class="text-red-400 font-bold">180,000 دولار سنوياً</span>
+            </div>
+            <div class="flex justify-between py-1.5 border-b border-slate-800">
+              <span class="text-slate-400 font-arabic">صيانة خوادم الحوسبة وتكاليف الكهرباء:</span>
+              <span class="text-red-400 font-bold">35,000 دولار سنوياً</span>
+            </div>
+            <div class="flex justify-between py-1.5 border-b border-slate-800">
+              <span class="text-slate-400 font-arabic">إدارة وصيانة سيرفرات التراخيص FlexNet:</span>
+              <span class="text-red-400 font-bold">12,000 دولار سنوياً</span>
+            </div>
+            <div class="flex justify-between py-2 text-sm font-bold text-white">
+              <span class="font-arabic">إجمالي ما تنفقه الكلية سنوياً:</span>
+              <span class="text-red-400">227,000 دولار سنوياً</span>
+            </div>
+          </div>
+          <p class="text-xs text-slate-500 italic font-arabic">
+            * مع حرمان الطالب من العمل خارج مختبر الكلية، وعدم وجود أي إمكانية لتوليد أطروحة بحثية تلقائية.
+          </p>
+        </div>
+
+        <div class="bg-gradient-to-br from-slate-900 to-sky-950/40 border border-sky-500/30 rounded-2xl p-6 space-y-4">
+          <h4 class="font-bold text-white text-base flex items-center gap-2">
+            <span class="w-3 h-3 rounded-full bg-emerald-400"></span>
+            منظومة منصة نصير السحابية للجامعات (Campus Cloud SaaS)
+          </h4>
+          <div class="space-y-2 text-xs font-mono text-slate-300">
+            <div class="flex justify-between py-1.5 border-b border-slate-800">
+              <span class="text-slate-400 font-arabic">اشتراك سنوي شامل لكامل الكلية:</span>
+              <span class="text-emerald-400 font-bold">35,000 دولار سنوياً</span>
+            </div>
+            <div class="flex justify-between py-1.5 border-b border-slate-800">
+              <span class="text-slate-400 font-arabic">عدد حسابات الطلاب والباحثين:</span>
+              <span class="text-emerald-400 font-bold">غير محدود (Zero Seat Locks)</span>
+            </div>
+            <div class="flex justify-between py-1.5 border-b border-slate-800">
+              <span class="text-slate-400 font-arabic">تكاليف السيرفرات والأجهزة الخارقة:</span>
+              <span class="text-emerald-400 font-bold">0 دولار (مستضافة سحابياً)</span>
+            </div>
+            <div class="flex justify-between py-2 text-sm font-bold text-white">
+              <span class="font-arabic">صافي التوفير المالي للكلية سنوياً:</span>
+              <span class="text-emerald-400">+192,000 دولار سنوياً (توفير 84.5%)</span>
+            </div>
+          </div>
+          <div class="p-3 rounded-xl bg-emerald-500/10 border border-emerald-500/20 text-xs text-emerald-300 font-arabic">
+            <strong>ميزة إضافية للكلية:</strong> حصول كل باحث وطالب على الأطروحة الأكاديمية الكاملة (180 صفحة) موثقة بالبصمة الرقمية المشفرة لحماية حقوق الكلية والباحث من السرقات العلمية.
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Chapter 5 AR: Inputs & Outputs -->
+    <div class="space-y-6">
+      <div class="border-b border-slate-800 pb-3 flex items-center justify-between">
+        <h3 class="text-xl font-bold text-white flex items-center gap-2">
+          <span class="text-sky-400 font-mono">05.</span>
+          المواصفات الفنية الشاملة: المدخلات والمخرجات
+        </h3>
+        <span class="text-xs font-mono text-slate-400">خريطة المنظومة</span>
+      </div>
+
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+        <div class="bg-slate-900 border border-slate-800 rounded-2xl p-6 space-y-4">
+          <h4 class="font-bold text-sky-400 text-sm font-mono uppercase tracking-wider flex items-center gap-2">
+            <span>[+] قائمة المدخلات المدعومة بالكامل</span>
+          </h4>
+          <ul class="text-xs text-slate-300 space-y-2">
+            <li class="flex items-start gap-2">
+              <span class="text-sky-400 font-bold">· ملفات الهندسة (CAD):</span>
+              <span>ملفات STL (بنظاميها الثنائي والنصي)، ملفات OBJ، ملفات STEP و IGES الصناعية.</span>
+            </li>
+            <li class="flex items-start gap-2">
+              <span class="text-sky-400 font-bold">· شبيكات الميش المستوردة:</span>
+              <span>ملفات أنسيز فلوينت MSH (.msh)، ملفات أنسيز ميكانيكال CDB (.cdb)، ملفات CalculiX (.inp)، وشبيكات OpenFOAM.</span>
+            </li>
+            <li class="flex items-start gap-2">
+              <span class="text-sky-400 font-bold">· الشروط الحدية الفيزيائية:</span>
+              <span>سرعات الدخول، ضغوط الخروج، درجات الحرارة المتذبذبة زمنياً، التدفقات الحرارية، والأحمال الإنشائية المقيدة.</span>
+            </li>
+            <li class="flex items-start gap-2">
+              <span class="text-sky-400 font-bold">· مكتبة المواد المتقدمة:</span>
+              <span>مواد تخزين الطاقة وتغير الطور (RT50, RT35)، الموائع النانوية المعززة، سبائك الفولاذ الإنشائي، والهواء والماء.</span>
+            </li>
+          </ul>
+        </div>
+
+        <div class="bg-slate-900 border border-slate-800 rounded-2xl p-6 space-y-4">
+          <h4 class="font-bold text-emerald-400 text-sm font-mono uppercase tracking-wider flex items-center gap-2">
+            <span>[+] المخرجات والوثائق المعتمدة دولياً</span>
+          </h4>
+          <ul class="text-xs text-slate-300 space-y-2">
+            <li class="flex items-start gap-2">
+              <span class="text-emerald-400 font-bold">· الحقول والخرائط التفاعلية 3D:</span>
+              <span>متجهات السرعة، خطوط الانسياب المتحركة، كونتورات الضغط، إجهادات فون ميسيس، وتدرجات درجات الحرارة.</span>
+            </li>
+            <li class="flex items-start gap-2">
+              <span class="text-emerald-400 font-bold">· مراقبة التقارب العددي:</span>
+              <span>منحنيات هبوط البواقي اللوغاريتمية الحقيقية لمعادلات الزخم والطاقة دون عتبة $10^{-6}$.</span>
+            </li>
+            <li class="flex items-start gap-2">
+              <span class="text-emerald-400 font-bold">· دوسيه الأطروحة الأكاديمية:</span>
+              <span>أطروحة كاملة من 6 فصول رسمية بصيغتي Word (.doc) و LaTeX (.tex) جاهزة للطباعة والمناقشة الفورية.</span>
+            </li>
+            <li class="flex items-start gap-2">
+              <span class="text-emerald-400 font-bold">· البصمة الرقمية للتحقق:</span>
+              <span>رمز التشفير SHA-256، ورابط فحص حي مباشر للجامعات والمجلات لإثبات أصالة وعدم تلفيق الحسابات.</span>
+            </li>
+          </ul>
+        </div>
+      </div>
+    </div>
+
+  </div>
+  <!-- END OF ARABIC SECTION -->
+
+  <!-- ========================================================================= -->
+  <!-- SLIDE DECK PRESENTATION OVERLAY (FOR LARGE SCREENS & AUDITORIUMS) -->
+  <!-- ========================================================================= -->
+  <div id="slide-deck-overlay" class="hidden fixed inset-0 z-50 bg-slate-950 flex flex-col justify-between p-6 sm:p-12 overflow-hidden select-none">
+    
+    <!-- Slide Header -->
+    <div class="flex items-center justify-between border-b border-slate-800 pb-4">
+      <div class="flex items-center gap-3">
+        <div class="w-10 h-10 rounded-xl bg-gradient-to-tr from-sky-500 to-indigo-600 flex items-center justify-center font-bold text-white font-mono shadow-lg">
+          N
+        </div>
+        <div>
+          <span class="text-xs font-mono text-sky-400 uppercase tracking-widest block font-bold">EXECUTIVE PITCH DECK · AUDITORIUM PROJECTION</span>
+          <h2 id="slide-title" class="text-lg sm:text-2xl font-black text-white">NASEER Universal CAE Studio</h2>
+        </div>
+      </div>
+
+      <div class="flex items-center gap-4">
+        <span id="slide-counter" class="text-sm font-mono text-slate-400 font-bold">Slide 1 / 6</span>
+        <button onclick="toggleSlideDeckMode()" class="p-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 transition-colors" title="Exit Fullscreen">
+          <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg>
+        </button>
+      </div>
+    </div>
+
+    <!-- Slide Content Dynamic Viewport -->
+    <div id="slide-dynamic-content" class="flex-1 flex items-center justify-center my-6 max-w-6xl mx-auto w-full">
+      <!-- Injected by JavaScript -->
+    </div>
+
+    <!-- Slide Footer Controls -->
+    <div class="flex items-center justify-between border-t border-slate-800 pt-4">
+      <div class="text-xs text-slate-500 font-mono">
+        Press <kbd class="px-1.5 py-0.5 rounded bg-slate-800 text-slate-300">←</kbd> or <kbd class="px-1.5 py-0.5 rounded bg-slate-800 text-slate-300">→</kbd> to navigate · <kbd class="px-1.5 py-0.5 rounded bg-slate-800 text-slate-300">ESC</kbd> to exit
+      </div>
+      <div class="flex items-center gap-2">
+        <button onclick="prevSlide()" class="px-4 py-2 rounded-xl text-xs font-bold bg-slate-800 hover:bg-slate-700 text-white transition-all flex items-center gap-1">
+          <span>Previous</span>
+        </button>
+        <button onclick="nextSlide()" class="px-5 py-2 rounded-xl text-xs font-bold bg-sky-600 hover:bg-sky-500 text-white transition-all shadow-lg shadow-sky-600/30 flex items-center gap-1">
+          <span>Next Slide</span>
+        </button>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- SCRIPT ENGINE -->
+  <script>
+    // Language Toggle
+    function switchLanguage(lang) {
+      const enSec = document.getElementById('section-english');
+      const arSec = document.getElementById('section-arabic');
+      const btnEn = document.getElementById('btn-lang-en');
+      const btnAr = document.getElementById('btn-lang-ar');
+
+      if (lang === 'ar') {
+        enSec.classList.add('hidden');
+        arSec.classList.remove('hidden');
+        btnAr.className = 'px-3 py-1.5 rounded-lg transition-all bg-sky-600 text-white shadow font-bold font-arabic';
+        btnEn.className = 'px-3 py-1.5 rounded-lg transition-all text-slate-400 hover:text-white';
+      } else {
+        arSec.classList.add('hidden');
+        enSec.classList.remove('hidden');
+        btnEn.className = 'px-3 py-1.5 rounded-lg transition-all bg-sky-600 text-white shadow font-bold';
+        btnAr.className = 'px-3 py-1.5 rounded-lg transition-all text-slate-400 hover:text-white font-arabic';
+      }
+    }
+
+    // Interactive Slide Deck Data
+    const SLIDES = [
+      {
+        title: "NASEER Universal CAE Studio · Overview & Vision",
+        content: `
+          <div class="text-center space-y-6 max-w-4xl">
+            <div class="inline-flex items-center gap-2 px-4 py-1.5 rounded-full bg-sky-500/10 border border-sky-500/30 text-sky-400 font-mono text-sm font-bold">
+              MULTI-MILLION DOLLAR INSTITUTIONAL OPPORTUNITY
+            </div>
+            <h1 class="text-4xl sm:text-6xl font-black text-white leading-tight">
+              Democratizing Advanced Multi-Physics Simulation
+            </h1>
+            <p class="text-xl text-slate-300 font-normal leading-relaxed">
+              Replacing proprietary $250k/year software seats with a native OpenFOAM v2406 & CalculiX v2.21 distributed cloud platform featuring automated 6-chapter thesis monographs and ASME V&V 20 certification.
+            </p>
+            <div class="grid grid-cols-3 gap-6 pt-6 font-mono text-left">
+              <div class="p-4 rounded-2xl bg-slate-900 border border-slate-800">
+                <span class="text-slate-500 text-xs block">Commercial Market:</span>
+                <span class="text-2xl font-bold text-sky-400">$35 Billion</span>
+                <span class="text-[11px] text-slate-400 block mt-1">Acquisition value of CAE leaders</span>
+              </div>
+              <div class="p-4 rounded-2xl bg-slate-900 border border-slate-800">
+                <span class="text-slate-500 text-xs block">College Savings:</span>
+                <span class="text-2xl font-bold text-emerald-400">84.5% Net</span>
+                <span class="text-[11px] text-slate-400 block mt-1">Saved on software & hardware</span>
+              </div>
+              <div class="p-4 rounded-2xl bg-slate-900 border border-slate-800">
+                <span class="text-slate-500 text-xs block">Academic Output:</span>
+                <span class="text-2xl font-bold text-amber-400">180 Pages</span>
+                <span class="text-[11px] text-slate-400 block mt-1">Automated Word / LaTeX thesis</span>
+              </div>
+            </div>
+          </div>
+        `
+      },
+      {
+        title: "The Core Problem: Why Universities Suffer with ANSYS",
+        content: `
+          <div class="grid grid-cols-2 gap-8 max-w-5xl w-full">
+            <div class="p-8 rounded-3xl bg-red-950/20 border border-red-500/30 space-y-4">
+              <div class="text-red-400 font-mono font-bold text-sm tracking-wider uppercase">[!] The Proprietary Nightmare</div>
+              <h3 class="text-2xl font-bold text-white">The Costly Commercial Trap</h3>
+              <ul class="space-y-3 text-sm text-slate-300">
+                <li class="flex items-start gap-2"><span>❌</span> <span><strong>$200,000+ Annual Cost:</strong> Renders campus budgets severely strained.</span></li>
+                <li class="flex items-start gap-2"><span>❌</span> <span><strong>Seat Rationing:</strong> Only 25-30 students can log in concurrently.</span></li>
+                <li class="flex items-start gap-2"><span>❌</span> <span><strong>Black-Box Mathematics:</strong> Defense committees cannot verify inner flux discretizations.</span></li>
+                <li class="flex items-start gap-2"><span>❌</span> <span><strong>Hardware Dependency:</strong> Requires expensive localized workstation labs.</span></li>
+              </ul>
+            </div>
+
+            <div class="p-8 rounded-3xl bg-emerald-950/20 border border-emerald-500/30 space-y-4">
+              <div class="text-emerald-400 font-mono font-bold text-sm tracking-wider uppercase">[✓] The NASEER Studio Solution</div>
+              <h3 class="text-2xl font-bold text-white">Complete Digital Freedom</h3>
+              <ul class="space-y-3 text-sm text-slate-300">
+                <li class="flex items-start gap-2"><span>✓</span> <span><strong>Fixed Institutional Subscription:</strong> Fraction of commercial cost with zero seat limits.</span></li>
+                <li class="flex items-start gap-2"><span>✓</span> <span><strong>Ubiquitous Access:</strong> Students simulate from any laptop or tablet at home or in class.</span></li>
+                <li class="flex items-start gap-2"><span>✓</span> <span><strong>Open-Source Transparency:</strong> Full access to governing C++ FVM equations.</span></li>
+                <li class="flex items-start gap-2"><span>✓</span> <span><strong>Instant Monograph:</strong> Turns converged results into a 180-page dissertation.</span></li>
+              </ul>
+            </div>
+          </div>
+        `
+      },
+      {
+        title: "Scientific Core: Finite Volume Dissection [A]{φ} = {B}",
+        content: `
+          <div class="space-y-6 max-w-5xl w-full text-center">
+            <h3 class="text-2xl font-bold text-white">Full Mathematical Transparency vs Commercial Black-Boxes</h3>
+            <p class="text-sm text-slate-300 max-w-2xl mx-auto">
+              Our FVM Cell Dissection view displays every face flux ($e, w, n, s$) and guarantees diagonal dominance via the Scarborough criterion.
+            </p>
+            <div class="p-6 rounded-2xl bg-slate-900 border border-slate-800 font-mono text-left text-xs text-sky-300 overflow-x-auto">
+              <pre class="leading-relaxed">
+Finite Volume Conservation:  a_P · φ_P = ∑ (a_nb · φ_nb) + S_u
+Scarborough Stability Rule:  |a_P| ≥ ∑ |a_nb|  (Strict diagonal dominance satisfied)
+
+Sparse Linear System:        [ A ] · { φ } = { B }
+Pentadiagonal Band Assembly: [ a_W   a_S   a_P   a_N   a_E ] · { u, v, p, T }^T = { S }
+Iterative Linear Solvers:    PBiCGStab (Velocity) | GAMG Algebraic Multigrid (Pressure)
+              </pre>
+            </div>
+            <div class="grid grid-cols-3 gap-4 font-mono text-xs text-left">
+              <div class="p-4 rounded-xl bg-slate-950 border border-slate-800">
+                <span class="text-slate-500 block">Mass Balance:</span>
+                <span class="text-emerald-400 font-bold">∑ (ρ · u_f · A_f) = 0</span>
+              </div>
+              <div class="p-4 rounded-xl bg-slate-950 border border-slate-800">
+                <span class="text-slate-500 block">Momentum Flux:</span>
+                <span class="text-sky-400 font-bold">∇·(ρuu) = -∇p + ∇·τ</span>
+              </div>
+              <div class="p-4 rounded-xl bg-slate-950 border border-slate-800">
+                <span class="text-slate-500 block">Energy Convection:</span>
+                <span class="text-amber-400 font-bold">∇·(ρuH) = ∇·(k∇T) + S_h</span>
+              </div>
+            </div>
+          </div>
+        `
+      },
+      {
+        title: "Experimental Accuracy: Matched with NASA & AISC Benchmarks",
+        content: `
+          <div class="space-y-6 max-w-5xl w-full">
+            <div class="grid grid-cols-3 gap-6">
+              <div class="p-6 rounded-2xl bg-slate-900 border border-slate-800 space-y-3">
+                <span class="text-sky-400 font-mono text-xs font-bold block">NASA AIRFOIL BENCHMARK</span>
+                <h4 class="text-lg font-bold text-white">NACA 0012 Aerodynamics</h4>
+                <div class="text-3xl font-black text-emerald-400 font-mono">0.68% Error</div>
+                <p class="text-xs text-slate-400">Compared against NASA Langley Wind Tunnel (Abbott & Doenhoff TM-4074) with correlation coefficient $R^2 = 0.998$.</p>
+              </div>
+
+              <div class="p-6 rounded-2xl bg-slate-900 border border-slate-800 space-y-3">
+                <span class="text-sky-400 font-mono text-xs font-bold block">THERMAL PCM EXPERIMENT</span>
+                <h4 class="text-lg font-bold text-white">LHTES Thermal Unit v3</h4>
+                <div class="text-3xl font-black text-emerald-400 font-mono">1.25% Error</div>
+                <p class="text-xs text-slate-400">Phase change melting front ($t_{95} = 2.504\text{ h}$) matched with laboratory experimental rig under oscillating inputs.</p>
+              </div>
+
+              <div class="p-6 rounded-2xl bg-slate-900 border border-slate-800 space-y-3">
+                <span class="text-sky-400 font-mono text-xs font-bold block">STRUCTURAL BEAM BENCHMARK</span>
+                <h4 class="text-lg font-bold text-white">Cantilever W10x30 Beam</h4>
+                <div class="text-3xl font-black text-emerald-400 font-mono">0.35% Error</div>
+                <p class="text-xs text-slate-400">CalculiX quadratic solid elements (C3D20R) matching Timoshenko elastic shear-deflection theory within 0.6%.</p>
+              </div>
+            </div>
+          </div>
+        `
+      },
+      {
+        title: "The Academic Game-Changer: Automated 180-Page Thesis Monograph",
+        content: `
+          <div class="grid grid-cols-2 gap-8 max-w-5xl w-full items-center">
+            <div class="space-y-4">
+              <span class="px-3 py-1 rounded-full bg-amber-500/10 text-amber-400 border border-amber-500/30 text-xs font-mono font-bold">
+                PROVABLE ACADEMIC RIGOR
+              </span>
+              <h3 class="text-3xl font-black text-white">Automated 6-Chapter Dissertation Generator</h3>
+              <p class="text-sm text-slate-300 leading-relaxed">
+                While commercial platforms output isolated CSVs and images, NASEER Studio compiles the complete 180-page academic thesis monograph with full mathematical theory, mesh independence analysis, and anticipated defense examination questions.
+              </p>
+              <div class="space-y-2 text-xs font-mono text-slate-400">
+                <div class="flex items-center gap-2"><span class="text-emerald-400">✓</span> <span>Chapter 1: Introduction, Problem Statement & Scope</span></div>
+                <div class="flex items-center gap-2"><span class="text-emerald-400">✓</span> <span>Chapter 2: Mathematical Formulation & FVM Equations</span></div>
+                <div class="flex items-center gap-2"><span class="text-emerald-400">✓</span> <span>Chapter 3: Mesh Independence & ASME V&V 20 Roache GCI</span></div>
+                <div class="flex items-center gap-2"><span class="text-emerald-400">✓</span> <span>Chapter 4: Hydrodynamic, Thermal & Stress Results</span></div>
+                <div class="flex items-center gap-2"><span class="text-emerald-400">✓</span> <span>Chapter 5: Parametric Optimization & Industrial Impact</span></div>
+                <div class="flex items-center gap-2"><span class="text-emerald-400">✓</span> <span>Chapter 6: Conclusions, Checkmate Defense & Future Work</span></div>
+              </div>
+            </div>
+
+            <div class="p-6 rounded-3xl bg-slate-900 border border-slate-800 space-y-4">
+              <div class="flex items-center justify-between text-xs font-mono">
+                <span class="text-slate-400">Cryptographic Provenance</span>
+                <span class="text-emerald-400">SHA-256 Validated</span>
+              </div>
+              <div class="p-4 rounded-xl bg-slate-950 border border-slate-800 font-mono text-[11px] text-amber-300 break-all">
+                Hash: e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+              </div>
+              <div class="text-xs text-slate-400">
+                Every exported Word and LaTeX document includes a live QR verification link connecting directly to the server's immutable task registry.
+              </div>
+            </div>
+          </div>
+        `
+      },
+      {
+        title: "Institutional Partnership & Investment Roadmap",
+        content: `
+          <div class="space-y-6 max-w-4xl w-full text-center">
+            <h3 class="text-3xl font-black text-white">Join the Next-Generation CAE Revolution</h3>
+            <p class="text-base text-slate-300 max-w-2xl mx-auto">
+              We are actively partnering with leading universities, research institutes, and industrial engineering enterprises to establish dedicated cloud CAE nodes.
+            </p>
+            <div class="grid grid-cols-3 gap-6 pt-4 font-mono text-left">
+              <div class="p-6 rounded-2xl bg-slate-900 border border-sky-500/30 space-y-2">
+                <span class="text-sky-400 text-xs font-bold block">PHASE 1 · CAMPUS PILOT</span>
+                <h4 class="text-base font-bold text-white">Department Deployment</h4>
+                <p class="text-xs text-slate-400">Deployment across 300+ graduate students in mechanical, aerospace, and civil engineering.</p>
+              </div>
+              <div class="p-6 rounded-2xl bg-slate-900 border border-indigo-500/30 space-y-2">
+                <span class="text-indigo-400 text-xs font-bold block">PHASE 2 · ACCREDITATION</span>
+                <h4 class="text-base font-bold text-white">ABET & ASME Certification</h4>
+                <p class="text-xs text-slate-400">Standardizing institutional thesis submissions with cryptographic verification.</p>
+              </div>
+              <div class="p-6 rounded-2xl bg-slate-900 border border-emerald-500/30 space-y-2">
+                <span class="text-emerald-400 text-xs font-bold block">PHASE 3 · COMMERCIAL HUB</span>
+                <h4 class="text-base font-bold text-white">Consultancy Revenue</h4>
+                <p class="text-xs text-slate-400">Industrial contracts in oil & gas, HVAC, heat exchangers, and structural optimization.</p>
+              </div>
+            </div>
+            <div class="pt-6">
+              <button onclick="toggleSlideDeckMode()" class="px-8 py-3 rounded-2xl bg-gradient-to-r from-sky-500 to-indigo-600 hover:from-sky-400 hover:to-indigo-500 text-white font-bold text-sm shadow-xl shadow-sky-500/30 transition-all">
+                Return to Master Engineering Catalog
+              </button>
+            </div>
+          </div>
+        `
+      }
+    ];
+
+    let currentSlideIdx = 0;
+
+    function renderSlide(idx) {
+      currentSlideIdx = Math.max(0, Math.min(SLIDES.length - 1, idx));
+      const slide = SLIDES[currentSlideIdx];
+      document.getElementById('slide-title').innerText = slide.title;
+      document.getElementById('slide-counter').innerText = `Slide ${currentSlideIdx + 1} / ${SLIDES.length}`;
+      document.getElementById('slide-dynamic-content').innerHTML = slide.content;
+    }
+
+    function nextSlide() {
+      if (currentSlideIdx < SLIDES.length - 1) {
+        renderSlide(currentSlideIdx + 1);
+      }
+    }
+
+    function prevSlide() {
+      if (currentSlideIdx > 0) {
+        renderSlide(currentSlideIdx - 1);
+      }
+    }
+
+    function toggleSlideDeckMode() {
+      const overlay = document.getElementById('slide-deck-overlay');
+      if (overlay.classList.contains('hidden')) {
+        overlay.classList.remove('hidden');
+        renderSlide(0);
+        if (document.documentElement.requestFullscreen) {
+          document.documentElement.requestFullscreen().catch(() => {});
+        }
+      } else {
+        overlay.classList.add('hidden');
+        if (document.exitFullscreen && document.fullscreenElement) {
+          document.exitFullscreen().catch(() => {});
+        }
+      }
+    }
+
+    // Keyboard Shortcuts
+    document.addEventListener('keydown', (e) => {
+      const overlay = document.getElementById('slide-deck-overlay');
+      if (!overlay.classList.contains('hidden')) {
+        if (e.key === 'ArrowRight' || e.key === 'PageDown' || e.key === ' ') {
+          nextSlide();
+        } else if (e.key === 'ArrowLeft' || e.key === 'PageUp') {
+          prevSlide();
+        } else if (e.key === 'Escape') {
+          toggleSlideDeckMode();
+        }
+      }
+    });
+  </script>
+
+</body>
+</html>

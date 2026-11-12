@@ -283,6 +283,31 @@ export const PropertiesPanel: React.FC<PropertiesPanelProps> = ({
           {geometryComponent && <ReadRow label="Component" value={geometryComponent.details} />}
           {geometryComponent && <ReadRow label="Status" value={geometryComponent.status} />}
         </Section>
+        {project.boundaryConditions && project.boundaryConditions.length > 0 && (
+          <Section title={`Tagged Boundaries (${project.boundaryConditions.length})`}>
+            {project.boundaryConditions.map((bc, idx) => (
+              <div key={idx} className="rounded border border-slate-800 bg-slate-950 p-2 text-[10.5px]">
+                <div className="flex items-center justify-between font-mono font-medium text-slate-200">
+                  <span className="truncate max-w-[130px]">{bc.name}</span>
+                  <span
+                    className={`rounded px-1.5 py-0.5 text-[9px] font-bold ${
+                      bc.type.includes('Inlet')
+                        ? 'bg-sky-500/20 text-sky-300'
+                        : bc.type.includes('Outlet')
+                        ? 'bg-rose-500/20 text-rose-300'
+                        : 'bg-purple-500/20 text-purple-300'
+                    }`}
+                  >
+                    {bc.type}
+                  </span>
+                </div>
+                <div className="mt-1 flex items-center justify-between text-slate-400 font-mono text-[10px]">
+                  <span>{bc.value} {bc.unit}</span>
+                </div>
+              </div>
+            ))}
+          </Section>
+        )}
         <Section title="Actions">
           <ActionButton accent icon={<Upload className="h-3.5 w-3.5" />} label="Import Engineering Model" onClick={actions.importModel} />
         </Section>
@@ -312,6 +337,31 @@ export const PropertiesPanel: React.FC<PropertiesPanelProps> = ({
           <ReadRow label="Density" value={project.material?.density} />
           <ReadRow label="Type" value={project.material?.phaseOrType} />
         </Section>
+        {project.boundaryConditions && project.boundaryConditions.length > 0 && (
+          <Section title={`Active Boundaries (${project.boundaryConditions.length})`}>
+            {project.boundaryConditions.map((bc, idx) => (
+              <div key={idx} className="rounded border border-slate-800 bg-slate-950 p-2 text-[10.5px]">
+                <div className="flex items-center justify-between font-mono font-medium text-slate-200">
+                  <span className="truncate max-w-[130px]">{bc.name}</span>
+                  <span
+                    className={`rounded px-1.5 py-0.5 text-[9px] font-bold ${
+                      bc.type.includes('Inlet')
+                        ? 'bg-sky-500/20 text-sky-300'
+                        : bc.type.includes('Outlet')
+                        ? 'bg-rose-500/20 text-rose-300'
+                        : 'bg-purple-500/20 text-purple-300'
+                    }`}
+                  >
+                    {bc.type}
+                  </span>
+                </div>
+                <div className="mt-1 flex items-center justify-between text-slate-400 font-mono text-[10px]">
+                  <span>{bc.value} {bc.unit}</span>
+                </div>
+              </div>
+            ))}
+          </Section>
+        )}
         <Section title="Solver Model" defaultOpen={false}>
           <ReadRow label="Solver" value={project.solver?.solverType} />
           <ReadRow label="Scheme" value={project.solver?.scheme} />

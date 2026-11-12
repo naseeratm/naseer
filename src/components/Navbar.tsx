@@ -76,178 +76,63 @@ export const Navbar: React.FC<NavbarProps> = ({
         >
           <div className="w-11 h-11 rounded-xl bg-gradient-to-tr from-sky-500 via-indigo-500 to-amber-400 p-[2px] shadow-lg shadow-sky-500/20 shrink-0 group-hover:scale-105 transition-transform">
             <div className="w-full h-full bg-slate-950 rounded-[10px] flex items-center justify-center">
-              <span className="font-extrabold text-xs tracking-wider bg-gradient-to-r from-sky-400 to-amber-300 bg-clip-text text-transparent font-mono">
-                ANSYS
+              <span className="font-extrabold text-[10px] tracking-wider bg-gradient-to-r from-sky-400 to-amber-300 bg-clip-text text-transparent font-mono">
+                NASEER
               </span>
             </div>
           </div>
           <div className="min-w-0">
             <div className="flex items-center gap-2">
               <h1 className="font-bold text-base sm:text-lg text-slate-100 truncate">
-                ANSYS Engineering WorkBench
+                NASEER Universal CAE Studio
               </h1>
               <span className="hidden sm:inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-sky-950/80 text-sky-400 border border-sky-800/60 font-mono">
-                Multiphysics CAE
+                Hybrid Workbench Hub
               </span>
             </div>
             <p className="text-xs text-slate-400 truncate hidden md:block">
-              منصة التحليل والمحاكاة الهندسية الشاملة · ميكانيكا الموائع والإنشاءات
+              منصة التحليل والمحاكاة الهندسية العالمية · CFD, FEA & Multiphysics
             </p>
           </div>
         </div>
 
         {/* Action Controls */}
+        {/* Streamlined Action Controls (SimScale / ANSYS Discovery Minimal Style) */}
         <div className="flex items-center gap-2 sm:gap-3 shrink-0">
-          {/* New Project Wizard Button */}
-          {onOpenNewProjectWizard && (
-            <button
-              onClick={onOpenNewProjectWizard}
-              className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-bold bg-emerald-500/15 hover:bg-emerald-500/25 text-emerald-300 border border-emerald-500/40 transition-all active:scale-95 shadow-sm"
-              title="إنشاء مشروع هندسي جديد ومخصص من الصفر"
-            >
-              <PlusCircle className="w-3.5 h-3.5 text-emerald-400" />
-              <span className="hidden sm:inline">مشروع جديد</span>
-              <span className="sm:hidden">جديد</span>
-            </button>
-          )}
-
-          {/* Recall Previous Projects Button */}
+          {/* THE SINGLE UNIFIED PRIMARY ENTRY BUTTON: Projects & Validation Benchmarks */}
           <button
             onClick={onOpenProjectsLibrary}
-            className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-bold bg-amber-500/10 hover:bg-amber-500/20 text-amber-300 border border-amber-500/30 transition-all active:scale-95 shadow-sm"
-            title="استدعاء أو فتح البحوث والمشاريع السابقة للتعديل"
+            className="flex items-center gap-2 px-4 py-2 rounded-xl text-xs sm:text-sm font-bold bg-gradient-to-r from-amber-500 via-amber-600 to-amber-700 hover:from-amber-400 hover:to-amber-600 text-slate-950 shadow-lg shadow-amber-500/20 active:scale-95 transition-all"
+            title="المكتبة الموحدة: فتح واختبار البنشماركات المعايرة (NASA Airfoil, Timoshenko Beam, de Vahl Davis Thermal) والمشاريع المخصصة"
           >
-            <FolderOpen className="w-3.5 h-3.5 text-amber-400" />
-            <span className="hidden sm:inline">مكتبة المشاريع</span>
-            <span className="sm:hidden">المشاريع</span>
+            <FolderOpen className="w-4 h-4 fill-slate-950" />
+            <span>المشاريع والبنشماركات</span>
             {savedProjectsCount > 0 && (
-              <span className="px-1.5 py-0.2 rounded bg-amber-500/30 text-amber-200 font-mono text-[10px] font-bold">
+              <span className="px-1.5 py-0.2 rounded bg-slate-950/30 text-slate-950 font-mono text-[10px] font-extrabold">
                 {savedProjectsCount}
               </span>
             )}
           </button>
 
-          {/* Generative Mesh & Quality Tool Button */}
-          {onOpenMeshGenerator && (
-            <button
-              onClick={onOpenMeshGenerator}
-              className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-bold bg-sky-500/10 hover:bg-sky-500/20 text-sky-300 border border-sky-500/30 transition-all active:scale-95 shadow-sm"
-              title="مولد الشبكات وتدقيق جودة التعامد الهندسية (MeshGenerativeTool)"
-            >
-              <Grid3X3 className="w-3.5 h-3.5 text-sky-400" />
-              <span className="hidden md:inline">مولد الشبكات</span>
-            </button>
-          )}
-
-          {/* Standard Materials Database Button */}
-          {onOpenMaterialsModal && (
-            <button
-              onClick={onOpenMaterialsModal}
-              className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-bold bg-amber-500/10 hover:bg-amber-500/20 text-amber-300 border border-amber-500/30 transition-all active:scale-95 shadow-sm"
-              title="مكتبة المواد الهندسية القياسية المعيارية"
-            >
-              <Database className="w-3.5 h-3.5 text-amber-400" />
-              <span className="hidden lg:inline">مكتبة المواد</span>
-            </button>
-          )}
-
-          {/* Parametric Sweep Analysis Button */}
-          {onOpenParametricSweep && (
-            <button
-              onClick={onOpenParametricSweep}
-              className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-bold bg-indigo-500/10 hover:bg-indigo-500/20 text-indigo-300 border border-indigo-500/30 transition-all active:scale-95 shadow-sm"
-              title="أداة مسح المتغيرات وسحط الاستجابة الحسابي"
-            >
-              <Sliders className="w-3.5 h-3.5 text-indigo-400" />
-              <span className="hidden lg:inline">مسح المتغيرات</span>
-            </button>
-          )}
-
-          {/* Technical Audit & 100% Completeness Report Button */}
-          {onOpenAuditModal && (
-            <button
-              onClick={onOpenAuditModal}
-              className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-bold bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 transition-all active:scale-95 shadow-sm"
-              title="وثيقة التدقيق الفني الشاملة وشهادة اكتمال المنصة 100% (جاهز للتنزيل والمشاركة)"
-            >
-              <ShieldCheck className="w-3.5 h-3.5 text-emerald-400" />
-              <span className="hidden md:inline">وثيقة التدقيق:</span>
-              <span className="font-mono text-emerald-400 font-bold">100% مكتمل</span>
-            </button>
-          )}
-
-          {/* New Clean Session / Format & Reset Button */}
-          <button
-            onClick={onResetToCleanWorkspace}
-            className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-bold bg-rose-500/15 hover:bg-rose-500/25 text-rose-300 border border-rose-500/40 transition-all active:scale-95 shadow-sm"
-            title="تهيئة وفورمات المنصة: تصفير مساحة العمل والخروج من أي مشروع قديم"
-          >
-            <RotateCcw className="w-3.5 h-3.5 text-rose-400" />
-            <span>تهيئة وفورمات (Reset)</span>
-          </button>
-
-          {/* Engine & Key Pool Manager Button */}
-          <button
-            onClick={onOpenKeyPoolModal}
-            className={`flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-semibold border transition-all active:scale-95 ${
-              engineMode === 'pure_local'
-                ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-300 hover:bg-emerald-500/20'
-                : 'bg-slate-800/80 border-slate-700 text-slate-200 hover:bg-slate-800 hover:border-sky-500'
-            }`}
-            title="إدارة مجمّع المفاتيح والمحرك الرقمي لمنع التوقف"
-          >
-            {engineMode === 'pure_local' ? (
-              <>
-                <Shield className="w-4 h-4 text-emerald-400" />
-                <span className="hidden sm:inline">المحرك:</span>
-                <span className="text-emerald-400 font-mono">محلي 100%</span>
-              </>
-            ) : (
-              <>
-                <Key className="w-4 h-4 text-amber-400" />
-                <span className="hidden sm:inline">المفاتيح:</span>
-                <span className="text-amber-300 font-mono">
-                  {activeKeysCount > 0 ? `${activeKeysCount} متاح` : 'النظام'}
-                </span>
-              </>
-            )}
-          </button>
-
-          {/* 400GB Cloud Server & ANSYS Licensing Button */}
-          <button
-            onClick={onOpenCloudModal}
-            className={`flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-semibold border transition-all active:scale-95 ${
-              cloudConfig?.status === 'connected'
-                ? 'bg-sky-500/10 border-sky-500/30 text-sky-300 hover:bg-sky-500/20'
-                : 'bg-slate-800/80 border-slate-700 text-slate-200 hover:border-amber-500/60'
-            }`}
-            title="إعدادات الخادم السحابي (400GB) وخادم ترخيص أنسيز FlexNet"
-          >
-            <Cloud className={`w-4 h-4 ${cloudConfig?.status === 'connected' ? 'text-sky-400' : 'text-amber-400'}`} />
-            <span className="hidden md:inline">السحابة والترخيص:</span>
-            <span className="font-mono text-xs text-sky-300 font-bold">400GB</span>
-            {cloudConfig?.status === 'connected' && (
-              <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse hidden sm:inline-block" />
-            )}
-          </button>
-
-          {/* Universal Ingestion Button */}
+          {/* Universal File Upload Button */}
           <button
             onClick={onOpenUploadModal}
-            className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs sm:text-sm font-semibold bg-gradient-to-r from-sky-500 to-indigo-600 hover:from-sky-400 hover:to-indigo-500 text-white shadow-md shadow-sky-500/20 active:scale-95 transition-all"
+            className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-semibold bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 active:scale-95 transition-all"
+            title="رفع وتحليل ملفات CAD أو Mesh أو Scrips"
           >
-            <Upload className="w-4 h-4" />
-            <span>رفع وتحليل ملفات</span>
+            <Upload className="w-4 h-4 text-sky-400" />
+            <span className="hidden sm:inline">رفع وتحليل</span>
           </button>
 
-          {/* Senior Engineering Consultant Assistant Button */}
+          {/* Senior Engineering Consultant AI Assistant Button */}
           <button
             onClick={onOpenAssistant}
             disabled={!currentProject}
-            className="hidden sm:flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-medium bg-amber-500/10 hover:bg-amber-500/20 text-amber-300 border border-amber-500/30 transition-all active:scale-95 disabled:opacity-40 disabled:cursor-not-allowed"
+            className="hidden lg:flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-medium bg-amber-500/10 hover:bg-amber-500/20 text-amber-300 border border-amber-500/30 transition-all active:scale-95 disabled:opacity-40 disabled:cursor-not-allowed"
+            title="مستشار المحاكاة والتحليل الهيدروديناميكي"
           >
             <Sparkles className="w-4 h-4 text-amber-400" />
-            <span>مستشار المحاكاة</span>
+            <span>المستشار AI</span>
           </button>
 
           {/* Export Dropdown (Only when a project is active) */}

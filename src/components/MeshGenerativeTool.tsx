@@ -113,6 +113,22 @@ export const MeshGenerativeTool: React.FC<MeshGenerativeToolProps> = ({
   const [boundaryRefinement, setBoundaryRefinement] = useState<boolean>(true);
   const [perturbationNoise, setPerturbationNoise] = useState<number>(0.05); // slight realism perturbation
 
+  // Auto-sync geometry and algorithm with active project field
+  useEffect(() => {
+    if (currentProject) {
+      if (currentProject.field === 'FEA') {
+        setGeometry('notch_bracket');
+        setAlgorithm('delaunay_tri');
+      } else if (currentProject.field === 'Thermal') {
+        setGeometry('heat_sink_fins');
+        setAlgorithm('structured_quad');
+      } else {
+        setGeometry('airfoil_c_mesh');
+        setAlgorithm('hybrid_boundary_layer');
+      }
+    }
+  }, [currentProject?.id, currentProject?.field]);
+
   // ------------------------------------------
   // Visualization & Viewport State
   // ------------------------------------------
@@ -1239,6 +1255,24 @@ export const MeshGenerativeTool: React.FC<MeshGenerativeToolProps> = ({
           )}
         </div>
       </header>
+
+      {/* Active Project Coupling Banner */}
+      {currentProject && (
+        <div className="bg-slate-950/90 border-b border-sky-900/40 px-6 py-2 flex flex-wrap items-center justify-between gap-3 text-xs text-slate-300">
+          <div className="flex items-center gap-2">
+            <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+            <span className="text-slate-400 text-[11px]">النموذج الهندسي المقترن بالشبكة:</span>
+            <span className="font-bold text-sky-200">{currentProject.title}</span>
+            <span className="px-2 py-0.5 rounded text-[10px] bg-sky-500/10 text-sky-300 border border-sky-500/20 font-mono">
+              {currentProject.field}
+            </span>
+          </div>
+          <div className="flex items-center gap-4 text-[11px] text-slate-400">
+            <span>الشروط الحدية: <strong className="text-slate-200 font-mono">{currentProject.boundaryConditions?.length || 0}</strong></span>
+            <span>عناصر الشبكة المعتمدة: <strong className="text-emerald-300 font-mono">{currentProject.meshStudy?.meshLevels?.[2]?.elements?.toLocaleString() || '184,200'}</strong></span>
+          </div>
+        </div>
+      )}
 
       {/* Applied Feedback Toast */}
       {appliedFeedback && (

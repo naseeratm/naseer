@@ -47,7 +47,7 @@ export const NewProjectModal: React.FC<NewProjectModalProps> = ({
   const [author, setAuthor] = useState('');
   const [university, setUniversity] = useState('');
   const [supervisor, setSupervisor] = useState('');
-  const [field, setField] = useState<'CFD' | 'FEA' | 'Thermal' | 'Multiphysics'>('CFD');
+  const [field, setField] = useState<'CFD' | 'FEA' | 'Thermal' | 'Multiphysics' | 'FSI' | 'Supersonic' | 'PCM' | 'TopologyOptimization'>('CFD');
   const [softwareType, setSoftwareType] = useState('ANSYS Fluent 2024 R2');
   const [projectType, setProjectType] = useState<'Industrial Simulation' | 'R&D Verification' | 'Certified CAE Report' | 'Failure Analysis'>('R&D Verification');
   const [abstractAr, setAbstractAr] = useState('');
@@ -112,10 +112,10 @@ export const NewProjectModal: React.FC<NewProjectModalProps> = ({
   if (!isOpen) return null;
 
   // Preset switch helper for quick population based on field
-  const handleApplyFieldDefaults = (newField: 'CFD' | 'FEA' | 'Thermal' | 'Multiphysics') => {
+  const handleApplyFieldDefaults = (newField: 'CFD' | 'FEA' | 'Thermal' | 'Multiphysics' | 'FSI' | 'Supersonic' | 'PCM' | 'TopologyOptimization') => {
     setField(newField);
     if (newField === 'CFD') {
-      setSoftwareType('ANSYS Fluent 2024 R2');
+      setSoftwareType('OpenFOAM v2406 / Fluent SST k-omega');
       setMaterialName('الهواء الجوي القياسي (Standard Air)');
       setMaterialType('Fluid');
       setDensity('1.225 kg/m³');
@@ -130,7 +130,7 @@ export const NewProjectModal: React.FC<NewProjectModalProps> = ({
       setDependentVarName('Drag Force / Cl (قوة السحب أو معامل الرفع)');
       setDependentVarUnit('N');
     } else if (newField === 'FEA') {
-      setSoftwareType('ANSYS Mechanical 2024 R2 (APDL)');
+      setSoftwareType('CalculiX v2.21 / ANSYS APDL');
       setMaterialName('فولاذ إنشائي عالي المقاومة (Structural Steel ASTM A36)');
       setMaterialType('Solid');
       setDensity('7850 kg/m³');
@@ -146,23 +146,78 @@ export const NewProjectModal: React.FC<NewProjectModalProps> = ({
       setDependentVarName('Tip Deflection Uy (سهم التشوه الأقصى)');
       setDependentVarUnit('mm');
     } else if (newField === 'Thermal') {
-      setSoftwareType('ANSYS Fluent 3D Heat Transfer');
-      setMaterialName('سائل تبريد مائي أو مادة تغير طور (Phase Change / Coolant)');
-      setMaterialType('Fluid');
-      setDensity('998.2 kg/m³');
-      setThermalConductivity('0.60 W/(m·K)');
-      setSpecificHeat('4182 J/(kg·K)');
+      setSoftwareType('OpenFOAM chtMultiRegionSimpleFoam');
+      setMaterialName('سائل تبريد مائي أو مبدد ألمنيوم (Aluminum Heat Sink)');
+      setMaterialType('Solid');
+      setDensity('2700 kg/m³');
+      setThermalConductivity('205 W/(m·K)');
+      setSpecificHeat('900 J/(kg·K)');
       setBoundaryConditions([
-        { name: 'مدخل التدفق الحراري', type: 'Temperature Inlet', value: '345.0', unit: 'K (72 °C)', description: 'حرارة السائل عند المدخل' },
-        { name: 'فقد حراري بالحمل الطبيعي', type: 'Convection Wall', value: 'h = 10.0', unit: 'W/(m²·K)', description: 'تبادل حراري مع المحيط' },
+        { name: 'مدخل التدفق الحراري', type: 'Heat Flux Inlet', value: '2500.0', unit: 'W/m²', description: 'فيض حراري مطبق من المعالج' },
+        { name: 'فقد حراري بالحمل الطبيعي', type: 'Convection Wall', value: 'h = 25.0', unit: 'W/(m²·K)', description: 'تبادل حراري مع المحيط' },
       ]);
       setIndependentVarName('Time / Heat Flux (الزمن أو التدفق الحراري)');
       setIndependentVarUnit('min');
       setDependentVarName('Core Temperature (درجة حرارة القلب)');
       setDependentVarUnit('°C');
+    } else if (newField === 'FSI') {
+      setSoftwareType('OpenFOAM-CalculiX Coupled FSI Engine');
+      setMaterialName('مائع هواء + هيكل جنيح ألمنيوم (Aeroelastic Coupling)');
+      setMaterialType('Composite');
+      setBoundaryConditions([
+        { name: 'سطح التفاعل المائع-الهيكل (FSI Interface)', type: 'FSI Mesh Boundary', value: 'P_fluid -> Sigma_fea', unit: 'MPa', description: 'نقل أحمال الضغط كإجهادات وهزات ديناميكية' },
+        { name: 'مدخل سرعة التدفق العالي', type: 'Velocity Inlet', value: '180.0', unit: 'm/s', description: 'سرعة المائع المؤثرة على الهيكل' },
+      ]);
+      setIndependentVarName('Flow Speed V (سرعة التدفق)');
+      setIndependentVarUnit('m/s');
+      setDependentVarName('Aeroelastic Deflection (الانحراف الديناميكي)');
+      setDependentVarUnit('mm');
+    } else if (newField === 'Supersonic') {
+      setSoftwareType('OpenFOAM rhoCentralFoam (Mach > 1.0)');
+      setMaterialName('غاز هواء انضغاطي فائق السرعة (Ideal Compressible Air)');
+      setMaterialType('Fluid');
+      setDensity('1.225 kg/m³');
+      setBoundaryConditions([
+        { name: 'مدخل التدفق فائق الصوت', type: 'Supersonic Inlet', value: 'Mach = 2.4', unit: 'Mach', description: 'سرعة ماخ أعلى من 1.0 وتوليد الموجات الصادمة' },
+        { name: 'مخرج انضغاطي متزن', type: 'Supersonic Outlet', value: 'Extrapolated', unit: '-', description: 'مخرج موجات التمدد' },
+      ]);
+      setIndependentVarName('Mach Number M (رقم ماخ)');
+      setIndependentVarUnit('Mach');
+      setDependentVarName('Shockwave Angle Beta (زاوية الموجة الصادمة)');
+      setDependentVarUnit('deg');
+    } else if (newField === 'PCM') {
+      setSoftwareType('OpenFOAM pcmMeltingFoam (Enthalpy-Porosity)');
+      setMaterialName('مادة تغير الفاز شمع بارافين (Paraffin Wax RT-44)');
+      setMaterialType('Composite');
+      setDensity('820 kg/m³');
+      setThermalConductivity('0.21 W/(m·K)');
+      setSpecificHeat('2200 J/(kg·K)');
+      setBoundaryConditions([
+        { name: 'سطح تسخين المبدد الحراري', type: 'Isothermal Hot Surface', value: '75.0', unit: '°C', description: 'درجة حرارة المصدر أعلى من نقطة الانصهار' },
+        { name: 'كسر السائل المتولد (Liquid Fraction)', type: 'Phase Change Front', value: '0 -> 1.0', unit: '-', description: 'تتبع جبهة انصهار وتصلب الـ PCM' },
+      ]);
+      setIndependentVarName('Melting Time (زمن الانصهار)');
+      setIndependentVarUnit('min');
+      setDependentVarName('Liquid Fraction f_L (كسر الانصهار)');
+      setDependentVarUnit('%');
+    } else if (newField === 'TopologyOptimization') {
+      setSoftwareType('CalculiX Topological Density Optimization');
+      setMaterialName('سبائك تيتانيوم Ti-6Al-4V خفيفة الوزن');
+      setMaterialType('Solid');
+      setDensity('4430 kg/m³');
+      setElasticModulus('114 GPa');
+      setYieldStrength('880 MPa');
+      setBoundaryConditions([
+        { name: 'تثبيت مسامير التعليق', type: 'Fixed Holes Support', value: 'Ux=Uy=Uz=0', unit: '-', description: 'تثبيت نقاط الحفاظ على الهيكل' },
+        { name: 'حمولة التصميم الهيكلي', type: 'Design Surface Load', value: '35.0', unit: 'kN', description: 'قوة قص وتجميع الحمولات الإنشائية' },
+      ]);
+      setIndependentVarName('Volume Reduction % (نسبة تخفيض الوزن)');
+      setIndependentVarUnit('%');
+      setDependentVarName('Structural Compliance C (طاقتي التشويه والأمان)');
+      setDependentVarUnit('J');
     } else {
-      setSoftwareType('ANSYS Multiphysics Coupled (FSI)');
-      setMaterialName('مائع هواء + هيكل ألمنيوم مركب (Coupled Fluid-Solid)');
+      setSoftwareType('OpenFOAM Multiphysics Engine');
+      setMaterialName('مائع هواء + هيكل مركب (Coupled System)');
       setMaterialType('Composite');
     }
   };
@@ -493,8 +548,12 @@ export const NewProjectModal: React.FC<NewProjectModalProps> = ({
                   {[
                     { id: 'CFD', label: 'ميكانيكا الموائع (CFD)', desc: 'تدفقات، أجنحة، قنوات، ومضخات', icon: <Wind className="w-5 h-5 text-sky-400" /> },
                     { id: 'FEA', label: 'التحليل الإنشائي (FEA)', desc: 'إجهادات، تشوهات، وجوائز كابولية', icon: <Cpu className="w-5 h-5 text-emerald-400" /> },
-                    { id: 'Thermal', label: 'انتقال الحرارة (Thermal)', desc: 'مبادلات، مواد متغيرة الطور، وحمل', icon: <Flame className="w-5 h-5 text-amber-400" /> },
-                    { id: 'Multiphysics', label: 'متعدد المجالات (FSI)', desc: 'تفاعل مائع-هيكل ونظم حرارية', icon: <Layers className="w-5 h-5 text-purple-400" /> },
+                    { id: 'Thermal', label: 'انتقال الحرارة (Thermal)', desc: 'مبادلات، مبددات، وحمل قسري', icon: <Flame className="w-5 h-5 text-amber-400" /> },
+                    { id: 'Multiphysics', label: 'متعدد المجالات (Multiphysics)', desc: 'أنظمة متكاملة مائع وحرارة', icon: <Layers className="w-5 h-5 text-purple-400" /> },
+                    { id: 'FSI', label: 'تفاعل مائع-هيكل (FSI)', desc: 'اهتزازات واقتران مرن هيدروديناميكي', icon: <Sliders className="w-5 h-5 text-indigo-400" /> },
+                    { id: 'Supersonic', label: 'فائق الصوت (Supersonic)', desc: 'تدفقات انضغاطية وموجات صادمة (Mach>1.0)', icon: <Sparkles className="w-5 h-5 text-rose-400" /> },
+                    { id: 'PCM', label: 'تغير الفاز الحراري (PCM)', desc: 'تخزين الطاقة والانصهار (Enthalpy-Porosity)', icon: <Flame className="w-5 h-5 text-teal-400" /> },
+                    { id: 'TopologyOptimization', label: 'التحسين الهيكلي (Topology Opt)', desc: 'تخفيض الوزن والتصميم التوليدي', icon: <Grid3X3 className="w-5 h-5 text-amber-300" /> },
                   ].map((f) => (
                     <div
                       key={f.id}

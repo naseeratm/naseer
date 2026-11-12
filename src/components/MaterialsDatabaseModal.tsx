@@ -135,7 +135,7 @@ export const PRESET_MATERIALS_LIBRARY: MaterialLibraryItem[] = [
     nameEn: 'RT50 Organic PCM + 3 vol.% Al2O3 Nano-Enhanced',
     category: 'Thermal & Phase Change',
     description: 'مركب تخزين حرارة كامنة عالي الأداء مع تعزيز التوصيلية بجسيمات نانو الألومينا.',
-    applications: 'وحدات LHTES، تخزين الطاقة الشمسية، التبريد السلبي للإلكترونيات',
+    applications: 'تخزين الطاقة الحرارية، المبادل الحراري، التبريد السلبي للإلكترونيات',
     properties: {
       name: 'مادة RT50 PCM + 3 vol.% Al2O3 NePCM',
       phaseOrType: 'Composite',

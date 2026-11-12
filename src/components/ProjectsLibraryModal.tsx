@@ -67,8 +67,9 @@ export const ProjectsLibraryModal: React.FC<ProjectsLibraryModalProps> = ({
 
     const matchesField =
       selectedField === 'all' ||
-      p.field.toLowerCase() === selectedField.toLowerCase() ||
-      (selectedField === 'custom' && p.isCustom);
+      (selectedField === 'benchmarks' && !p.isCustom) ||
+      (selectedField === 'custom' && p.isCustom) ||
+      p.field.toLowerCase() === selectedField.toLowerCase();
 
     return matchesSearch && matchesField;
   });
@@ -91,7 +92,7 @@ export const ProjectsLibraryModal: React.FC<ProjectsLibraryModalProps> = ({
       case 'Thermal':
         return (
           <span className="px-2.5 py-0.5 rounded-full text-xs font-bold font-mono bg-amber-500/15 text-amber-300 border border-amber-500/30">
-            Thermal · LHTES Phase Change
+            Thermal · Heat Transfer & Natural Convection
           </span>
         );
       case 'CFD':
@@ -158,20 +159,20 @@ export const ProjectsLibraryModal: React.FC<ProjectsLibraryModalProps> = ({
         {/* Modal Header */}
         <div className="px-6 py-5 border-b border-slate-800 flex items-center justify-between bg-slate-900/90 gap-4">
           <div className="flex items-center gap-3.5">
-            <div className="w-11 h-11 rounded-2xl bg-sky-500/10 border border-sky-500/20 text-sky-400 flex items-center justify-center shadow-lg shadow-sky-950/50">
+            <div className="w-11 h-11 rounded-2xl bg-amber-500/10 border border-amber-500/30 text-amber-400 flex items-center justify-center shadow-lg shadow-amber-950/50">
               <FolderOpen className="w-6 h-6" />
             </div>
             <div>
               <div className="flex items-center gap-2">
                 <h2 className="text-lg sm:text-xl font-bold text-slate-100">
-                  مكتبة واستدعاء المشاريع الهندسية (CAE Projects Hub)
+                  مكتبة البنشماركات القياسية المعتمدة (ASME Validation Benchmarks Hub)
                 </h2>
-                <span className="px-2 py-0.5 rounded text-[11px] font-bold font-mono bg-slate-800 text-sky-400 border border-slate-700">
-                  {projects.length} مشاريع متاحة
+                <span className="px-2 py-0.5 rounded text-[11px] font-bold font-mono bg-amber-500/20 text-amber-300 border border-amber-500/40">
+                  {projects.filter(p => !p.isCustom).length} بنشماركات عالمية معتمدة
                 </span>
               </div>
               <p className="text-xs text-slate-400 mt-0.5">
-                استدعاء وتعديل أي مشروع سابق أو قالب قياسي، مع إمكانية التصدير والاستيراد وتصفير المنصة للمزامنة النظيفة مع GitHub
+                استدعاء واختبار البنشماركات الدولية المعايرة وفق معايير ASME V&V 20 (NASA Airfoil, Timoshenko Beam, de Vahl Davis Cavity)
               </p>
             </div>
           </div>
@@ -194,8 +195,8 @@ export const ProjectsLibraryModal: React.FC<ProjectsLibraryModalProps> = ({
               type="text"
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
-              placeholder="ابحث بالاسم أو الباحث أو الجامعة أو المجال..."
-              className="w-full pr-10 pl-4 py-2 rounded-xl bg-slate-900 border border-slate-700 text-slate-200 placeholder-slate-500 text-xs focus:outline-none focus:border-sky-500 transition-colors"
+              placeholder="ابحث بالاسم، NASA، Timoshenko، البنشمارك، الباحث..."
+              className="w-full pr-10 pl-4 py-2 rounded-xl bg-slate-900 border border-slate-700 text-slate-200 placeholder-slate-500 text-xs focus:outline-none focus:border-amber-500 transition-colors"
             />
           </div>
 
@@ -203,6 +204,7 @@ export const ProjectsLibraryModal: React.FC<ProjectsLibraryModalProps> = ({
           <div className="flex items-center gap-1.5 flex-wrap">
             {[
               { id: 'all', label: 'كافة المشاريع' },
+              { id: 'benchmarks', label: '⭐ البنشماركات المعتمدة (ASME V&V 20)' },
               { id: 'custom', label: 'المشاريع المخصصة' },
               { id: 'CFD', label: 'ميكانيكا الموائع' },
               { id: 'FEA', label: 'التحليل الإنشائي' },
@@ -213,7 +215,7 @@ export const ProjectsLibraryModal: React.FC<ProjectsLibraryModalProps> = ({
                 onClick={() => setSelectedField(f.id)}
                 className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all ${
                   selectedField === f.id
-                    ? 'bg-sky-600 text-white shadow-sm'
+                    ? 'bg-amber-600 text-white shadow-sm font-bold'
                     : 'bg-slate-800/80 hover:bg-slate-750 text-slate-400 hover:text-slate-200 border border-slate-700'
                 }`}
               >
@@ -328,9 +330,13 @@ export const ProjectsLibraryModal: React.FC<ProjectsLibraryModalProps> = ({
                         {getDomainIcon(proj.field)}
                       </div>
                       {getDomainBadge(proj.field)}
-                      {proj.isCustom && (
+                      {proj.isCustom ? (
                         <span className="px-2 py-0.5 rounded text-[10px] font-mono bg-purple-500/20 text-purple-300 border border-purple-500/30">
                           مشروع مخصص (Saved)
+                        </span>
+                      ) : (
+                        <span className="px-2.5 py-0.5 rounded-full text-xs font-bold font-mono bg-amber-500/20 text-amber-300 border border-amber-500/40 flex items-center gap-1">
+                          ⭐ بنشمارك عالمي معتمد (ASME V&V 20 Benchmark)
                         </span>
                       )}
                     </div>
@@ -382,9 +388,9 @@ export const ProjectsLibraryModal: React.FC<ProjectsLibraryModalProps> = ({
                   {/* Summary / Physical Specs snippet */}
                   {proj.cadSpecs && (
                     <div className="text-[11px] text-slate-400 flex flex-wrap gap-x-4 gap-y-1 border-t border-slate-800/60 pt-2">
-                      <span>الأبعاد: <strong className="text-slate-300">{proj.cadSpecs.shell}</strong></span>
-                      <span>الملف: <strong className="text-slate-300">{proj.cadSpecs.coil}</strong></span>
-                      <span>الزعانف: <strong className="text-emerald-300">{proj.cadSpecs.fins}</strong></span>
+                      {proj.cadSpecs.shell && <span>الهندسة: <strong className="text-slate-300">{proj.cadSpecs.shell}</strong></span>}
+                      {proj.cadSpecs.coil && <span>الحدود: <strong className="text-slate-300">{proj.cadSpecs.coil}</strong></span>}
+                      {proj.cadSpecs.fins && <span>التجهيزات: <strong className="text-emerald-300">{proj.cadSpecs.fins}</strong></span>}
                     </div>
                   )}
 

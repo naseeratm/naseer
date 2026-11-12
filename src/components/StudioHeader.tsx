@@ -8,6 +8,7 @@ export interface HeaderMenuItem {
   icon?: React.ReactNode;
   onClick: () => void;
   disabled?: boolean;
+  title?: string;
 }
 
 export interface HeaderMenuGroup {
@@ -77,8 +78,9 @@ export const StudioHeader: React.FC<StudioHeaderProps> = ({
         <span className="flex h-6 w-6 items-center justify-center rounded bg-gradient-to-br from-sky-500 to-indigo-600 shadow shadow-sky-500/30">
           <Box className="h-3.5 w-3.5 text-white" />
         </span>
-        <span className="text-[13px] font-semibold tracking-wide text-slate-100">
+        <span className="text-[13px] font-semibold tracking-wide text-slate-100 flex items-center gap-2">
           NASEER <span className="font-normal text-slate-400">Universal CAE Studio</span>
+          <span className="hidden xl:inline-block px-1.5 py-0.5 text-[9.5px] font-mono tracking-wider text-sky-300 bg-sky-950/70 border border-sky-800/60 rounded">Simulation & Consultancy Hub</span>
         </span>
       </button>
 
@@ -111,14 +113,22 @@ export const StudioHeader: React.FC<StudioHeaderProps> = ({
                     key={item.id}
                     role="menuitem"
                     disabled={item.disabled}
+                    title={item.title || item.label}
                     onClick={() => {
                       setMenuOpen(false);
                       item.onClick();
                     }}
-                    className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-[12px] text-slate-300 hover:bg-slate-800 hover:text-white disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent"
+                    className="flex w-full items-center justify-between gap-2 px-3 py-1.5 text-left text-[12px] text-slate-300 hover:bg-slate-800 hover:text-white disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent"
                   >
-                    <span className="flex h-4 w-4 items-center justify-center text-slate-400">{item.icon}</span>
-                    {item.label}
+                    <span className="flex items-center gap-2 truncate">
+                      <span className="flex h-4 w-4 shrink-0 items-center justify-center text-slate-400">{item.icon}</span>
+                      <span className="truncate">{item.label}</span>
+                    </span>
+                    {item.disabled && (
+                      <span className="text-[9.5px] font-mono text-slate-500 shrink-0 bg-slate-800/80 px-1 py-0.2 rounded border border-slate-700/50">
+                        يتطلب مشروعاً
+                      </span>
+                    )}
                   </button>
                 ))}
               </div>

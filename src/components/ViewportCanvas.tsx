@@ -1,11 +1,19 @@
 import React, { useState } from 'react';
-import { Interactive3DViewport, ShadingMode, ViewPreset } from './Interactive3DViewport';
+import {
+  Interactive3DViewport,
+  ShadingMode,
+  ViewPreset,
+  CadModelStats,
+  BoundaryMarker,
+} from './Interactive3DViewport';
 
 interface ViewportCanvasProps {
   title: string;
   subtitle?: string;
   showMeshOverlay?: boolean;
   field?: string;
+  onCadLoaded?: (stats: CadModelStats) => void;
+  onBoundaryAdded?: (marker: BoundaryMarker) => void;
   // When provided (e.g. a 2D scalar field result) it renders inside the viewport container
   children?: React.ReactNode;
   overlay?: React.ReactNode;
@@ -16,6 +24,8 @@ export const ViewportCanvas: React.FC<ViewportCanvasProps> = ({
   subtitle,
   showMeshOverlay = false,
   field,
+  onCadLoaded,
+  onBoundaryAdded,
   children,
   overlay,
 }) => {
@@ -42,6 +52,8 @@ export const ViewportCanvas: React.FC<ViewportCanvasProps> = ({
             showMeshOverlay={showMeshOverlay}
             activePreset={preset}
             onPresetChange={setPreset}
+            onCadLoaded={onCadLoaded}
+            onBoundaryAdded={onBoundaryAdded}
           />
         )}
       </div>
