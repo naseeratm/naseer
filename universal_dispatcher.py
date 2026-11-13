@@ -23,7 +23,7 @@ from pathlib import Path
 
 from celery import Celery
 
-from physics_solver import solve_simulation
+
 from cae_repository import JobRepository
 from backend.report_generator import generate_academic_report
 from backend.result_schema import canonicalize_result
@@ -984,16 +984,6 @@ def call_gmsh_mesher(data: Mapping[str, Any]) -> PhysicsResult:
         "input": dict(data),
     }
 
-
-def _thermal_fallback(data: Mapping[str, Any]) -> PhysicsResult:
-    thermal_data = dict(data)
-    if not str(thermal_data.get("simulation_type", "")).startswith("2D_"):
-        thermal_data["simulation_type"] = "2D_thermal_steady_state"
-    try:
-        return solve_simulation(thermal_data)
-    except NameError:
-        thermal_data["simulation_type"] = "2D_thermal_steady_state"
-        return solve_simulation(thermal_data)
 
 
 def execute_simulation(data: Dict[str, Any]) -> PhysicsResult:
