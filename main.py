@@ -40,7 +40,6 @@ class PhysicsType(str, Enum):
 class ExecutionMode(str, Enum):
     DIRECT = "direct"
     CELERY = "celery"
-
 class SimulationRequest(BaseModel):
     simulation_type: PhysicsType
     execution_mode: ExecutionMode = ExecutionMode.CELERY
@@ -52,8 +51,13 @@ class SimulationRequest(BaseModel):
     mesh_size: Optional[float] = Field(default=0.1, gt=0.0, description="Characteristic mesh size")
     width_x: Optional[float] = Field(default=1.0, description="Domain width in meters")
     height_y: Optional[float] = Field(default=1.0, description="Domain height in meters")
-    thermal_conductivity_k: Optional[float] = Field(default=400.0, description="Thermal conductivity in W/(m K); 400 is copper")
-    # Boundary temperatures are expressed in `temperature_unit` when sent; the defaults below are in Kelvin.
+    
+    # الخصائص الفيزيائية الحقيقية المطلوبة للمحركات (تمت إضافة الخصائص الميكانيكية)
+    thermal_conductivity_k: Optional[float] = Field(default=400.0, description="Thermal conductivity in W/(m K)")
+    young_modulus: Optional[float] = Field(default=210e9, description="Young's Modulus in Pa (e.g. 210e9 for Steel)")
+    poisson_ratio: Optional[float] = Field(default=0.3, description="Poisson's ratio (dimensionless)")
+    density: Optional[float] = Field(default=7850.0, description="Density in kg/m3")
+
     bc_left_temp: Optional[float] = Field(default=373.15, description="Left edge (x = 0) temperature")
     bc_right_temp: Optional[float] = Field(default=293.15, description="Right edge (x = width) temperature")
     bc_top_temp: Optional[float] = Field(default=293.15, description="Top edge (y = height) temperature")
@@ -61,7 +65,8 @@ class SimulationRequest(BaseModel):
 
     @field_validator(
         "velocity", "pressure", "displacement", "temperature", "width_x", "height_y",
-        "thermal_conductivity_k", "bc_left_temp", "bc_right_temp", "bc_top_temp", "bc_bottom_temp",
+        "thermal_conductivity_k", "young_modulus", "poisson_ratio", "density",
+        "bc_left_temp", "bc_right_temp", "bc_top_temp", "bc_bottom_temp",
     )
     @classmethod
     def validate_finite_numbers(cls, value: Optional[float], info: ValidationInfo) -> Optional[float]:
@@ -70,13 +75,12 @@ class SimulationRequest(BaseModel):
                 raise ValueError("Numeric fields must be finite numbers.")
             if info.field_name in ("width_x", "height_y") and value <= 0.0:
                 raise ValueError(f"{info.field_name} must be strictly greater than 0 (meters).")
-            if info.field_name == "thermal_conductivity_k" and value <= 0.0:
-                raise ValueError("thermal_conductivity_k must be strictly greater than 0 W/(m K).")
+            if info.field_name in ("thermal_conductivity_k", "young_modulus", "density") and value <= 0.0:
+                raise ValueError(f"{info.field_name} must be strictly greater than 0.")
         return value
 
     @model_validator(mode="after")
     def normalize_and_validate_physics(self) -> "SimulationRequest":
-        # تحويل الحرارة إلى كلفن والتأكد من النطاق الفيزيائي
         unit = self.temperature_unit
 
         def to_kelvin(value: float) -> float:
@@ -93,27 +97,24 @@ class SimulationRequest(BaseModel):
             self.temperature = t_kelvin
             self.temperature_unit = "K"
 
-        # Only values supplied by the client are in `temperature_unit`; untouched defaults are already Kelvin.
         for name in ("bc_left_temp", "bc_right_temp", "bc_top_temp", "bc_bottom_temp"):
             value = getattr(self, name)
             if value is None or name not in self.model_fields_set:
                 continue
             t_kelvin = to_kelvin(value)
             if t_kelvin < 50.0 or t_kelvin > 5000.0:
-                raise ValueError(f"{name} ({t_kelvin:.2f} K after normalization) outside physical bounds [50K, 5000K].")
+                raise ValueError(f"{name} ({t_kelvin:.2f} K after normalization) outside physical bounds.")
             setattr(self, name, t_kelvin)
         self.temperature_unit = "K"
 
-        # اشتراط ضغط موجب للجريان الانضغاطي
         if self.simulation_type == PhysicsType.CFD_COMPRESSIBLE:
             if self.pressure is None or self.pressure <= 0.0:
                 raise ValueError("Compressible CFD requires a strictly positive absolute pressure (Pa).")
         return self
 
     def to_solver_payload(self) -> dict:
-        """Dump the request and expose the settings in the nested shapes the solvers read."""
         payload = self.model_dump(mode="json")
-        # An explicit null from the client must not reach the solvers, so fall back to the declared defaults.
+        
         def or_default(name: str, default: float) -> float:
             value = getattr(self, name)
             return value if value is not None else default
@@ -122,26 +123,35 @@ class SimulationRequest(BaseModel):
         height_y = or_default("height_y", 1.0)
         mesh_size = or_default("mesh_size", 0.1)
         conductivity = or_default("thermal_conductivity_k", 400.0)
+        young = or_default("young_modulus", 210e9)
+        poisson = or_default("poisson_ratio", 0.3)
+        rho = or_default("density", 7850.0)
+
         payload.update({
             "width_x": width_x, "height_y": height_y, "mesh_size": mesh_size,
-            "thermal_conductivity_k": conductivity,
         })
         payload["domain"] = {"width_x": width_x, "height_y": height_y}
         payload["mesh_settings"] = {"mesh_size": mesh_size}
-        payload["material_properties"] = {"thermal_conductivity_k": conductivity}
+        
+        # تجميع الخصائص ليقرأها محرك CalculiX و OpenFOAM بشكل قياسي
+        payload["material_properties"] = {
+            "thermal_conductivity_k": conductivity,
+            "young_modulus": young,
+            "poisson_ratio": poisson,
+            "density": rho
+        }
+        payload["material"] = payload["material_properties"]
 
-        # The SciPy thermal solver works in degC, while the request is normalized to Kelvin.
-        def celsius(name: str, default_kelvin: float) -> dict:
+        def kelvin_to_celsius(name: str, default_kelvin: float) -> dict:
             return {"value": or_default(name, default_kelvin) - 273.15}
 
         payload["boundary_conditions"] = {
-            "left_edge_x0": celsius("bc_left_temp", 373.15),
-            "right_edge_x1": celsius("bc_right_temp", 293.15),
-            "top_edge_y1": celsius("bc_top_temp", 293.15),
-            "bottom_edge_y0": celsius("bc_bottom_temp", 293.15),
+            "left_edge_x0": kelvin_to_celsius("bc_left_temp", 373.15),
+            "right_edge_x1": kelvin_to_celsius("bc_right_temp", 293.15),
+            "top_edge_y1": kelvin_to_celsius("bc_top_temp", 293.15),
+            "bottom_edge_y0": kelvin_to_celsius("bc_bottom_temp", 293.15),
         }
         return payload
-
 # ---------------------------------------------------------
 # 2. Exception Handlers (إدارة الأخطاء وتوحيد الردود)
 # ---------------------------------------------------------
