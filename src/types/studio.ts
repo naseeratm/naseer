@@ -15,19 +15,24 @@ export type TemperatureUnit = 'K' | 'C' | 'F';
 
 export type ConsoleTab = 'logs' | 'convergence' | 'errors';
 
-// Numeric inputs are kept as strings so the user can type freely; they are validated on submit.
 export interface SimulationInputs {
   simulationType: SimulationTypeOption;
   executionMode: ExecutionModeOption;
+  // Common domain & mesh
+  meshSize: string;
+  widthX: string;
+  heightY: string;
+  // CFD & Thermal
   velocity: string;
   temperature: string;
   temperatureUnit: TemperatureUnit;
   pressure: string;
+  // Structural (FEA)
   displacement: string;
-  meshSize: string;
-  widthX: string;
-  heightY: string;
-  // Thermal_Transient only. Boundary temperatures are in `temperatureUnit`.
+  youngModulus: string;
+  poissonRatio: string;
+  density: string;
+  // Thermal_Transient
   thermalConductivity: string;
   bcLeft: string;
   bcRight: string;
@@ -42,22 +47,26 @@ export interface ConsoleIssue {
   message: string;
 }
 
+// جميع الحقول الفيزيائية تبدأ فارغة تماماً؛ لا يُسمح بأي أرقام افتراضية وهمية
 export const DEFAULT_SIMULATION_INPUTS: SimulationInputs = {
   simulationType: 'CFD_Incompressible',
   executionMode: 'celery',
-  velocity: '1',
-  temperature: '293.15',
+  meshSize: '',
+  widthX: '',
+  heightY: '',
+  velocity: '',
+  temperature: '',
   temperatureUnit: 'K',
-  pressure: '101325',
-  displacement: '0.001',
-  meshSize: '0.1',
-  widthX: '1',
-  heightY: '1',
-  thermalConductivity: '400',
-  bcLeft: '373.15',
-  bcRight: '293.15',
-  bcTop: '293.15',
-  bcBottom: '293.15',
+  pressure: '',
+  displacement: '',
+  youngModulus: '',
+  poissonRatio: '',
+  density: '',
+  thermalConductivity: '',
+  bcLeft: '',
+  bcRight: '',
+  bcTop: '',
+  bcBottom: '',
 };
 
 export const SIMULATION_TYPE_OPTIONS: { value: SimulationTypeOption; label: string }[] = [
@@ -74,24 +83,6 @@ export function defaultSimulationTypeForField(field?: string): SimulationTypeOpt
   return 'Thermal_Transient';
 }
 
-export const NUMERIC_INPUT_LABELS: Record<'velocity' | 'temperature' | 'pressure' | 'displacement' | 'meshSize' | 'widthX' | 'heightY', string> = {
-  velocity: 'Velocity',
-  temperature: 'Temperature',
-  pressure: 'Pressure',
-  displacement: 'Displacement',
-  meshSize: 'Mesh size',
-  widthX: 'Domain width',
-  heightY: 'Domain height',
-};
-
-export const THERMAL_INPUT_LABELS: Record<'thermalConductivity' | 'bcLeft' | 'bcRight' | 'bcTop' | 'bcBottom', string> = {
-  thermalConductivity: 'Conductivity',
-  bcLeft: 'Left temperature',
-  bcRight: 'Right temperature',
-  bcTop: 'Top temperature',
-  bcBottom: 'Bottom temperature',
-};
-
 export const TEMPERATURE_FIELDS = ['temperature', 'bcLeft', 'bcRight', 'bcTop', 'bcBottom'] as const;
 
 export function isFiniteNumberString(value: string): boolean {
@@ -104,57 +95,96 @@ const toKelvin = (value: number, unit: TemperatureUnit): number =>
 const fromKelvin = (kelvin: number, unit: TemperatureUnit): number =>
   unit === 'C' ? kelvin - 273.15 : unit === 'F' ? ((kelvin - 273.15) * 9) / 5 + 32 : kelvin;
 
-// Re-expresses a typed temperature in another unit; unparsable text is left for the validator to report.
 export function convertTemperature(value: string, from: TemperatureUnit, to: TemperatureUnit): string {
   if (from === to || !isFiniteNumberString(value)) return value;
   return String(Number(fromKelvin(toKelvin(Number(value), from), to).toFixed(2)));
 }
 
-// Converts the form state into the FastAPI request body; throws a readable error for malformed numbers.
+// فحص الحقول الناقصة أو غير الصالحة حسب نوع الفيزياء المختارة لقفل زر التشغيل حتى اكتمالها
+export function getMissingSimulationInputs(inputs: SimulationInputs): string[] {
+  const missing: string[] = [];
+
+  if (!isFiniteNumberString(inputs.widthX) || Number(inputs.widthX) <= 0) missing.push('Domain width');
+  if (!isFiniteNumberString(inputs.heightY) || Number(inputs.heightY) <= 0) missing.push('Domain height');
+  if (!isFiniteNumberString(inputs.meshSize) || Number(inputs.meshSize) <= 0) missing.push('Mesh size');
+
+  if (inputs.simulationType === 'CFD_Incompressible' || inputs.simulationType === 'CFD_Compressible') {
+    if (!isFiniteNumberString(inputs.velocity)) missing.push('Velocity');
+    if (!isFiniteNumberString(inputs.temperature)) missing.push('Temperature');
+    if (
+      !isFiniteNumberString(inputs.pressure) ||
+      (inputs.simulationType === 'CFD_Compressible' && Number(inputs.pressure) <= 0)
+    ) {
+      missing.push('Pressure');
+    }
+  } else if (inputs.simulationType === 'Structural_Static' || inputs.simulationType === 'Structural_Dynamic') {
+    if (!isFiniteNumberString(inputs.displacement)) missing.push('Displacement');
+    if (!isFiniteNumberString(inputs.youngModulus) || Number(inputs.youngModulus) <= 0) missing.push("Young's Modulus");
+    if (
+      !isFiniteNumberString(inputs.poissonRatio) ||
+      Number(inputs.poissonRatio) < 0 ||
+      Number(inputs.poissonRatio) >= 0.5
+    ) {
+      missing.push("Poisson's Ratio");
+    }
+    if (!isFiniteNumberString(inputs.density) || Number(inputs.density) <= 0) missing.push('Density');
+  } else if (inputs.simulationType === 'Thermal_Transient') {
+    if (!isFiniteNumberString(inputs.temperature)) missing.push('Initial Temperature');
+    if (!isFiniteNumberString(inputs.thermalConductivity) || Number(inputs.thermalConductivity) <= 0) {
+      missing.push('Conductivity');
+    }
+    if (!isFiniteNumberString(inputs.bcLeft)) missing.push('Left Temp');
+    if (!isFiniteNumberString(inputs.bcRight)) missing.push('Right Temp');
+    if (!isFiniteNumberString(inputs.bcTop)) missing.push('Top Temp');
+    if (!isFiniteNumberString(inputs.bcBottom)) missing.push('Bottom Temp');
+  }
+
+  return missing;
+}
+
+export function isSimulationReady(inputs: SimulationInputs): boolean {
+  return getMissingSimulationInputs(inputs).length === 0;
+}
+
 export function buildSimulationRequest(inputs: SimulationInputs): Record<string, unknown> {
-  const numeric = {} as Record<keyof typeof NUMERIC_INPUT_LABELS, number>;
-  (Object.keys(NUMERIC_INPUT_LABELS) as (keyof typeof NUMERIC_INPUT_LABELS)[]).forEach((key) => {
-    if (!isFiniteNumberString(inputs[key])) {
-      throw new Error(`[INVALID_INPUT] ${NUMERIC_INPUT_LABELS[key]} must be a finite number.`);
-    }
-    numeric[key] = Number(inputs[key]);
-  });
-  (['widthX', 'heightY'] as const).forEach((key) => {
-    if (numeric[key] <= 0) {
-      throw new Error(`[INVALID_INPUT] ${NUMERIC_INPUT_LABELS[key]} must be greater than 0.`);
-    }
-  });
+  const missing = getMissingSimulationInputs(inputs);
+  if (missing.length > 0) {
+    throw new Error(`[INVALID_INPUT] Missing or invalid parameters: ${missing.join(', ')}.`);
+  }
+
   const request: Record<string, unknown> = {
     execution_mode: inputs.executionMode,
     simulation_type: inputs.simulationType,
-    velocity: numeric.velocity,
-    temperature: numeric.temperature,
-    temperature_unit: inputs.temperatureUnit,
-    pressure: numeric.pressure,
-    displacement: numeric.displacement,
-    mesh_size: numeric.meshSize,
-    width_x: numeric.widthX,
-    height_y: numeric.heightY,
+    mesh_size: Number(inputs.meshSize),
+    width_x: Number(inputs.widthX),
+    height_y: Number(inputs.heightY),
   };
 
-  if (inputs.simulationType === 'Thermal_Transient') {
-    const thermal = {} as Record<keyof typeof THERMAL_INPUT_LABELS, number>;
-    (Object.keys(THERMAL_INPUT_LABELS) as (keyof typeof THERMAL_INPUT_LABELS)[]).forEach((key) => {
-      if (!isFiniteNumberString(inputs[key])) {
-        throw new Error(`[INVALID_INPUT] ${THERMAL_INPUT_LABELS[key]} must be a finite number.`);
-      }
-      thermal[key] = Number(inputs[key]);
-    });
-    if (thermal.thermalConductivity <= 0) {
-      throw new Error('[INVALID_INPUT] Conductivity must be greater than 0.');
-    }
+  if (inputs.simulationType === 'CFD_Incompressible' || inputs.simulationType === 'CFD_Compressible') {
     Object.assign(request, {
-      thermal_conductivity_k: thermal.thermalConductivity,
-      bc_left_temp: thermal.bcLeft,
-      bc_right_temp: thermal.bcRight,
-      bc_top_temp: thermal.bcTop,
-      bc_bottom_temp: thermal.bcBottom,
+      velocity: Number(inputs.velocity),
+      temperature: Number(inputs.temperature),
+      temperature_unit: inputs.temperatureUnit,
+      pressure: Number(inputs.pressure),
+    });
+  } else if (inputs.simulationType === 'Structural_Static' || inputs.simulationType === 'Structural_Dynamic') {
+    Object.assign(request, {
+      displacement: Number(inputs.displacement),
+      young_modulus: Number(inputs.youngModulus),
+      poisson_ratio: Number(inputs.poissonRatio),
+      density: Number(inputs.density),
+    });
+  } else if (inputs.simulationType === 'Thermal_Transient') {
+    Object.assign(request, {
+      temperature: Number(inputs.temperature),
+      temperature_unit: inputs.temperatureUnit,
+      thermal_conductivity_k: Number(inputs.thermalConductivity),
+      bc_left_temp: Number(inputs.bcLeft),
+      bc_right_temp: Number(inputs.bcRight),
+      bc_top_temp: Number(inputs.bcTop),
+      bc_bottom_temp: Number(inputs.bcBottom),
     });
   }
+
   return request;
 }

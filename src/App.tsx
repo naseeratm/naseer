@@ -54,6 +54,7 @@ import {
   WorkflowStep,
   buildSimulationRequest,
   defaultSimulationTypeForField,
+  getMissingSimulationInputs,
 } from './types/studio';
 import { exportToWordDocument, exportToCSV, exportToLatex, exportToJournalHTML, hasRealSimulationRun } from './utils/exporter';
 import { generateLocalEngineeringProject } from './utils/physicsEngine';
@@ -767,7 +768,7 @@ export default function App() {
       label: 'Project',
       items: [
         { id: 'new', label: 'New Project…', icon: <PlusCircle className="h-3.5 w-3.5" />, onClick: () => setIsNewProjectModalOpen(true), title: 'إنشاء مشروع هندسي جديد ومخصص من الصفر' },
-        { id: 'library', label: `⭐ Validation Benchmarks (${allAvailableProjects.filter(p => !p.isCustom).length}) & Projects`, icon: <FolderOpen className="h-3.5 w-3.5 text-amber-400" />, onClick: () => setIsProjectsLibraryOpen(true), title: 'فتح البنشماركات القياسية المعايرة (NASA Airfoil, Timoshenko Beam, de Vahl Davis Thermal) أو المشاريع السابقة' },
+        { id: 'library', label: 'Projects Library', icon: <FolderOpen className="h-3.5 w-3.5 text-sky-400" />, onClick: () => setIsProjectsLibraryOpen(true), title: 'فتح مكتبة المشاريع الهندسية المحفوظة' },
         { id: 'import', label: 'Import Files…', icon: <Upload className="h-3.5 w-3.5" />, onClick: () => setIsUploadModalOpen(true), title: 'استيراد ورفع ملفات CAD أو شبيكة Mesh أو ملفات الحالات' },
         { id: 'save', label: 'Save to Library', icon: <Save className="h-3.5 w-3.5" />, onClick: handleSaveCurrentProject, disabled: !hasProject, title: hasProject ? 'حفظ التعديلات في مكتبة المشاريع' : 'يتطلب فتح أو إنشاء مشروع أولاً ليتم حفظه' },
         {
@@ -843,8 +844,14 @@ export default function App() {
         projectTitle={currentProject?.title}
         status={solverJobStatus}
         progress={solverProgress}
-        canRun={hasProject}
-        runDisabledReason="Open or create a project to run a simulation"
+        canRun={hasProject && getMissingSimulationInputs(simulationInputs).length === 0}
+        runDisabledReason={
+          !hasProject
+            ? 'Open or create a project to run a simulation'
+            : getMissingSimulationInputs(simulationInputs).length > 0
+            ? `Missing required inputs: ${getMissingSimulationInputs(simulationInputs).join(', ')}`
+            : undefined
+        }
         engineLabel={`Engine: ${engineMode === 'pure_local' ? 'Local' : engineMode === 'turbo_offline' ? 'Turbo offline' : 'Hybrid'} · ${apiKeys.filter((key) => key.status === 'active').length} keys`}
         menuGroups={menuGroups}
         onRun={() => { runSimulation().catch(() => {}); }}
