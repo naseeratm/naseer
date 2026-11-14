@@ -24,8 +24,7 @@ import {
   FileSpreadsheet,
   FileCode,
   Globe,
-  Shield,
-  Truck,
+  FlaskConical,
 } from 'lucide-react';
 import {
   ThesisProject,
@@ -57,7 +56,6 @@ import {
   getMissingSimulationInputs,
 } from './types/studio';
 import { exportToWordDocument, exportToCSV, exportToLatex, exportToJournalHTML, hasRealSimulationRun } from './utils/exporter';
-import { generateLocalEngineeringProject } from './utils/physicsEngine';
 import { CleanWorkspaceHome } from './components/CleanWorkspaceHome';
 import { OverviewTab } from './components/OverviewTab';
 import { MeshStudyTab } from './components/MeshStudyTab';
@@ -75,13 +73,11 @@ import { MeshGenerativeTool } from './components/MeshGenerativeTool';
 import { NewProjectModal } from './components/NewProjectModal';
 import { MaterialsDatabaseModal } from './components/MaterialsDatabaseModal';
 import { ParametricSweepTool } from './components/ParametricSweepTool';
-import { PipelineTrackerModal } from './components/PipelineTrackerModal';
+import { PhysicsSetupStudio, SweepCaseRow } from './components/PhysicsSetupStudio';
 import { normalizeSolverResponse } from './utils/normalizedSolverResults';
 import { defaultPresets } from './data/defaultPresets';
 
-
-
-export type TabType = 'report' | 'contours' | 'mesh' | 'validation' | 'tables' | 'overview';
+export type TabType = 'report' | 'contours' | 'mesh' | 'validation' | 'tables' | 'overview' | 'wizard';
 
 interface SimulationResults {
   temperature_matrix?: number[][];
@@ -105,8 +101,6 @@ class SimulationCancelledError extends Error {
   }
 }
 
-// Accepts only a genuine 2-D solver field: non-empty rows, a consistent column
-// count, and at least one finite value. Anything else keeps the CAD placeholder.
 const toRealTemperatureMatrix = (value: unknown): number[][] | undefined => {
   if (!Array.isArray(value) || value.length === 0) return undefined;
   if (!value.every((row): row is unknown[] => Array.isArray(row))) return undefined;
@@ -118,7 +112,7 @@ const toRealTemperatureMatrix = (value: unknown): number[][] | undefined => {
 };
 
 export default function App() {
- const [currentProject, setCurrentProject] = useState<ThesisProject | null>(null);
+  const [currentProject, setCurrentProject] = useState<ThesisProject | null>(null);
   const [activeTab, setActiveTab] = useState<TabType>('overview');
   const [isNewProjectModalOpen, setIsNewProjectModalOpen] = useState<boolean>(false);
   const [isMaterialsModalOpen, setIsMaterialsModalOpen] = useState<boolean>(false);
@@ -130,7 +124,6 @@ export default function App() {
   const [isCloudModalOpen, setIsCloudModalOpen] = useState<boolean>(false);
   const [isAuditModalOpen, setIsAuditModalOpen] = useState<boolean>(false);
   const [isMeshGeneratorOpen, setIsMeshGeneratorOpen] = useState<boolean>(false);
-  const [isPipelineTrackerOpen, setIsPipelineTrackerOpen] = useState<boolean>(false);
   const [saveToast, setSaveToast] = useState<string | null>(null);
   const [results, setResults] = useState<SimulationResults | null>(null);
   const [solverJobStatus, setSolverJobStatus] = useState<JobStatus>('idle');
@@ -145,13 +138,10 @@ export default function App() {
   const [consoleTab, setConsoleTab] = useState<ConsoleTab>('logs');
   const [consoleIssues, setConsoleIssues] = useState<ConsoleIssue[]>([]);
 
-  // Every run (and every cancel) bumps this id; a polling loop stops as soon as its own id is stale.
   const runIdRef = useRef(0);
   const issueIdRef = useRef(0);
   const isSolverRunning = solverJobStatus === 'queued' || solverJobStatus === 'running';
 
-  // Builds a readable message from the unified FastAPI error shapes:
-  // { success:false, code, error }, { detail: { code, error } } and { code:'INVALID_REQUEST', details:[...] }.
   const extractApiError = (body: any, fallback: string): string => {
     const source = body?.detail && typeof body.detail === 'object' && !Array.isArray(body.detail) ? body.detail : body;
     const code = typeof source?.code === 'string' ? source.code : undefined;
@@ -185,14 +175,12 @@ export default function App() {
       if (runIdRef.current !== runId) throw new SimulationCancelledError();
     };
 
-    // Validate the form before touching any state so malformed input never leaves a stale job status.
     const requestBody = buildSimulationRequest(simulationInputs);
     const simulationType = String(requestBody.simulation_type);
     const isDirect = requestBody.execution_mode === 'direct';
 
     setSolverJobStatus('queued');
     setSolverProgress(null);
-    // A new run must not present a previous job's results while it executes.
     setResults(null);
     setSolverResidualSeries([]);
     setCurrentProject(project => project ? { ...project, simulationRun: undefined, normalizedSolverResult: undefined } : project);
@@ -212,7 +200,6 @@ export default function App() {
 
     let job: any;
     if (isDirect) {
-      // Direct execution answers synchronously with { success, result } and has no task to poll.
       job = { status: 'COMPLETED', result: submitPayload?.result, logs: [] };
       latestLogs = [...latestLogs, `[${new Date().toISOString()}] Direct execution completed`];
       setSolverLogs(latestLogs);
@@ -243,7 +230,6 @@ export default function App() {
         }
         if (jobStatus === 'COMPLETED') break;
         if (jobStatus === 'FAILED' || jobStatus === 'CANCELLED') {
-          // Print the backend's exact error string to the terminal before surfacing it.
           const backendError = typeof job?.error === 'string' && job.error.trim() !== '' ? job.error : undefined;
           if (backendError && !latestLogs.includes(backendError)) {
             latestLogs = [...latestLogs, backendError];
@@ -292,6 +278,132 @@ export default function App() {
     return payload;
   };
 
+  // Apply computed nanofluid & flow regime directly to the active project & solver inputs
+  const handleApplyWizardCaseToProject = (row: SweepCaseRow) => {
+    if (!currentProject) return;
+    setSimulationInputs((prev) => ({
+      ...prev,
+      velocity: String(row.velocity),
+    }));
+    setCurrentProject((prev) =>
+      prev
+        ? {
+            ...prev,
+            material: {
+              name: row.fluidLabel,
+              phaseOrType: 'Fluid',
+              density: `${row.rhoEff} kg/m³`,
+              viscosity: `${row.muEff} Pa·s`,
+              thermalConductivity: `${row.kEff} W/(m·K)`,
+              specificHeat: `${row.cpEff} J/(kg·K)`,
+            },
+            solver: {
+              ...prev.solver,
+              scheme: `Second Order Upwind (${row.regime}, Re=${row.reynolds})`,
+            },
+            workbenchComponents: prev.workbenchComponents?.map((wb) =>
+              wb.type === 'Engineering Data'
+                ? { ...wb, status: 'Up-to-date', details: `${row.fluidLabel} (k=${row.kEff} W/m·K)` }
+                : wb
+            ),
+          }
+        : prev
+    );
+    setSaveToast(`تم تطبيق خواص (${row.fluidLabel}) وسرعة (${row.velocity} m/s) ونموذج (${row.regime}) على المشروع!`);
+    setTimeout(() => setSaveToast(null), 4000);
+  };
+
+  // Execute every queued parametric sweep row through the REAL FastAPI /api/run-simulation solver pipeline
+  const handleRunRealWizardBatch = async (
+    cases: SweepCaseRow[],
+    onRowUpdate: (id: string, patch: Partial<SweepCaseRow>) => void
+  ): Promise<void> => {
+    if (!currentProject) throw new Error('No active engineering project');
+    setConsoleTab('logs');
+    setSolverJobStatus('running');
+
+    for (let i = 0; i < cases.length; i++) {
+      const c = cases[i];
+      onRowUpdate(c.id, { status: 'Running' });
+      const baseReq = buildSimulationRequest(simulationInputs);
+      const batchReq = {
+        ...baseReq,
+        simulation_type: 'CFD',
+        velocity: c.velocity,
+        inlet_temperature: c.inletTempK,
+        heat_flux: c.heatFlux,
+        density: c.rhoEff,
+        viscosity: c.muEff,
+        thermal_conductivity: c.kEff,
+        specific_heat: c.cpEff,
+        hydraulic_diameter: (c.reynolds * c.muEff) / Math.max(1e-6, c.rhoEff * c.velocity),
+        turbulence_model: c.regime,
+        corrugated: true,
+      };
+
+      setSolverLogs((prev) => [
+        ...prev,
+        `[${new Date().toISOString()}] [Batch ${i + 1}/${cases.length}] Solving ${c.caseName} (U=${c.velocity} m/s, k=${c.kEff} W/m·K)...`,
+      ]);
+
+      try {
+        const res = await fetch('/api/run-simulation', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(batchReq),
+        });
+        const submitPayload = await readJson(res);
+        if (!res.ok || submitPayload?.success === false) {
+          throw new Error(extractApiError(submitPayload, `HTTP ${res.status}`));
+        }
+
+        const jobResult = submitPayload?.result ?? submitPayload?.data ?? submitPayload;
+        const solverData = jobResult?.solver_results ?? jobResult?.data?.solver_results ?? jobResult ?? {};
+        const tMax = solverData?.max_temperature ?? solverData?.temperature_max;
+        const nuVal = solverData?.nusselt_number;
+        const hVal = solverData?.heat_transfer_coeff_h;
+        const dpVal = solverData?.pressure_drop_pa;
+
+        const summaryParts: string[] = [];
+        if (typeof nuVal === 'number') summaryParts.push(`Nu=${nuVal.toFixed(1)}`);
+        if (typeof hVal === 'number') summaryParts.push(`h=${hVal.toFixed(0)} W/m²K`);
+        if (typeof tMax === 'number') summaryParts.push(`Tmax=${tMax.toFixed(2)} K`);
+        if (typeof dpVal === 'number') summaryParts.push(`ΔP=${dpVal.toFixed(1)} Pa`);
+        const summaryText = summaryParts.length > 0 ? summaryParts.join(' · ') : 'Solved (OK)';
+
+        onRowUpdate(c.id, {
+  status: 'Completed',
+  resultSummary: summaryText,
+  nuResult: typeof nuVal === 'number' ? nuVal : undefined,
+  deltaPResult: typeof dpVal === 'number' ? dpVal : undefined,
+  hResult: typeof hVal === 'number' ? hVal : undefined,
+  tMaxResult: typeof tMax === 'number' ? tMax : undefined,
+});
+        setSolverLogs((prev) => [
+          ...prev,
+          `[${new Date().toISOString()}] ✓ [Batch ${i + 1}/${cases.length}] ${c.caseName} -> ${summaryText}`,
+        ]);
+
+        setResults({
+          ...jobResult,
+          ...solverData,
+          temperature_matrix: toRealTemperatureMatrix(solverData?.temperature_matrix),
+        });
+      } catch (err: any) {
+        const msg = err?.message || 'Failed';
+        onRowUpdate(c.id, { status: 'Error', resultSummary: msg });
+        setSolverLogs((prev) => [
+          ...prev,
+          `[${new Date().toISOString()}] ✗ [Batch ${i + 1}/${cases.length}] ${c.caseName} ERROR: ${msg}`,
+        ]);
+        recordIssue(`${c.caseName}: ${msg}`);
+      }
+    }
+
+    setSolverJobStatus('completed');
+    setSolverProgress(100);
+  };
+
   const recordIssue = (message: string, severity: ConsoleIssue['severity'] = 'error') => {
     issueIdRef.current += 1;
     const issue: ConsoleIssue = {
@@ -303,7 +415,6 @@ export default function App() {
     setConsoleIssues(previous => [...previous, issue]);
   };
 
-  // Shared entry point for the header button and the legacy solver workbench: tracks UI state and re-throws.
   const runSimulation = async (): Promise<unknown> => {
     if (isSolverRunning) return undefined;
     setConsoleTab('logs');
@@ -330,7 +441,6 @@ export default function App() {
     recordIssue('Simulation cancelled by user. The backend job may still finish; its result is ignored.', 'warning');
   };
 
-  // Run a real mesh-independence study: the backend solves on three meshes and returns the GCI of a key result.
   const runMeshStudy = async (keyResultId: string): Promise<void> => {
     if (!currentProject || meshStudyRunning) return;
     const studiedProjectId = currentProject.id;
@@ -354,7 +464,6 @@ export default function App() {
       }
       const study = payload.study;
       const meshStudyResult: MeshStudyResult = { ...study, recordedAt: new Date().toISOString() };
-      // The study may outlive the project it was started from; never attach it to a different one.
       setCurrentProject(project => (project && project.id === studiedProjectId ? { ...project, meshStudyResult } : project));
       const outcome = study.gci_fine_percent !== null
         ? `GCI (fine) = ${study.gci_fine_percent}%`
@@ -385,12 +494,9 @@ export default function App() {
     setCurrentProject(project => (project ? { ...project, validationProfile } : project));
   };
 
-  // Stop any active polling loop when the app unmounts.
   useEffect(() => () => { runIdRef.current += 1; }, []);
 
   useEffect(() => {
-    // Switching projects invalidates any in-flight polling loop and every solver
-    // artifact of the previous project; the viewport falls back to the CAD model.
     runIdRef.current += 1;
     setDocumentOpen(false);
     setActiveStep('geometry');
@@ -403,7 +509,6 @@ export default function App() {
     setSimulationInputs(previous => ({ ...previous, simulationType: defaultSimulationTypeForField(currentProject?.field) }));
   }, [currentProject?.id]);
 
-  // Cloud 400GB & ANSYS License Server Configuration
   const [cloudConfig, setCloudConfig] = useState<CloudServerConfig>(() => {
     try {
       const saved = localStorage.getItem('workbench_cloud_config');
@@ -439,8 +544,7 @@ export default function App() {
     }
   });
 
-  // Custom User Projects persistent in localStorage with integrity sanitation
- const [customProjects, setCustomProjects] = useState<ThesisProject[]>(() => {
+  const [customProjects, setCustomProjects] = useState<ThesisProject[]>(() => {
     try {
       const saved = localStorage.getItem('workbench_custom_projects');
       if (!saved) return [];
@@ -459,7 +563,6 @@ export default function App() {
     ...customProjects,
   ];
 
-  // Persistent API Keys Pool & Engine Mode
   const [apiKeys, setApiKeys] = useState<ApiKeyItem[]>(() => {
     try {
       const saved = localStorage.getItem('workbench_api_keys');
@@ -489,7 +592,6 @@ export default function App() {
   useEffect(() => {
     try {
       localStorage.setItem('workbench_cloud_config', JSON.stringify(cloudConfig));
-      // Sync with server backend
       fetch('/api/cloud/config', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -499,7 +601,6 @@ export default function App() {
       console.error('Error saving cloud config:', e);
     }
   }, [cloudConfig]);
-
 
   const handleStartProject = (newProject: ThesisProject) => {
     setCurrentProject(newProject);
@@ -527,14 +628,10 @@ export default function App() {
     } catch (e) {
       console.error('Error clearing storage:', e);
     }
-    
-    // Clear state
     setCustomProjects([]);
     setCurrentProject(null);
     setApiKeys([]);
     setEngineMode('hybrid');
-    
-    // Reload to ensure all components reset to pristine state
     window.location.reload();
   };
 
@@ -678,9 +775,17 @@ export default function App() {
         ? 'Velocity Inlet'
         : marker.type === 'Outlet'
         ? 'Pressure Outlet'
+        : marker.type === 'HeatSource'
+        ? 'Heat Flux Wall'
         : 'No-slip Wall';
-    const bcValue = marker.type === 'Inlet' ? simulationInputs.velocity : '0.0';
-    const bcUnit = marker.type === 'Inlet' ? 'm/s' : 'Pa (gauge)';
+    const bcValue =
+      marker.value !== undefined
+        ? String(marker.value)
+        : marker.type === 'Inlet'
+        ? simulationInputs.velocity
+        : '0.0';
+    const bcUnit =
+      marker.unit || (marker.type === 'Inlet' ? 'm/s' : marker.type === 'HeatSource' ? 'W/m²' : 'Pa (gauge)');
     const newBc: BoundaryCondition = {
       name: `${marker.type} Face [${marker.point.map((p) => p.toFixed(1)).join(', ')}]`,
       type: bcType,
@@ -697,7 +802,7 @@ export default function App() {
     setTimeout(() => setSaveToast(null), 3500);
   };
 
-  const openDocument = (doc: PanelDocument) => {
+  const openDocument = (doc: PanelDocument | 'wizard') => {
     setActiveTab(doc);
     setDocumentOpen(true);
   };
@@ -721,15 +826,9 @@ export default function App() {
     setDocumentOpen(false);
   };
 
-  const showToast = (message: string, duration = 3000) => {
-    setSaveToast(message);
-    setTimeout(() => setSaveToast(null), duration);
-  };
-
   const hasProject = currentProject !== null;
   const hasCompletedRun = hasRealSimulationRun(currentProject);
 
-  // Reports contain real solver output only; failures surface in the console instead of a silent no-op.
   const runExport = async (action: () => unknown) => {
     try {
       await action();
@@ -738,6 +837,7 @@ export default function App() {
       setConsoleTab('errors');
     }
   };
+
   const stepActions: Record<WorkflowStep, TreeAction[]> = {
     geometry: [
       { id: 'import', label: 'Import Model', icon: <Upload className="h-3.5 w-3.5" />, onClick: () => setIsUploadModalOpen(true) },
@@ -747,6 +847,7 @@ export default function App() {
       { id: 'study', label: 'Mesh Study (GCI)', icon: <Layers className="h-3.5 w-3.5" />, onClick: () => openDocument('mesh') },
     ],
     physics: [
+      { id: 'wizard', label: 'Duct & Nanofluid Wizard', icon: <FlaskConical className="h-3.5 w-3.5 text-emerald-400" />, onClick: () => openDocument('wizard') },
       { id: 'setup', label: 'Solver Setup', icon: <Cpu className="h-3.5 w-3.5" />, onClick: () => openDocument('overview') },
       { id: 'materials', label: 'Materials Database', icon: <Database className="h-3.5 w-3.5" />, onClick: () => setIsMaterialsModalOpen(true) },
       { id: 'sweep', label: 'Parametric Sweep', icon: <Sliders className="h-3.5 w-3.5" />, onClick: () => setIsParametricSweepOpen(true) },
@@ -785,8 +886,8 @@ export default function App() {
       id: 'tools',
       label: 'Tools',
       items: [
+        { id: 'wizard', label: 'Duct & Nanofluid Wizard', icon: <FlaskConical className="h-3.5 w-3.5 text-emerald-400" />, onClick: () => openDocument('wizard'), disabled: !hasProject, title: 'معالج قنوات التبريد والموائع النانوية والدراسة البارامترية' },
         { id: 'mesh', label: 'Mesh Generator', icon: <Grid3X3 className="h-3.5 w-3.5" />, onClick: () => setIsMeshGeneratorOpen(true), title: 'مولد الشبيكات وتدقيق جودة التعامد' },
-         
         { id: 'materials', label: 'Materials Database', icon: <Database className="h-3.5 w-3.5" />, onClick: () => setIsMaterialsModalOpen(true), disabled: !hasProject, title: hasProject ? 'فتح مكتبة المواد المعيارية' : 'يتطلب فتح أو اختيار مشروع لتخصيص خواص المواد' },
         { id: 'sweep', label: 'Parametric Sweep', icon: <Sliders className="h-3.5 w-3.5" />, onClick: () => setIsParametricSweepOpen(true), disabled: !hasProject, title: hasProject ? 'مسح المتغيرات وحساب سطوح الاستجابة' : 'يتطلب فتح مشروع لتحديد متغيرات المسح' },
         { id: 'assistant', label: 'OmniSolve AI (Copilot)', icon: <Sparkles className="h-3.5 w-3.5" />, onClick: () => setIsAssistantOpen(true), disabled: !hasProject, title: hasProject ? 'فتح مستشار المحاكاة والتحليل الفيزيائي' : 'يتطلب فتح مشروع لمناقشة الحالة' },
@@ -809,13 +910,13 @@ export default function App() {
       items: [
         { id: 'keys', label: 'API Keys & Engine Mode', icon: <Key className="h-3.5 w-3.5" />, onClick: () => setIsKeyPoolModalOpen(true), title: 'إدارة مفاتيح وأنماط المحرك' },
         { id: 'cloud', label: 'Cloud Server & Licensing', icon: <Cloud className="h-3.5 w-3.5" />, onClick: () => setIsCloudModalOpen(true), title: 'إعدادات خوادم الحوسبة السحابية وعناقيد المعالجة' },
-        
       ],
     },
   ];
 
   const documentTitles: Record<TabType, string> = {
     overview: 'Solver Setup Workbench',
+    wizard: 'Internal Duct, Nanofluid & Parametric Wizard',
     contours: 'Contours & Vectors',
     mesh: 'Mesh Study (GCI)',
     validation: 'Validation (ASME V&V 20)',
@@ -831,7 +932,6 @@ export default function App() {
     post: 'Results',
   };
 
-  // The heatmap mounts only for a real solver-returned matrix; never a fallback.
   const realTemperatureMatrix = toRealTemperatureMatrix(results?.temperature_matrix);
 
   return (
@@ -882,7 +982,6 @@ export default function App() {
             onOpenMeshGenerator={() => setIsMeshGeneratorOpen(true)}
             onOpenMaterialsModal={() => setIsMaterialsModalOpen(true)}
             onOpenParametricSweep={() => setIsParametricSweepOpen(true)}
-            
             savedProjectsCount={allAvailableProjects.length}
             onResetWorkspace={() => {
               setCurrentProject(null);
@@ -920,6 +1019,41 @@ export default function App() {
                         </button>
                       </div>
                       <div dir="rtl" className="print-reset min-h-0 flex-1 overflow-y-auto p-5">
+                        {activeTab === 'wizard' && (
+  <PhysicsSetupStudio
+    projectName={currentProject.title}
+    boundaryConditions={currentProject.boundaryConditions}
+    onAutoFixBoundaries={() => {
+      setCurrentProject((prev) =>
+        prev
+          ? {
+              ...prev,
+              boundaryConditions: [
+                ...(prev.boundaryConditions || []),
+                {
+                  name: 'Duct Inlet',
+                  type: 'Velocity Inlet',
+                  value: simulationInputs.velocity || '0.25',
+                  unit: 'm/s',
+                  description: 'Uniform / Parabolic velocity inlet',
+                },
+                {
+                  name: 'Duct Outlet',
+                  type: 'Pressure Outlet',
+                  value: '0',
+                  unit: 'Pa (gauge)',
+                  description: 'Zero gauge pressure outlet',
+                },
+              ],
+            }
+          : prev
+      );
+    }}
+    onApplyToProject={handleApplyWizardCaseToProject}
+    onRunRealBatch={handleRunRealWizardBatch}
+  />
+)}
+
                         {activeTab === 'report' && (
                           <ThesisReportTab project={currentProject} onPrint={handlePrint} />
                         )}
@@ -1003,7 +1137,6 @@ export default function App() {
         />
       </div>
 
-      {/* Universal Multi-Format Ingestion Modal */}
       <ScriptUploaderModal
         isOpen={isUploadModalOpen}
         onClose={() => setIsUploadModalOpen(false)}
@@ -1012,7 +1145,6 @@ export default function App() {
         engineMode={engineMode}
       />
 
-      {/* Senior Simulation Consultant Drawer */}
       {currentProject && (
         <SupervisorAssistantDrawer
           isOpen={isAssistantOpen}
@@ -1023,7 +1155,6 @@ export default function App() {
         />
       )}
 
-      {/* Multi-Key Pool & Engine Console Modal */}
       <KeyPoolModal
         isOpen={isKeyPoolModalOpen}
         onClose={() => setIsKeyPoolModalOpen(false)}
@@ -1033,7 +1164,6 @@ export default function App() {
         onUpdateEngineMode={setEngineMode}
       />
 
-      {/* 400GB Cloud Server & OpenFOAM / CalculiX HPC Cluster Configuration Modal */}
       <CloudServerSettingsModal
         isOpen={isCloudModalOpen}
         onClose={() => setIsCloudModalOpen(false)}
@@ -1045,8 +1175,6 @@ export default function App() {
         }}
       />
 
-
-      {/* Dedicated Projects Hub & Recall Window */}
       <ProjectsLibraryModal
         isOpen={isProjectsLibraryOpen}
         onClose={() => setIsProjectsLibraryOpen(false)}
@@ -1063,7 +1191,6 @@ export default function App() {
         onImportProject={handleImportProject}
       />
 
-      {/* New Project Wizard Modal */}
       <NewProjectModal
         isOpen={isNewProjectModalOpen}
         onClose={() => setIsNewProjectModalOpen(false)}
@@ -1071,9 +1198,6 @@ export default function App() {
         onOpenMeshGenerator={() => setIsMeshGeneratorOpen(true)}
       />
 
-      
-
-      {/* Interactive Computational Mesh Generator & Orthogonal Quality Studio */}
       <MeshGenerativeTool
         isOpen={isMeshGeneratorOpen}
         onClose={() => setIsMeshGeneratorOpen(false)}
@@ -1081,7 +1205,6 @@ export default function App() {
         onApplyMeshToStudy={handleApplyMeshToStudy}
       />
 
-      {/* Standard Materials Database Modal */}
       <MaterialsDatabaseModal
         isOpen={isMaterialsModalOpen}
         onClose={() => setIsMaterialsModalOpen(false)}
@@ -1089,16 +1212,17 @@ export default function App() {
         currentMaterialName={currentProject?.material?.name}
       />
 
-      {/* Parametric Sweep & Response Surface Analysis Tool */}
       <ParametricSweepTool
         isOpen={isParametricSweepOpen}
         onClose={() => setIsParametricSweepOpen(false)}
         currentProject={currentProject}
       />
 
-     
+      <AuditReportModal
+        isOpen={isAuditModalOpen}
+        onClose={() => setIsAuditModalOpen(false)}
+      />
 
-      {/* Floating Save Toast Notification */}
       {saveToast && (
         <div className="fixed bottom-6 left-6 z-50 bg-emerald-950 border border-emerald-500/40 text-emerald-200 px-4 py-3 rounded-2xl shadow-2xl flex items-center gap-2.5 text-xs animate-in slide-in-from-bottom duration-300">
           <Check className="w-4 h-4 text-emerald-400 shrink-0" />
