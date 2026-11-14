@@ -3,35 +3,24 @@ import {
   Upload,
   Cpu,
   Sparkles,
-  Layers,
   FileCode,
   FileSpreadsheet,
   FileText,
   Image as ImageIcon,
   Shield,
-  ShieldCheck,
   CheckCircle2,
   Settings,
-  Zap,
-  ArrowLeft,
   X,
-  FileCheck,
-  Play,
-  RotateCcw,
-  Eye,
   Info,
   Loader2,
-  AlertCircle,
   Table as TableIcon,
   Package,
   FolderOpen,
   Cloud,
   Grid3X3,
   Plus,
-  Box,
   Database,
   Sliders,
-  Truck,
 } from 'lucide-react';
 import { ThesisProject, IngestedFileItem, ApiKeyItem, EngineMode } from '../types/thesis';
 import { generateLocalEngineeringProject } from '../utils/physicsEngine';
@@ -58,17 +47,13 @@ export const CleanWorkspaceHome: React.FC<CleanWorkspaceHomeProps> = ({
   onStartProject,
   apiKeys,
   engineMode,
-  onOpenKeyPool,
   onOpenNewProjectWizard,
   onOpenProjectsLibrary,
   onOpenCloudSettings,
-  onOpenAuditModal,
   onOpenMeshGenerator,
   onOpenMaterialsModal,
   onOpenParametricSweep,
-  onOpenPipelineTracker,
   savedProjectsCount = 0,
-  onResetWorkspace,
 }) => {
   const [filesList, setFilesList] = useState<IngestedFileItem[]>([]);
   const [isParsingFiles, setIsParsingFiles] = useState(false);
@@ -81,11 +66,10 @@ export const CleanWorkspaceHome: React.FC<CleanWorkspaceHomeProps> = ({
   const [activePreviewFile, setActivePreviewFile] = useState<IngestedFileItem | null>(null);
   const [isPasteScriptOpen, setIsPasteScriptOpen] = useState(false);
   const [rawScriptText, setRawScriptText] = useState('');
-  const [scriptName, setScriptName] = useState('ansys_simulation.mac');
+  const [scriptName, setScriptName] = useState('simulation_setup.mac');
 
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // Handle file uploads with deep extraction (Word, Excel, Code, PDF, Images, and ZIP/WBPZ Archives)
   const handleFilesSelected = async (files: FileList | File[] | null) => {
     if (!files || files.length === 0) return;
 
@@ -124,7 +108,6 @@ export const CleanWorkspaceHome: React.FC<CleanWorkspaceHomeProps> = ({
 
           parsedItems.push(item);
 
-          // Auto-detect project domain or title if detected from file or archive script
           if (parsed.detectedParameters && parsed.detectedParameters.length > 0) {
             const hasStress = parsed.detectedParameters.some((p) => p.key.includes('إجهاد') || p.key.includes('حمولة') || p.key.includes('APDL'));
             const hasVelocity = parsed.detectedParameters.some((p) => p.key.includes('سرعة') || p.key.includes('Fluent'));
@@ -169,19 +152,17 @@ export const CleanWorkspaceHome: React.FC<CleanWorkspaceHomeProps> = ({
     setIsProcessing(true);
     setErrorMessage(null);
 
-    // If forcing local or pure_local mode is selected
     if (forceLocal || engineMode === 'pure_local') {
-      setProcessingStatus('جاري تشغيل المحرك الفيزيائي الرقمي الحتمي لحل النموذج هندسياً...');
+      setProcessingStatus('جاري تجهيز مساحة العمل الهندسية وربط المعاملات المستخرجة...');
       setTimeout(() => {
         try {
-          // Aggregate all script and document contents from all files (including unpacked archive files)
           const allContent = filesList
             .map((f) => (f.content ? `=== [ملف: ${f.name}] (${f.category}) ===\n${f.content}` : ''))
             .filter(Boolean)
             .join('\n\n');
 
           const primaryFile = filesList.find((f) => !f.isArchive && f.content) || filesList[0];
-          const firstFileName = primaryFile?.name || (projectTitle ? `${projectTitle}.jou` : 'cae_simulation.jou');
+          const firstFileName = primaryFile?.name || (projectTitle ? `${projectTitle}.stl` : 'new_case.stl');
           const project = generateLocalEngineeringProject(
             firstFileName,
             directives,
@@ -194,20 +175,19 @@ export const CleanWorkspaceHome: React.FC<CleanWorkspaceHomeProps> = ({
           }
           project.attachedFilesCount = filesList.length;
           project.directivesApplied = directives;
-          project.extractedSummary = primaryFile?.summary || 'تم حل النموذج اعتماداً على شروطك الحدية والمعادلات الفيزيائية الحتمية.';
+          project.extractedSummary = primaryFile?.summary || 'تم تجهيز مساحة المشروع وبانتظار إدخال الشروط الحدية وتشغيل المحاكاة.';
 
           onStartProject(project);
           setIsProcessing(false);
         } catch (err: any) {
-          setErrorMessage('حدث خطأ أثناء تنفيذ الحسابات: ' + String(err));
+          setErrorMessage('حدث خطأ أثناء تجهيز المشروع: ' + String(err));
           setIsProcessing(false);
         }
-      }, 350);
+      }, 250);
       return;
     }
 
-    // Hybrid analysis flow: Always sends to server (uses server key or rotated pool keys)
-    setProcessingStatus('جاري تحليل ملفاتك ومعالجة الشروط الحدية عبر المحرك الذكي...');
+    setProcessingStatus('جاري تحليل ملفاتك واستخراج المعاملات عبر الخادم...');
     const candidateKeys = apiKeys.filter((k) => k.status !== 'exhausted').map((k) => k.key);
     const keyPoolToTry = candidateKeys.length > 0 ? candidateKeys : [''];
 
@@ -217,10 +197,6 @@ export const CleanWorkspaceHome: React.FC<CleanWorkspaceHomeProps> = ({
 
       for (let i = 0; i < keyPoolToTry.length; i++) {
         const activeKey = keyPoolToTry[i];
-        if (candidateKeys.length > 0) {
-          setProcessingStatus(`جاري التحليل بالخادم السحابي (مفتاح ${i + 1}/${candidateKeys.length})...`);
-        }
-
         try {
           const payload = {
             files: filesList.map((f) => ({
@@ -234,7 +210,7 @@ export const CleanWorkspaceHome: React.FC<CleanWorkspaceHomeProps> = ({
             })),
             directives: directives || (projectTitle ? `مشروع بعنوان: ${projectTitle}` : ''),
             projectField,
-            projectType: 'Engineering Simulation & Analysis',
+            projectType: 'Industrial Simulation',
             userTitle: projectTitle,
           };
 
@@ -260,7 +236,7 @@ export const CleanWorkspaceHome: React.FC<CleanWorkspaceHomeProps> = ({
             proj.directivesApplied = directives;
             proj.extractedSummary =
               proj.extractedSummary ||
-              `تم استخراج وتحليل بيانات ملف (${filesList[0]?.name || 'المشروع'}) وتطبيق شروطه الحدية بدقة.`;
+              `تم استخراج بيانات (${filesList[0]?.name || 'المشروع'}) وتجهيز مساحة العمل.`;
 
             onStartProject(proj);
             setIsProcessing(false);
@@ -273,16 +249,15 @@ export const CleanWorkspaceHome: React.FC<CleanWorkspaceHomeProps> = ({
         }
       }
 
-      // If server analysis could not complete, notify user and smoothly use the deterministic physics engine with the user's extracted parameters
       if (!succeeded) {
-        setProcessingStatus('جاري المعالجة الفورية عبر المحرك الفيزيائي الرقمي الحتمي...');
+        setProcessingStatus('جاري تجهيز مساحة المشروع...');
         setTimeout(() => {
           const allContent = filesList
             .map((f) => (f.content ? `=== [ملف: ${f.name}] (${f.category}) ===\n${f.content}` : ''))
             .filter(Boolean)
             .join('\n\n');
           const primaryFile = filesList.find((f) => !f.isArchive && f.content) || filesList[0];
-          const firstFileName = primaryFile?.name || 'cae_simulation.jou';
+          const firstFileName = primaryFile?.name || 'new_case.stl';
           const project = generateLocalEngineeringProject(
             firstFileName,
             directives,
@@ -295,11 +270,11 @@ export const CleanWorkspaceHome: React.FC<CleanWorkspaceHomeProps> = ({
           }
           project.attachedFilesCount = filesList.length;
           project.directivesApplied = directives;
-          project.extractedSummary = `تم تحليل ومعالجة ملف (${firstFileName}) محلياً بواسطة المحرك الفيزيائي الحتمي بدقة 100% (${lastServerError ? `ملاحظة: ${lastServerError}` : ''})`;
-          
+          project.extractedSummary = `تم تجهيز المشروع (${firstFileName}). ${lastServerError ? `(${lastServerError})` : ''}`;
+
           onStartProject(project);
           setIsProcessing(false);
-        }, 400);
+        }, 300);
       }
     })();
   };
@@ -307,13 +282,13 @@ export const CleanWorkspaceHome: React.FC<CleanWorkspaceHomeProps> = ({
   const getCategoryBadge = (category?: string) => {
     switch (category) {
       case 'archive':
-        return <span className="px-2 py-0.5 rounded text-[10px] bg-purple-500/15 text-purple-300 border border-purple-500/30 font-bold font-mono">📦 أرشيف مضغوط (.ZIP/.WBPZ)</span>;
+        return <span className="px-2 py-0.5 rounded text-[10px] bg-purple-500/15 text-purple-300 border border-purple-500/30 font-bold font-mono">أرشيف (.ZIP/.WBPZ)</span>;
       case 'word':
         return <span className="px-2 py-0.5 rounded text-[10px] bg-blue-500/10 text-blue-400 border border-blue-500/20 font-mono">Word Document</span>;
       case 'excel':
         return <span className="px-2 py-0.5 rounded text-[10px] bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 font-mono">Excel Dataset</span>;
       case 'code':
-        return <span className="px-2 py-0.5 rounded text-[10px] bg-amber-500/10 text-amber-400 border border-amber-500/20 font-mono">Script / APDL</span>;
+        return <span className="px-2 py-0.5 rounded text-[10px] bg-amber-500/10 text-amber-400 border border-amber-500/20 font-mono">Script / Solver Deck</span>;
       case 'image':
         return <span className="px-2 py-0.5 rounded text-[10px] bg-purple-500/10 text-purple-400 border border-purple-500/20 font-mono">CAD / Diagram</span>;
       case 'pdf':
@@ -348,25 +323,24 @@ export const CleanWorkspaceHome: React.FC<CleanWorkspaceHomeProps> = ({
         <div className="relative z-10 space-y-5">
           <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-4 border-b border-slate-800/80 pb-5">
             <div className="space-y-1.5">
-              {/* Zero-Pill Typography Metadata Separators */}
               <div className="flex flex-wrap items-center gap-2 text-xs text-sky-400 font-mono">
                 <span className="font-bold">NASEER Universal CAE Studio</span>
                 <span aria-hidden="true" className="text-slate-600">·</span>
-                <span className="text-indigo-300 font-semibold">Engineering Simulation & Consultancy Hub</span>
+                <span className="text-indigo-300 font-semibold">CFD, FEA & Thermal Simulation Workspace</span>
                 <span aria-hidden="true" className="text-slate-600">·</span>
                 <span className="text-emerald-400 font-semibold">ASME V&V 20 Standard</span>
               </div>
               <h1 className="text-2xl sm:text-3xl font-extrabold text-white tracking-tight">
-                مركز إدارة ودراسة المحاكاة الهندسية الشاملة
+                منصة المحاكاة الهندسية السحابية (CAE Workbench)
               </h1>
               <p className="text-xs sm:text-sm text-slate-300 max-w-3xl leading-relaxed">
-                بيئة العمل الهندسية الموحدة لنمذجة ومحاكاة الديناميكا المائية، انتقال الحرارة، والإجهادات الإنشائية (CFD, FEA & Multiphysics). مقترنة بمحركات OpenFOAM و CalculiX ومعايير ASME V&V 20 ومؤشر روتش للتقارب الشبكي (Roache GCI).
+                بيئة عمل هندسية موحدة لنمذجة وحل مسائل ديناميكا الموائع (OpenFOAM)، التحليل الإنشائي بالعناصر المحدودة (CalculiX)، وانتقال الحرارة، مع التحقق العددي عبر مؤشر تقارب الشبكة (Roache GCI).
               </p>
             </div>
 
             <div className="flex items-center gap-2 text-xs text-slate-400 font-mono bg-slate-950/80 px-3 py-2 rounded-xl border border-slate-800 shrink-0">
               <Cpu className="w-4 h-4 text-sky-400" />
-              <span>المحرك: <strong className="text-slate-100">{engineMode === 'pure_local' ? 'محلي 100%' : 'سحابي هجين'}</strong></span>
+              <span>المحرك: <strong className="text-slate-100">{engineMode === 'pure_local' ? 'محلي' : 'سحابي هجين'}</strong></span>
             </div>
           </div>
 
@@ -376,64 +350,55 @@ export const CleanWorkspaceHome: React.FC<CleanWorkspaceHomeProps> = ({
             <span aria-hidden="true" className="text-slate-700">·</span>
             <span className="text-slate-300">CalculiX v2.21</span>
             <span aria-hidden="true" className="text-slate-700">·</span>
-            <span className="text-slate-300">Deterministic Physics Solver</span>
+            <span className="text-slate-300">Celery HPC Worker</span>
             <span aria-hidden="true" className="text-slate-700">·</span>
-            <span className="text-slate-300">Celery HPC Cluster</span>
-            <span aria-hidden="true" className="text-slate-700">·</span>
-            <span className="text-emerald-400 font-semibold">ASME V&V 20 Certified</span>
+            <span className="text-emerald-400 font-semibold">ASME V&V 20</span>
           </div>
 
-          {/* Quick Access Engineering Module Toolbar */}
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5 pt-2">
-            <button
-              type="button"
-              onClick={() => {
-                const defaultProj = generateLocalEngineeringProject(
-                  'Airfoil_NACA0012_Compressible_Flow.stl',
-                  'Aerodynamic compressible flow study and pressure distribution over airfoil',
-                  'CFD'
-                );
-                onStartProject(defaultProj);
-              }}
-              className="p-3 rounded-2xl bg-gradient-to-br from-sky-600/30 to-indigo-600/30 hover:from-sky-600/40 hover:to-indigo-600/40 border border-sky-500/40 text-right transition-all group shadow-md"
-              title="فتح استوديو المحاكاة ثلاثي الأبعاد مباشرة"
-            >
-              <div className="flex items-center justify-between mb-1.5">
-                <Box className="w-5 h-5 text-sky-400 group-hover:scale-110 transition-transform" />
-                <span className="text-[10px] font-mono text-sky-300 bg-sky-950 px-1.5 py-0.5 rounded border border-sky-800">STL 3D</span>
-              </div>
-              <div className="text-xs font-bold text-white">استوديو المحاكاة (3D)</div>
-              <div className="text-[10px] text-slate-400 mt-0.5">NACA 0012 Flow</div>
-            </button>
-
+          {/* Clean Engineering Tools Toolbar */}
+          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2.5 pt-2">
             {onOpenNewProjectWizard && (
               <button
                 type="button"
                 onClick={onOpenNewProjectWizard}
-                className="p-3 rounded-2xl bg-slate-950/70 hover:bg-slate-900 border border-slate-800 hover:border-emerald-500/50 text-right transition-all group shadow-md"
-                title="إنشاء مشروع هندسي مخصص من الصفر"
+                className="p-3 rounded-2xl bg-gradient-to-br from-emerald-600/25 to-sky-600/25 hover:from-emerald-600/35 hover:to-sky-600/35 border border-emerald-500/40 text-right transition-all group shadow-md"
+                title="إنشاء مشروع هندسي جديد من الصفر"
               >
                 <div className="flex items-center justify-between mb-1.5">
                   <Plus className="w-5 h-5 text-emerald-400 group-hover:scale-110 transition-transform" />
-                  <span className="text-[10px] font-mono text-emerald-300 bg-emerald-950 px-1.5 py-0.5 rounded border border-emerald-800">Wizard</span>
+                  <span className="text-[10px] font-mono text-emerald-300 bg-emerald-950 px-1.5 py-0.5 rounded border border-emerald-800">New</span>
                 </div>
-                <div className="text-xs font-bold text-white">+ مشروع جديد مخصص</div>
+                <div className="text-xs font-bold text-white">+ مشروع جديد</div>
                 <div className="text-[10px] text-slate-400 mt-0.5">CFD / FEA / Thermal</div>
               </button>
             )}
+
+            <button
+              type="button"
+              onClick={() => fileInputRef.current?.click()}
+              className="p-3 rounded-2xl bg-slate-950/70 hover:bg-slate-900 border border-slate-800 hover:border-sky-500/50 text-right transition-all group shadow-md"
+              title="استيراد ملفات هندسية أو CAD أو سكربتات"
+            >
+              <div className="flex items-center justify-between mb-1.5">
+                <Upload className="w-5 h-5 text-sky-400 group-hover:scale-110 transition-transform" />
+                <span className="text-[10px] font-mono text-sky-300 bg-sky-950 px-1.5 py-0.5 rounded border border-sky-800">Import</span>
+              </div>
+              <div className="text-xs font-bold text-white">استيراد ملفات</div>
+              <div className="text-[10px] text-slate-400 mt-0.5">CAD / Scripts / ZIP</div>
+            </button>
 
             {onOpenMeshGenerator && (
               <button
                 type="button"
                 onClick={onOpenMeshGenerator}
                 className="p-3 rounded-2xl bg-slate-950/70 hover:bg-slate-900 border border-slate-800 hover:border-sky-500/50 text-right transition-all group shadow-md"
-                title="أداة مولد الشبكات وفحص التعامد الجغرافي"
+                title="أداة إعداد الشبكة وحساب مؤشر تقارب الشبكة Roache GCI"
               >
                 <div className="flex items-center justify-between mb-1.5">
                   <Grid3X3 className="w-5 h-5 text-sky-400 group-hover:scale-110 transition-transform" />
-                  <span className="text-[10px] font-mono text-sky-300 bg-sky-950 px-1.5 py-0.5 rounded border border-sky-800">Mesh Studio</span>
+                  <span className="text-[10px] font-mono text-sky-300 bg-sky-950 px-1.5 py-0.5 rounded border border-sky-800">Mesh</span>
                 </div>
-                <div className="text-xs font-bold text-white">مولد الشبكات والتوليد</div>
+                <div className="text-xs font-bold text-white">مولد الشبكات</div>
                 <div className="text-[10px] text-slate-400 mt-0.5">Roache GCI & Quality</div>
               </button>
             )}
@@ -443,14 +408,14 @@ export const CleanWorkspaceHome: React.FC<CleanWorkspaceHomeProps> = ({
                 type="button"
                 onClick={onOpenMaterialsModal}
                 className="p-3 rounded-2xl bg-slate-950/70 hover:bg-slate-900 border border-slate-800 hover:border-amber-500/50 text-right transition-all group shadow-md"
-                title="قواعد البيانات القياسية للمواد والسوائل"
+                title="قاعدة البيانات القياسية لخواص المواد والموائع"
               >
                 <div className="flex items-center justify-between mb-1.5">
                   <Database className="w-5 h-5 text-amber-400 group-hover:scale-110 transition-transform" />
                   <span className="text-[10px] font-mono text-amber-300 bg-amber-950 px-1.5 py-0.5 rounded border border-amber-800">Materials</span>
                 </div>
-                <div className="text-xs font-bold text-white">مكتبة المواد الهندسية</div>
-                <div className="text-[10px] text-slate-400 mt-0.5">خصائص الفولاذ والماء والمعادن</div>
+                <div className="text-xs font-bold text-white">مكتبة المواد</div>
+                <div className="text-[10px] text-slate-400 mt-0.5">موائع ومعادن قياسية</div>
               </button>
             )}
 
@@ -459,13 +424,13 @@ export const CleanWorkspaceHome: React.FC<CleanWorkspaceHomeProps> = ({
                 type="button"
                 onClick={onOpenParametricSweep}
                 className="p-3 rounded-2xl bg-slate-950/70 hover:bg-slate-900 border border-slate-800 hover:border-indigo-500/50 text-right transition-all group shadow-md"
-                title="دراسة تغير الشروط وتوليد سطح الاستجابة"
+                title="دراسة تغير الشروط الحدية وتوليد مصفوفة الحالات"
               >
                 <div className="flex items-center justify-between mb-1.5">
                   <Sliders className="w-5 h-5 text-indigo-400 group-hover:scale-110 transition-transform" />
                   <span className="text-[10px] font-mono text-indigo-300 bg-indigo-950 px-1.5 py-0.5 rounded border border-indigo-800">Sweep</span>
                 </div>
-                <div className="text-xs font-bold text-white">مسح المتغيرات الهندسية</div>
+                <div className="text-xs font-bold text-white">مسح المتغيرات</div>
                 <div className="text-[10px] text-slate-400 mt-0.5">Parametric Study</div>
               </button>
             )}
@@ -474,26 +439,15 @@ export const CleanWorkspaceHome: React.FC<CleanWorkspaceHomeProps> = ({
               <button
                 type="button"
                 onClick={onOpenProjectsLibrary}
-                className="col-span-2 sm:col-span-4 p-5 rounded-2xl bg-gradient-to-r from-amber-500 via-amber-600 to-amber-700 hover:from-amber-400 hover:to-amber-600 text-slate-950 text-right transition-all group shadow-xl flex items-center justify-between active:scale-[0.99]"
-                title="فتح واختبار البنشماركات القياسية المعايرة (NASA Airfoil, Timoshenko Beam, de Vahl Davis Thermal) أو المشاريع المخصصة"
+                className="p-3 rounded-2xl bg-slate-950/70 hover:bg-slate-900 border border-slate-800 hover:border-sky-500/50 text-right transition-all group shadow-md"
+                title="فتح المشاريع المحفوظة"
               >
-                <div className="flex items-center gap-4">
-                  <div className="w-12 h-12 rounded-xl bg-slate-950/20 border border-slate-950/30 flex items-center justify-center text-slate-950 group-hover:scale-110 transition-transform shrink-0">
-                    <FolderOpen className="w-7 h-7 fill-slate-950" />
-                  </div>
-                  <div>
-                    <div className="text-sm sm:text-base font-black text-slate-950 flex items-center gap-2">
-                      <span>مكتبة البنشماركات المعايرة (Validation Benchmarks Hub)</span>
-                      <span className="text-[10px] font-mono text-amber-950 bg-amber-400/80 px-2 py-0.5 rounded border border-amber-900/30 font-extrabold">ASME V&V 20</span>
-                    </div>
-                    <div className="text-xs text-amber-950/90 font-bold mt-1">
-                      المدخل الموحد الرئيسي: استدعاء واختبار بنشمارك جناح ناسا (NACA 0012)، جائز تيموشينكو الإنشائي، أو تجويف دي فال ديفيز الحراري (de Vahl Davis Cavity)
-                    </div>
-                  </div>
+                <div className="flex items-center justify-between mb-1.5">
+                  <FolderOpen className="w-5 h-5 text-sky-400 group-hover:scale-110 transition-transform" />
+                  <span className="text-[10px] font-mono text-sky-300 bg-sky-950 px-1.5 py-0.5 rounded border border-sky-800">{savedProjectsCount}</span>
                 </div>
-                <span className="hidden sm:inline-flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-mono font-extrabold bg-slate-950 text-amber-400 shadow-md group-hover:bg-slate-900 transition-colors shrink-0">
-                  دخول المكتبة ◀
-                </span>
+                <div className="text-xs font-bold text-white">مكتبة المشاريع</div>
+                <div className="text-[10px] text-slate-400 mt-0.5">المشاريع المحفوظة</div>
               </button>
             )}
 
@@ -502,88 +456,21 @@ export const CleanWorkspaceHome: React.FC<CleanWorkspaceHomeProps> = ({
                 type="button"
                 onClick={onOpenCloudSettings}
                 className="p-3 rounded-2xl bg-slate-950/70 hover:bg-slate-900 border border-slate-800 hover:border-sky-500/50 text-right transition-all group shadow-md"
-                title="إعدادات الخادم السحابي 400GB والترخيص"
+                title="إعدادات الخادم السحابي وموارد الحوسبة"
               >
                 <div className="flex items-center justify-between mb-1.5">
                   <Cloud className="w-5 h-5 text-sky-400 group-hover:scale-110 transition-transform" />
-                  <span className="text-[10px] font-mono text-sky-300 bg-sky-950 px-1.5 py-0.5 rounded border border-sky-800">400GB</span>
+                  <span className="text-[10px] font-mono text-sky-300 bg-sky-950 px-1.5 py-0.5 rounded border border-sky-800">Server</span>
                 </div>
-                <div className="text-xs font-bold text-white">السحابة والترخيص</div>
-                <div className="text-[10px] text-slate-400 mt-0.5">FlexNet & Container</div>
+                <div className="text-xs font-bold text-white">إعدادات الخادم</div>
+                <div className="text-[10px] text-slate-400 mt-0.5">Docker & HPC Cores</div>
               </button>
             )}
-
-            {onOpenAuditModal && (
-              <button
-                type="button"
-                onClick={onOpenAuditModal}
-                className="p-3 rounded-2xl bg-slate-950/70 hover:bg-slate-900 border border-slate-800 hover:border-emerald-500/50 text-right transition-all group shadow-md"
-                title="تقرير التدقيق ومطابقة ASME V&V 20"
-              >
-                <div className="flex items-center justify-between mb-1.5">
-                  <ShieldCheck className="w-5 h-5 text-emerald-400 group-hover:scale-110 transition-transform" />
-                  <span className="text-[10px] font-mono text-emerald-300 bg-emerald-950 px-1.5 py-0.5 rounded border border-emerald-800">100% Audit</span>
-                </div>
-                <div className="text-xs font-bold text-white">وثيقة التدقيق الهندسي</div>
-                <div className="text-[10px] text-slate-400 mt-0.5">ASME V&V 20 Standard</div>
-              </button>
-            )}
-
-            {onOpenPipelineTracker && (
-              <button
-                type="button"
-                onClick={onOpenPipelineTracker}
-                className="col-span-2 sm:col-span-4 p-3.5 rounded-2xl bg-gradient-to-r from-sky-950/60 via-indigo-950/60 to-slate-950 hover:from-sky-900/50 hover:to-indigo-900/50 border border-sky-500/40 hover:border-sky-400 text-right transition-all group shadow-lg flex items-center justify-between"
-                title="خريطة التتبع المباشر لخط سير العمليات والحاويات السحابية على طريقة DHL/FedEx"
-              >
-                <div className="flex items-center gap-3">
-                  <div className="w-10 h-10 rounded-xl bg-sky-500/20 border border-sky-500/40 flex items-center justify-center text-sky-400 group-hover:scale-110 transition-transform">
-                    <Truck className="w-5 h-5" />
-                  </div>
-                  <div>
-                    <div className="text-xs sm:text-sm font-bold text-white flex items-center gap-2">
-                      <span>خريطة التتبع المباشر للحاويات والعمليات السحابية</span>
-                      <span className="text-[10px] font-mono text-sky-300 bg-sky-950 px-1.5 py-0.5 rounded border border-sky-800">DHL/FedEx Waybill Map</span>
-                    </div>
-                    <div className="text-[11px] text-slate-400 mt-0.5">
-                      تتبع انتقال الشحنة الحسابية لحظياً عبر وسيط Redis، وحاويات بايثون، ومحركات OpenFOAM/CalculiX، وحتى تسليم الأطروحة (معدة للعرض أمام لجان المناقشة)
-                    </div>
-                  </div>
-                </div>
-                <span className="hidden sm:inline-flex items-center gap-1 text-xs font-mono text-sky-400 group-hover:text-white transition-colors shrink-0">
-                  فتح خريطة التتبع ◀
-                </span>
-              </button>
-            )}
-
-            <a
-              href="/naseer_cae_master_catalog.html"
-              target="_blank"
-              rel="noopener noreferrer"
-              className="col-span-2 sm:col-span-4 p-4 rounded-2xl bg-gradient-to-r from-amber-950/40 via-purple-950/40 to-slate-950 hover:from-amber-900/40 hover:to-purple-900/40 border border-amber-500/40 hover:border-amber-400 text-right transition-all group shadow-xl flex items-center justify-between block"
-              title="الكتالوج الاستثماري المعتمد والعرض التقديمي التفاعلي للشاشات الكبيرة (Executive Catalog & 4K Slide Deck)"
-            >
-              <div className="flex items-center gap-3.5">
-                <div className="w-11 h-11 rounded-xl bg-amber-500/20 border border-amber-500/40 flex items-center justify-center text-amber-400 group-hover:scale-110 transition-transform shrink-0">
-                  <Sparkles className="w-6 h-6" />
-                </div>
-                <div>
-                  <div className="text-xs sm:text-sm font-bold text-white flex items-center gap-2">
-                    <span>الكتالوج الاستثماري الرسمي والعرض التفاعلي للشاشات الكبيرة</span>
-                    <span className="text-[10px] font-mono text-amber-300 bg-amber-950/80 px-2 py-0.5 rounded border border-amber-800/80">4K / 8K Executive Deck</span>
-                  </div>
-                  <div className="text-[11px] text-slate-300 mt-0.5 leading-relaxed">
-                    كتالوج مؤسسي شامل باللغتين الإنجليزية والعربية بدون أي تداخل نصوص، يشرح معمارية المنصة، الجدوى المالية وتوفير 200,000$ سنوياً للجامعات، مع سلايدات تفاعلية للشاشات الضخمة وقاعات المناقشة.
-                  </div>
-                </div>
-              </div>
-              <span className="hidden sm:inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-mono font-bold bg-amber-500/20 text-amber-300 border border-amber-500/30 group-hover:bg-amber-500 group-hover:text-slate-950 transition-all shrink-0">
-                عرض الكتالوج والسلايدات ↗
-              </span>
-            </a>
           </div>
         </div>
-      </div>      {/* Main Clean Workspace Ingestion Card */}
+      </div>
+
+      {/* Main Clean Workspace Ingestion Card */}
       <div className="bg-slate-900/80 border border-slate-800 rounded-2xl p-6 sm:p-8 shadow-xl space-y-6">
         <div className="flex items-center justify-between border-b border-slate-800 pb-4">
           <div className="flex items-center gap-3">
@@ -592,15 +479,15 @@ export const CleanWorkspaceHome: React.FC<CleanWorkspaceHomeProps> = ({
             </div>
             <div>
               <h2 className="text-base font-bold text-slate-100">
-                محطة استقبال وفحص الملفات والمخططات الهندسية
+                استيراد الملفات الهندسية والنماذج ثلاثية الأبعاد
               </h2>
               <p className="text-xs text-slate-400">
-                استقبال ومعالجة لكافة الامتدادات: Python (.py)، ANSYS (.jou, .mac)، Excel (.xlsx, .csv)، Word (.docx)، والصور الهندسية (.png, .jpg, .svg)
+                يدعم صيغ الهندسة والسكربتات والبيانات: STL, STEP, IGES, Python (.py), Solver Decks (.jou, .mac, .inp), Excel (.xlsx, .csv), Word (.docx)
               </p>
             </div>
           </div>
           <span className="text-xs font-mono text-sky-400 bg-slate-950 px-2.5 py-1 rounded-lg border border-slate-800">
-            {filesList.length} ملفات تم التعرف عليها
+            {filesList.length} ملفات مرفقة
           </span>
         </div>
 
@@ -618,7 +505,7 @@ export const CleanWorkspaceHome: React.FC<CleanWorkspaceHomeProps> = ({
             ref={fileInputRef}
             type="file"
             multiple
-            accept=".docx,.doc,.docm,.rtf,.pdf,.txt,.py,.jou,.mac,.inp,.cas,.dat,.cdb,.m,.xlsx,.xls,.csv,.png,.jpg,.jpeg,.svg,.webp,.zip,.wbpz"
+            accept=".stl,.step,.stp,.iges,.igs,.obj,.docx,.doc,.docm,.rtf,.pdf,.txt,.py,.jou,.mac,.inp,.cas,.dat,.cdb,.m,.xlsx,.xls,.csv,.png,.jpg,.jpeg,.svg,.webp,.zip,.wbpz"
             className="hidden"
             onChange={(e) => handleFilesSelected(e.target.files)}
           />
@@ -631,22 +518,20 @@ export const CleanWorkspaceHome: React.FC<CleanWorkspaceHomeProps> = ({
           </div>
           <h3 className="text-sm font-bold text-slate-200">
             {isParsingFiles
-              ? 'جاري فك ضغط الأرشيف وفحص وقراءة محتويات السكربتات الداخلية...'
-              : 'اسحب وأفلت ملف عملك الهندسي أو الأرشيف المضغوط بالكامل (.zip / .wbpz)'}
+              ? 'جاري فحص وقراءة محتويات الملفات...'
+              : 'اسحب وأفلت ملف النموذج الهندسي (.stl / .step) أو الأرشيف (.zip)'}
           </h3>
           <p className="text-xs text-slate-400 mt-1 max-w-xl mx-auto leading-relaxed">
-            ارفع ملفاتك الفردية أو الأرشيف المضغوط (ZIP / ANSYS Workbench Archive)؛ ستتعرف المنصة عليه فورياً وتفك ضغطه وتستخرج كافة السكربتات والمعاملات والشروط الحدية الداخلية بدقة!
+            ارفع ملف المجسم ثلاثي الأبعاد أو ملفات الإعدادات ليتم فحصها وتجهيز مساحة المحاكاة وإدخال الشروط الحدية.
           </p>
           <div className="flex flex-wrap items-center justify-center gap-2 mt-4 text-[11px] font-mono">
-            <span className="bg-purple-950/80 text-purple-300 border border-purple-800/80 px-2.5 py-1 rounded font-bold">
-              📦 أرشيف مضغوط (.zip / .wbpz)
+            <span className="bg-sky-950/80 text-sky-300 border border-sky-800/80 px-2.5 py-1 rounded font-bold">
+              CAD (.stl / .step / .iges)
             </span>
+            <span className="bg-slate-800/80 px-2.5 py-1 rounded text-slate-300">OpenFOAM / CalculiX (.inp)</span>
             <span className="bg-slate-800/80 px-2.5 py-1 rounded text-slate-300">Python (.py)</span>
-            <span className="bg-slate-800/80 px-2.5 py-1 rounded text-slate-300">ANSYS APDL (.mac / .inp)</span>
-            <span className="bg-slate-800/80 px-2.5 py-1 rounded text-slate-300">Fluent (.jou / .cas)</span>
             <span className="bg-slate-800/80 px-2.5 py-1 rounded text-slate-300">Excel (.xlsx / .csv)</span>
-            <span className="bg-slate-800/80 px-2.5 py-1 rounded text-slate-300">Word (.docx)</span>
-            <span className="bg-slate-800/80 px-2.5 py-1 rounded text-slate-300">CAD / Images</span>
+            <span className="bg-slate-800/80 px-2.5 py-1 rounded text-slate-300">Archive (.zip)</span>
           </div>
         </div>
 
@@ -659,17 +544,14 @@ export const CleanWorkspaceHome: React.FC<CleanWorkspaceHomeProps> = ({
             <div className="flex items-center gap-2.5 text-xs">
               <FileCode className="w-4 h-4 text-amber-400" />
               <span className="font-bold text-slate-200">
-                أو ألصق نص كود السكربت يدوياً (ANSYS APDL / Fluent TUI / Python / OpenFOAM)
-              </span>
-              <span className="text-[10px] text-slate-400 bg-slate-800 px-2 py-0.5 rounded font-mono">
-                مباشر وفوري
+                أو ألصق نص كود السكربت يدوياً (CalculiX INP / OpenFOAM Dict / Python)
               </span>
             </div>
             <button
               type="button"
               className="text-xs text-sky-400 font-medium hover:underline"
             >
-              {isPasteScriptOpen ? 'إغلاق المحرر' : 'فتح محرر اللصق والفحص'}
+              {isPasteScriptOpen ? 'إغلاق المحرر' : 'فتح محرر اللصق'}
             </button>
           </div>
 
@@ -677,17 +559,14 @@ export const CleanWorkspaceHome: React.FC<CleanWorkspaceHomeProps> = ({
             <div className="p-4 border-t border-slate-800 space-y-3 bg-slate-950">
               <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
                 <div className="flex items-center gap-2 flex-1 min-w-[200px]">
-                  <span className="text-slate-400 text-xs">اسم ملف السكربت:</span>
+                  <span className="text-slate-400 text-xs">اسم الملف:</span>
                   <input
                     type="text"
                     value={scriptName}
                     onChange={(e) => setScriptName(e.target.value)}
                     className="px-2.5 py-1 rounded-lg bg-slate-900 border border-slate-700 text-xs font-mono text-sky-300 focus:outline-none"
-                    placeholder="structural_analysis.mac"
+                    placeholder="structural_analysis.inp"
                   />
-                </div>
-                <div className="text-[11px] text-slate-400">
-                  يدعم أوامر: /PREP7, ET, MP, SF, /SOLU, Fluent scheme, pyansys
                 </div>
               </div>
 
@@ -695,7 +574,7 @@ export const CleanWorkspaceHome: React.FC<CleanWorkspaceHomeProps> = ({
                 rows={6}
                 value={rawScriptText}
                 onChange={(e) => setRawScriptText(e.target.value)}
-                placeholder="/PREP7&#10;ET, 1, SOLID186&#10;MP, EX, 1, 210E9&#10;MP, PRXY, 1, 0.3&#10;SF, ALL, PRES, 50&#10;/SOLU&#10;SOLVE"
+                placeholder="*HEADING&#10;CalculiX Structural Input Deck&#10;*MATERIAL, NAME=STEEL&#10;*ELASTIC&#10;210000., 0.3"
                 className="w-full p-3 rounded-xl bg-slate-900 border border-slate-800 font-mono text-xs text-slate-200 placeholder:text-slate-600 focus:border-sky-500 focus:outline-none direction-ltr text-left leading-relaxed resize-y"
               />
 
@@ -714,33 +593,30 @@ export const CleanWorkspaceHome: React.FC<CleanWorkspaceHomeProps> = ({
                   className="px-4 py-1.5 rounded-xl bg-sky-600 hover:bg-sky-500 text-white font-bold text-xs shadow-md shadow-sky-900/30 flex items-center gap-1.5 disabled:opacity-50"
                 >
                   <FileCode className="w-3.5 h-3.5" />
-                  <span>فحص وإدراج السكربت في العمل</span>
+                  <span>إدراج السكربت</span>
                 </button>
               </div>
             </div>
           )}
         </div>
 
-
-
         {/* Attached Files List & Diagnostics Card */}
         {filesList.length > 0 && (
           <div className="space-y-3 bg-slate-950/60 border border-slate-800/80 rounded-2xl p-4">
-            {/* Quick Solve Action Banner */}
             <div className="p-3.5 bg-gradient-to-r from-sky-950/80 via-slate-900 to-indigo-950/80 border border-sky-500/40 rounded-xl flex flex-wrap items-center justify-between gap-3 shadow-lg">
               <div className="flex items-center gap-3">
-                <div className="w-10 h-10 rounded-xl bg-sky-500/20 text-sky-400 flex items-center justify-center shrink-0 border border-sky-500/30 animate-pulse">
+                <div className="w-10 h-10 rounded-xl bg-sky-500/20 text-sky-400 flex items-center justify-center shrink-0 border border-sky-500/30">
                   <Cpu className="w-5 h-5 text-sky-400" />
                 </div>
                 <div>
                   <h4 className="text-xs sm:text-sm font-bold text-white flex items-center gap-2">
-                    <span>تم التعرف على الملفات والسكربتات — جاهز للحل والمحاكاة الفورية!</span>
+                    <span>الملفات جاهزة لفتح مساحة المحاكاة</span>
                     <span className="px-2 py-0.5 rounded text-[10px] bg-emerald-500/20 text-emerald-300 font-mono">
-                      {projectField} | معايير ASME
+                      {projectField} | ASME V&V 20
                     </span>
                   </h4>
                   <p className="text-[11px] text-slate-300 mt-0.5">
-                    تم استخراج الشروط الحدية والمعادلات؛ اضغط لبدء تشغيل محرك ANSYS وحساب الكونتورات وتقارب البواقي فورياً.
+                    افتح مساحة العمل لاستكمال الشروط الحدية وإرسال المهمة إلى المحلل العددي.
                   </p>
                 </div>
               </div>
@@ -750,19 +626,10 @@ export const CleanWorkspaceHome: React.FC<CleanWorkspaceHomeProps> = ({
                   type="button"
                   disabled={isProcessing}
                   onClick={() => handleStartCleanSimulation(true)}
-                  className="px-3.5 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-emerald-300 border border-emerald-500/30 text-xs font-bold flex items-center gap-1.5 transition-all shadow"
-                >
-                  <Cpu className="w-3.5 h-3.5 text-emerald-400" />
-                  <span>حل محلي فوري (100% Offline)</span>
-                </button>
-                <button
-                  type="button"
-                  disabled={isProcessing}
-                  onClick={() => handleStartCleanSimulation(false)}
                   className="px-5 py-2 rounded-xl bg-sky-600 hover:bg-sky-500 text-white text-xs font-bold shadow-lg shadow-sky-600/30 flex items-center gap-2 transition-all active:scale-95"
                 >
                   <Sparkles className="w-4 h-4 text-sky-200" />
-                  <span>🚀 تشغيل محاكاة ANSYS الآن (Solve Now)</span>
+                  <span>فتح مساحة العمل الهندسية</span>
                 </button>
               </div>
             </div>
@@ -770,7 +637,7 @@ export const CleanWorkspaceHome: React.FC<CleanWorkspaceHomeProps> = ({
             <div className="flex items-center justify-between text-xs text-slate-300 font-semibold border-b border-slate-800 pb-2.5">
               <span className="flex items-center gap-1.5 text-emerald-400">
                 <CheckCircle2 className="w-4 h-4" />
-                <span>الملفات والسكربتات المفحوصة والمستخرجة ({filesList.length}):</span>
+                <span>الملفات المرفقة ({filesList.length}):</span>
               </span>
               <button
                 type="button"
@@ -807,12 +674,12 @@ export const CleanWorkspaceHome: React.FC<CleanWorkspaceHomeProps> = ({
                         {getCategoryBadge(f.category)}
                         {f.parentArchiveName && (
                           <span className="px-2 py-0.5 rounded text-[10px] bg-amber-500/15 text-amber-300 border border-amber-500/30 font-mono">
-                            📁 من الأرشيف: {f.parentArchiveName}
+                            من الأرشيف: {f.parentArchiveName}
                           </span>
                         )}
                         {f.isArchive && f.archiveFilesCount !== undefined && (
                           <span className="px-2 py-0.5 rounded text-[10px] bg-purple-500/20 text-purple-300 border border-purple-500/40 font-bold font-mono">
-                            ✓ مفكوك: {f.archiveFilesCount} ملفات
+                            {f.archiveFilesCount} ملفات
                           </span>
                         )}
                         <span className="text-[11px] text-slate-400 font-mono">
@@ -826,7 +693,6 @@ export const CleanWorkspaceHome: React.FC<CleanWorkspaceHomeProps> = ({
                         </p>
                       )}
 
-                      {/* Extracted Parameters Badges */}
                       {f.detectedParameters && f.detectedParameters.length > 0 && (
                         <div className="flex flex-wrap items-center gap-1.5 pt-1">
                           {f.detectedParameters.map((param, pIdx) => (
@@ -860,20 +726,20 @@ export const CleanWorkspaceHome: React.FC<CleanWorkspaceHomeProps> = ({
                         onStartProject(project);
                       }}
                       className="px-2.5 py-1.5 rounded-lg bg-emerald-500/15 hover:bg-emerald-500/25 text-emerald-300 border border-emerald-500/30 text-xs font-bold flex items-center gap-1 transition-colors"
-                      title="تشغيل وحل هذا السكربت/الملف فورياً في بيئة ANSYS"
+                      title="فتح هذا الملف في مساحة المحاكاة"
                     >
                       <Cpu className="w-3.5 h-3.5 text-emerald-400" />
-                      <span>تشغيل في ANSYS</span>
+                      <span>فتح في الاستوديو</span>
                     </button>
 
                     <button
                       type="button"
                       onClick={() => setActivePreviewFile(f)}
                       className="px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-sky-400 border border-slate-700 text-xs flex items-center gap-1 transition-colors"
-                      title="معاينة محتويات الملف المستخرجة"
+                      title="معاينة محتويات الملف"
                     >
-                      <Eye className="w-3.5 h-3.5" />
-                      <span>معاينة المحتوى</span>
+                      <Info className="w-3.5 h-3.5" />
+                      <span>معاينة</span>
                     </button>
 
                     <button
@@ -893,34 +759,32 @@ export const CleanWorkspaceHome: React.FC<CleanWorkspaceHomeProps> = ({
 
         {/* Project Setup Options */}
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4 pt-2">
-          {/* Custom Project Title */}
           <div className="space-y-1.5 md:col-span-2">
             <label className="text-xs font-semibold text-slate-300 block">
-              عنوان أو موضوع التحليل الهندسي (اختياري - يحدد تلقائياً من ملفك):
+              عنوان المشروع الهندسي:
             </label>
             <input
               type="text"
-              placeholder="مثال: تحليل وتوزيع إجهادات العارضة الإنشائية / تدفق هوائي حول جنيح ديناميكي"
+              placeholder="مثال: تحليل الجريان الداخلي في أنبوب / حساب إجهادات دعامة معدنية"
               value={projectTitle}
               onChange={(e) => setProjectTitle(e.target.value)}
               className="w-full px-3.5 py-2.5 rounded-xl bg-slate-950 border border-slate-800 focus:border-sky-500 text-xs text-slate-200 placeholder:text-slate-500 focus:outline-none"
             />
           </div>
 
-          {/* Domain Selection */}
           <div className="space-y-1.5">
             <label className="text-xs font-semibold text-slate-300 block">
-              المجال الهندسي المطلوب:
+              نوع الفيزياء والمحلل:
             </label>
             <select
               value={projectField}
               onChange={(e) => setProjectField(e.target.value as any)}
               className="w-full px-3.5 py-2.5 rounded-xl bg-slate-950 border border-slate-800 focus:border-sky-500 text-xs text-slate-200 focus:outline-none"
             >
-              <option value="CFD">ميكانيكا الموائع الحسابية (CFD)</option>
-              <option value="FEA">التحليل الإنشائي والعناصر المحدودة (FEA)</option>
-              <option value="Thermal">انتقال الحرارة والديناميكا الحرارية</option>
-              <option value="Multiphysics">محاكاة متعددة المجالات (Multiphysics)</option>
+              <option value="CFD">ديناميكا الموائع الحسابية (CFD - OpenFOAM)</option>
+              <option value="FEA">التحليل الإنشائي (FEA - CalculiX)</option>
+              <option value="Thermal">انتقال الحرارة (Thermal - OpenFOAM)</option>
+              <option value="Multiphysics">محاكاة متعددة الفيزياء (Multiphysics)</option>
             </select>
           </div>
         </div>
@@ -930,17 +794,14 @@ export const CleanWorkspaceHome: React.FC<CleanWorkspaceHomeProps> = ({
           <label className="text-xs font-semibold text-slate-300 flex items-center justify-between">
             <span className="flex items-center gap-2">
               <Settings className="w-4 h-4 text-amber-400" />
-              توجيهات وملاحظات المهندس للتعريف والعمل المتكامل:
-            </span>
-            <span className="text-[11px] text-slate-400">
-              توجيهات إضافية لتخصيص الشروط الحدية، الحمولات، أو المعادلات
+              ملاحظات الدراسة الهندسية (اختياري):
             </span>
           </label>
           <textarea
-            rows={3}
+            rows={2}
             value={directives}
             onChange={(e) => setDirectives(e.target.value)}
-            placeholder="اكتب توجيهاتك أو ملاحظاتك على الملف، مثلاً: سرعة الدخول = 20 m/s، تثبيت الطرف الأيسر بحمولة 15 MPa، استخدام مادة فولاذ 4340، أو دراسة ظاهرة الانفصال..."
+            placeholder="أدخل وصفاً مختصراً لهدف المحاكاة أو الشروط الحدية المرجعية..."
             className="w-full px-3.5 py-2.5 rounded-xl bg-slate-950 border border-slate-800 focus:border-sky-500 text-xs text-slate-200 placeholder:text-slate-500 focus:outline-none leading-relaxed resize-none"
           />
         </div>
@@ -951,9 +812,6 @@ export const CleanWorkspaceHome: React.FC<CleanWorkspaceHomeProps> = ({
             <Cpu className="w-5 h-5 text-sky-400 shrink-0 animate-spin" />
             <div>
               <p className="font-bold text-sky-300">{processingStatus}</p>
-              <p className="text-[11px] text-sky-400/80 mt-0.5">
-                تطبيق قوانين الحفظ الفيزيائية، حل المعادلات، وتوليد شبكة الميش ومؤشر روتش والكونتورات...
-              </p>
             </div>
           </div>
         )}
@@ -968,7 +826,7 @@ export const CleanWorkspaceHome: React.FC<CleanWorkspaceHomeProps> = ({
         <div className="pt-3 border-t border-slate-800 flex flex-wrap items-center justify-between gap-3">
           <div className="flex items-center gap-2 text-xs text-slate-400">
             <Shield className="w-4 h-4 text-emerald-400" />
-            <span>نظام محاكاة متكامل لا يتوقف أبداً ويعمل بدقة البرامج الهندسية المعتمدة</span>
+            <span>تجهيز مساحة العمل الفيزيائية للاتصال المباشر بمحللات OpenFOAM و CalculiX</span>
           </div>
 
           <div className="flex items-center gap-2">
@@ -976,20 +834,10 @@ export const CleanWorkspaceHome: React.FC<CleanWorkspaceHomeProps> = ({
               type="button"
               disabled={isProcessing}
               onClick={() => handleStartCleanSimulation(true)}
-              className="px-4 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-emerald-300 border border-emerald-500/30 text-xs font-semibold flex items-center gap-2 transition-all disabled:opacity-50"
-            >
-              <Cpu className="w-4 h-4 text-emerald-400" />
-              <span>حل مباشر بالمحرك المحلي (100% Offline)</span>
-            </button>
-
-            <button
-              type="button"
-              disabled={isProcessing}
-              onClick={() => handleStartCleanSimulation(false)}
               className="px-6 py-2.5 rounded-xl bg-sky-600 hover:bg-sky-500 text-white text-xs font-bold shadow-lg shadow-sky-900/30 flex items-center gap-2 transition-all disabled:opacity-50 active:scale-95"
             >
               <Sparkles className="w-4 h-4 text-sky-200" />
-              <span>تنفيذ التحليل والمحاكاة للملفات الآن</span>
+              <span>إنشاء وفتح مساحة المشروع</span>
             </button>
           </div>
         </div>
@@ -999,7 +847,6 @@ export const CleanWorkspaceHome: React.FC<CleanWorkspaceHomeProps> = ({
       {activePreviewFile && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-sm animate-in fade-in duration-200">
           <div className="bg-slate-900 border border-slate-800 rounded-2xl max-w-2xl w-full max-h-[85vh] flex flex-col shadow-2xl overflow-hidden">
-            {/* Modal Header */}
             <div className="p-4 border-b border-slate-800 flex items-center justify-between bg-slate-900/90">
               <div className="flex items-center gap-2.5 min-w-0">
                 <div className="w-8 h-8 rounded-lg bg-sky-500/10 border border-sky-500/20 flex items-center justify-center text-sky-400">
@@ -1010,7 +857,7 @@ export const CleanWorkspaceHome: React.FC<CleanWorkspaceHomeProps> = ({
                     {activePreviewFile.name}
                   </h3>
                   <p className="text-[11px] text-slate-400">
-                    معاينة المحتوى المقروء والمستخرج من الملف
+                    معاينة المحتوى المستخرج من الملف
                   </p>
                 </div>
               </div>
@@ -1023,23 +870,20 @@ export const CleanWorkspaceHome: React.FC<CleanWorkspaceHomeProps> = ({
               </button>
             </div>
 
-            {/* Modal Content */}
             <div className="p-5 overflow-y-auto space-y-4 flex-1 text-xs">
-              {/* Summary Banner */}
               <div className="p-3 rounded-xl bg-slate-950 border border-slate-800 flex items-start gap-2.5">
                 <Info className="w-4 h-4 text-sky-400 shrink-0 mt-0.5" />
                 <div className="space-y-1">
-                  <span className="font-semibold text-slate-200">تشخيص الملف المقروء:</span>
+                  <span className="font-semibold text-slate-200">تشخيص الملف:</span>
                   <p className="text-slate-400 leading-relaxed">{activePreviewFile.summary}</p>
                 </div>
               </div>
 
-              {/* Detected Parameters */}
               {activePreviewFile.detectedParameters && activePreviewFile.detectedParameters.length > 0 && (
                 <div className="space-y-2">
                   <h4 className="font-semibold text-slate-200 flex items-center gap-1.5">
                     <CheckCircle2 className="w-4 h-4 text-emerald-400" />
-                    المعاملات الهندسية المكتشفة تلقائياً:
+                    المعاملات المكتشفة:
                   </h4>
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                     {activePreviewFile.detectedParameters.map((param, idx) => (
@@ -1057,26 +901,11 @@ export const CleanWorkspaceHome: React.FC<CleanWorkspaceHomeProps> = ({
                 </div>
               )}
 
-              {/* Archive Internal Tree & Contents Explorer */}
               {activePreviewFile.isArchive && activePreviewFile.archiveTree && (
                 <div className="space-y-3">
-                  <div className="bg-purple-950/40 border border-purple-800/40 p-4 rounded-xl space-y-2">
-                    <div className="flex items-center justify-between text-xs font-bold text-purple-300">
-                      <span className="flex items-center gap-2">
-                        <Package className="w-4 h-4 text-purple-400" />
-                        <span>شجرة محتويات الأرشيف الهندسي المفكوك ({activePreviewFile.archiveFilesCount} ملفات)</span>
-                      </span>
-                      <span className="text-[11px] text-emerald-400 font-mono">
-                        ✓ تم فك الضغط وقراءة السكربتات بنجاح
-                      </span>
-                    </div>
-                    <p className="text-xs text-slate-300 leading-relaxed">
-                      تم التعرف على بنية الأرشيف وتفكيك كافة ملفاته وسكربتاته البرمجية بالكامل، وهي مدرجة في مساحة العمل وجاهزة للحل الهندسي.
-                    </p>
-                  </div>
                   <div className="border border-slate-800 rounded-xl overflow-hidden bg-slate-950">
                     <div className="bg-slate-900 px-3 py-2 border-b border-slate-800 text-xs font-semibold text-slate-300">
-                      عناصر الأرشيف المفكوكة:
+                      محتويات الأرشيف ({activePreviewFile.archiveFilesCount} ملفات):
                     </div>
                     <div className="divide-y divide-slate-800/60 max-h-56 overflow-y-auto">
                       {activePreviewFile.archiveTree.map((item, idx) => (
@@ -1097,7 +926,6 @@ export const CleanWorkspaceHome: React.FC<CleanWorkspaceHomeProps> = ({
                 </div>
               )}
 
-              {/* Image Preview */}
               {activePreviewFile.isImage && activePreviewFile.base64Data && (
                 <div className="border border-slate-800 rounded-xl p-2 bg-slate-950 flex items-center justify-center">
                   <img
@@ -1108,12 +936,11 @@ export const CleanWorkspaceHome: React.FC<CleanWorkspaceHomeProps> = ({
                 </div>
               )}
 
-              {/* Sheets Data if Excel */}
               {activePreviewFile.sheetsData && activePreviewFile.sheetsData.length > 0 && (
                 <div className="space-y-3">
                   <h4 className="font-semibold text-slate-200 flex items-center gap-1.5">
                     <TableIcon className="w-4 h-4 text-emerald-400" />
-                    أوراق عمل إكسل والبيانات المقروءة:
+                    جداول البيانات المقروءة:
                   </h4>
                   {activePreviewFile.sheetsData.map((sheet, sIdx) => (
                     <div key={sIdx} className="border border-slate-800 rounded-xl overflow-hidden bg-slate-950">
@@ -1143,11 +970,10 @@ export const CleanWorkspaceHome: React.FC<CleanWorkspaceHomeProps> = ({
                 </div>
               )}
 
-              {/* Text/Code Preview */}
               {activePreviewFile.content && (
                 <div className="space-y-1.5">
                   <h4 className="font-semibold text-slate-200">
-                    مقتطف من المحتوى النصي / البرمجي المقروء:
+                    المحتوى النصي / البرمجي:
                   </h4>
                   <pre className="p-3.5 rounded-xl bg-slate-950 border border-slate-800 font-mono text-[11px] text-slate-300 overflow-x-auto max-h-64 whitespace-pre-wrap leading-relaxed">
                     {activePreviewFile.content.slice(0, 3000)}
@@ -1157,7 +983,6 @@ export const CleanWorkspaceHome: React.FC<CleanWorkspaceHomeProps> = ({
               )}
             </div>
 
-            {/* Modal Footer */}
             <div className="p-3 border-t border-slate-800 bg-slate-900/90 flex justify-end">
               <button
                 type="button"
