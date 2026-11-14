@@ -38,6 +38,11 @@ export interface Interactive3DViewportProps {
   shadingMode?: ShadingMode;
   showMeshOverlay?: boolean;
   activePreset?: ViewPreset;
+  hasSolvedResults?: boolean;
+  fieldMin?: number;
+  fieldMax?: number;
+  fieldUnit?: string;
+  fieldLabel?: string;
   onPresetChange?: (preset: ViewPreset) => void;
   onCadLoaded?: (stats: CadModelStats) => void;
   onBoundaryAdded?: (marker: BoundaryMarker) => void;
@@ -59,23 +64,15 @@ const CUBE_FACES: { label: string; preset: ViewPreset; transform: string }[] = [
   { label: 'BOTTOM', preset: 'top', transform: 'rotateX(-90deg) translateZ(24px)' },
 ];
 
-function getTurboColor(t: number): THREE.Color {
-  const norm = Math.max(0, Math.min(1, t));
-  const r = Math.sin(norm * Math.PI * 0.9 + 0.1);
-  const g = Math.sin(norm * Math.PI * 1.0);
-  const b = Math.cos(norm * Math.PI * 0.85);
-  return new THREE.Color(
-    Math.max(0.1, Math.min(0.95, 0.15 + 0.8 * r)),
-    Math.max(0.05, Math.min(0.95, g * 0.9)),
-    Math.max(0.1, Math.min(0.95, 0.9 * b + 0.1))
-  );
-}
-
 export const Interactive3DViewport: React.FC<Interactive3DViewportProps> = ({
   field = 'CFD',
-  shadingMode: propShading = 'shaded',
   showMeshOverlay: propShowMesh = false,
   activePreset: propPreset = 'iso',
+  hasSolvedResults = false,
+  fieldMin,
+  fieldMax,
+  fieldUnit = '',
+  fieldLabel = '',
   onPresetChange,
   onCadLoaded,
   onBoundaryAdded,
@@ -94,15 +91,15 @@ export const Interactive3DViewport: React.FC<Interactive3DViewportProps> = ({
   const [showWireframe, setShowWireframe] = useState<boolean>(propShowMesh);
   const [preset, setPreset] = useState<ViewPreset>(propPreset);
   const [activeTool, setActiveTool] = useState<'orbit' | 'pan' | 'probe' | 'tag_inlet' | 'tag_outlet' | 'tag_wall'>('orbit');
-  const [showStreamlines, setShowStreamlines] = useState<boolean>(true);
+  const [showStreamlines, setShowStreamlines] = useState<boolean>(false);
   const [cadStats, setCadStats] = useState<CadModelStats | null>(null);
   const [boundaryMarkers, setBoundaryMarkers] = useState<BoundaryMarker[]>([]);
   const [probeData, setProbeData] = useState<{
     x: number;
     y: number;
     z: number;
-    val: number;
-    unit: string;
+    val?: number;
+    unit?: string;
     label: string;
     screenX: number;
     screenY: number;
@@ -155,22 +152,12 @@ export const Interactive3DViewport: React.FC<Interactive3DViewportProps> = ({
 
         const pos = geometry.attributes.position;
         const count = pos.count;
-        const colors = new Float32Array(count * 3);
-        for (let i = 0; i < count; i++) {
-          const x = pos.getX(i);
-          const y = pos.getY(i);
-          const scalar = Math.max(0, Math.min(1, (x + 2.5) / 5.0 * 0.7 + (y + 1.5) / 3.0 * 0.3));
-          const col = getTurboColor(scalar);
-          colors[i * 3] = col.r;
-          colors[i * 3 + 1] = col.g;
-          colors[i * 3 + 2] = col.b;
-        }
-        geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
 
+        // Clean Neutral CAD Surface Material (No fake pre-solved rainbow colors)
         const material = new THREE.MeshStandardMaterial({
-          vertexColors: true,
-          roughness: 0.3,
-          metalness: 0.5,
+          color: 0x94a3b8,
+          roughness: 0.35,
+          metalness: 0.45,
           wireframe: showWireframe,
         });
 
@@ -190,7 +177,7 @@ export const Interactive3DViewport: React.FC<Interactive3DViewportProps> = ({
 
         const stats: CadModelStats = {
           name: file.name,
-          triangles: count / 3,
+          triangles: Math.round(count / 3),
           vertices: count,
           dimensions: [
             parseFloat(sizeX.toFixed(2)),
@@ -278,9 +265,9 @@ export const Interactive3DViewport: React.FC<Interactive3DViewportProps> = ({
     scene.add(modelRoot);
 
     if (customMeshRef.current) {
+      (customMeshRef.current.material as THREE.MeshStandardMaterial).wireframe = showWireframe;
       scene.add(customMeshRef.current);
     }
-    // تمت إزالة الأكواد المسؤولة عن إضافة المجسمات الافتراضية (الجناح، العارضة، المشتت الحراري) هنا.
 
     const raycaster = new THREE.Raycaster();
     const mouse = new THREE.Vector2();
@@ -341,30 +328,12 @@ export const Interactive3DViewport: React.FC<Interactive3DViewportProps> = ({
         if (intersects.length > 0) {
           const hit = intersects[0];
           const pt = hit.point;
-          let val = 0;
-          let unit = '';
-          let label = '';
-          if (isFEA) {
-            val = Math.round(18 + Math.abs(pt.x) * 38 + Math.abs(pt.y) * 45);
-            unit = 'MPa';
-            label = 'Von Mises Stress (σ)';
-          } else if (isThermal) {
-            val = Math.round(295 + (2.5 - pt.y) * 28);
-            unit = 'K';
-            label = 'Static Temperature (T)';
-          } else {
-            val = Number((12.5 + Math.abs(pt.y) * 8.4 - pt.x * 2.1).toFixed(1));
-            unit = 'm/s';
-            label = 'Velocity Magnitude (|U|)';
-          }
 
           setProbeData({
-            x: Number(pt.x.toFixed(2)),
-            y: Number(pt.y.toFixed(2)),
-            z: Number(pt.z.toFixed(2)),
-            val,
-            unit,
-            label,
+            x: Number(pt.x.toFixed(3)),
+            y: Number(pt.y.toFixed(3)),
+            z: Number(pt.z.toFixed(3)),
+            label: hasSolvedResults && fieldLabel ? fieldLabel : 'Surface Coordinate Probe',
             screenX: e.clientX - rect.left,
             screenY: e.clientY - rect.top,
           });
@@ -411,7 +380,9 @@ export const Interactive3DViewport: React.FC<Interactive3DViewportProps> = ({
       renderer.dispose();
       controls.dispose();
     };
-  }, [field, isFEA, isThermal, isCFD, showWireframe, showStreamlines, activeTool]);
+  }, [field, isFEA, isThermal, isCFD, showWireframe, showStreamlines, activeTool, hasSolvedResults, fieldLabel]);
+
+  const showLegend = hasSolvedResults && fieldMin !== undefined && fieldMax !== undefined;
 
   return (
     <div className="relative h-full w-full select-none overflow-hidden bg-[#070b16]">
@@ -448,7 +419,7 @@ export const Interactive3DViewport: React.FC<Interactive3DViewportProps> = ({
         </button>
 
         <button
-          title="Point Probe (Read exact physical values at coordinate)"
+          title="Point Probe (Read exact coordinate on CAD surface)"
           onClick={() => setActiveTool(activeTool === 'probe' ? 'orbit' : 'probe')}
           className={`flex h-7 w-7 items-center justify-center rounded-lg transition-colors ${
             activeTool === 'probe' ? 'bg-amber-500/25 text-amber-300 ring-1 ring-amber-500/50' : 'text-slate-400 hover:bg-slate-800 hover:text-white'
@@ -484,7 +455,7 @@ export const Interactive3DViewport: React.FC<Interactive3DViewportProps> = ({
         <span className="mx-1 h-4 w-px bg-slate-700/80" />
 
         <button
-          title="Toggle Finite Element Mesh Wireframe"
+          title="Toggle Mesh Wireframe"
           onClick={() => setShowWireframe(!showWireframe)}
           className={`flex h-7 w-7 items-center justify-center rounded-lg transition-colors ${
             showWireframe ? 'bg-sky-500/25 text-sky-300 ring-1 ring-sky-500/50' : 'text-slate-400 hover:bg-slate-800 hover:text-white'
@@ -493,7 +464,7 @@ export const Interactive3DViewport: React.FC<Interactive3DViewportProps> = ({
           <Grid3X3 className="h-3.5 w-3.5" />
         </button>
 
-        {isCFD && (
+        {isCFD && hasSolvedResults && (
           <button
             title="Toggle Flow Streamlines"
             onClick={() => setShowStreamlines(!showStreamlines)}
@@ -532,7 +503,7 @@ export const Interactive3DViewport: React.FC<Interactive3DViewportProps> = ({
           </div>
           {boundaryMarkers.length > 0 && (
             <div className="mt-1 pt-1 border-t border-slate-800 text-[10px] text-emerald-400 font-mono">
-              ✓ Assigned Boundaries: {boundaryMarkers.length}
+              Assigned Boundaries: {boundaryMarkers.length}
             </div>
           )}
         </div>
@@ -556,27 +527,30 @@ export const Interactive3DViewport: React.FC<Interactive3DViewportProps> = ({
         </div>
       </div>
 
-      <div className="pointer-events-none absolute bottom-8 right-4 z-20 flex flex-col items-end gap-1.5 rounded-xl border border-slate-800/80 bg-slate-950/85 p-3 shadow-2xl backdrop-blur-md">
-        <div className="text-[11px] font-semibold text-slate-200">
-          {isFEA ? 'Von Mises Stress' : isThermal ? 'Static Temperature' : 'Velocity Magnitude'}
-        </div>
-        <div className="flex items-center gap-2">
-          <div
-            className="h-28 w-3 rounded-md border border-slate-700/80"
-            style={{
-              background: 'linear-gradient(to bottom, #d02020, #e87010, #d8d020, #20c040, #2080e0, #1020a0)',
-            }}
-          />
-          <div className="flex h-28 flex-col justify-between font-mono text-[9.5px] text-slate-400">
-            <span>{isFEA ? '240.0 MPa' : isThermal ? '373.15 K' : '28.5 m/s'} (Max)</span>
-            <span>{isFEA ? '180.0 MPa' : isThermal ? '353.15 K' : '21.0 m/s'}</span>
-            <span>{isFEA ? '120.0 MPa' : isThermal ? '333.15 K' : '14.0 m/s'}</span>
-            <span>{isFEA ? '60.0 MPa' : isThermal ? '313.15 K' : '7.0 m/s'}</span>
-            <span>{isFEA ? '0.0 MPa' : isThermal ? '293.15 K' : '0.0 m/s'} (Min)</span>
+      {/* Render Colormap Legend ONLY when real solved results exist */}
+      {showLegend && (
+        <div className="pointer-events-none absolute bottom-8 right-4 z-20 flex flex-col items-end gap-1.5 rounded-xl border border-slate-800/80 bg-slate-950/85 p-3 shadow-2xl backdrop-blur-md">
+          <div className="text-[11px] font-semibold text-slate-200">
+            {fieldLabel || (isFEA ? 'Von Mises Stress' : isThermal ? 'Static Temperature' : 'Velocity Magnitude')}
           </div>
+          <div className="flex items-center gap-2">
+            <div
+              className="h-28 w-3 rounded-md border border-slate-700/80"
+              style={{
+                background: 'linear-gradient(to bottom, #d02020, #e87010, #d8d020, #20c040, #2080e0, #1020a0)',
+              }}
+            />
+            <div className="flex h-28 flex-col justify-between font-mono text-[9.5px] text-slate-400">
+              <span>{fieldMax} {fieldUnit} (Max)</span>
+              <span>{(fieldMin + (fieldMax - fieldMin) * 0.75).toFixed(2)} {fieldUnit}</span>
+              <span>{(fieldMin + (fieldMax - fieldMin) * 0.5).toFixed(2)} {fieldUnit}</span>
+              <span>{(fieldMin + (fieldMax - fieldMin) * 0.25).toFixed(2)} {fieldUnit}</span>
+              <span>{fieldMin} {fieldUnit} (Min)</span>
+            </div>
+          </div>
+          <div className="font-mono text-[9px] text-slate-500">Colormap: Turbo (ASME V&V 20)</div>
         </div>
-        <div className="font-mono text-[9px] text-slate-500">Colormap: Turbo (ASME V&V 20)</div>
-      </div>
+      )}
 
       {probeData && (
         <div
@@ -587,22 +561,19 @@ export const Interactive3DViewport: React.FC<Interactive3DViewportProps> = ({
             <Activity className="h-3.5 w-3.5 text-amber-400" />
             <span>{probeData.label}</span>
           </div>
-          <div className="my-0.5 font-mono text-sm font-extrabold text-white">
-            {probeData.val} <span className="text-xs font-normal text-slate-400">{probeData.unit}</span>
-          </div>
-          <div className="font-mono text-[9.5px] text-slate-400">
-            Coordinates: [{probeData.x}, {probeData.y}, {probeData.z}] m
+          <div className="mt-0.5 font-mono text-[10px] text-slate-200">
+            X: {probeData.x} m · Y: {probeData.y} m · Z: {probeData.z} m
           </div>
         </div>
       )}
 
       <div className="pointer-events-none absolute inset-x-0 bottom-0 z-10 flex h-6 items-center justify-between border-t border-slate-800/80 bg-slate-950/75 px-3 font-mono text-[10px] text-slate-400 backdrop-blur-sm">
         <div className="flex items-center gap-3">
-          <span className="text-emerald-400">● WebGL 3D Engine: Active (60 FPS)</span>
+          <span className="text-emerald-400">● WebGL 3D Engine: Active</span>
           <span>·</span>
           <span>Field: <strong className="text-slate-200">{field}</strong></span>
           <span>·</span>
-          <span>Mesh: {showWireframe ? 'Hex/Tet Wireframe Visible' : 'Solid Surface'}</span>
+          <span>View: {showWireframe ? 'Wireframe' : 'Solid CAD'}</span>
           {activeTool.startsWith('tag_') && (
             <span className="text-amber-300 font-bold animate-pulse">
               [Click on 3D surface to assign {activeTool.replace('tag_', '').toUpperCase()}]
