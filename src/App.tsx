@@ -786,7 +786,7 @@ export default function App() {
       label: 'Tools',
       items: [
         { id: 'mesh', label: 'Mesh Generator', icon: <Grid3X3 className="h-3.5 w-3.5" />, onClick: () => setIsMeshGeneratorOpen(true), title: 'مولد الشبيكات وتدقيق جودة التعامد' },
-        { id: 'pipeline', label: 'Pipeline & Container Tracker (DHL/FedEx Map)', icon: <Truck className="h-3.5 w-3.5" />, onClick: () => setIsPipelineTrackerOpen(true), title: 'خريطة تتبع سريان الحسابات والحاويات الحسابية' },
+         
         { id: 'materials', label: 'Materials Database', icon: <Database className="h-3.5 w-3.5" />, onClick: () => setIsMaterialsModalOpen(true), disabled: !hasProject, title: hasProject ? 'فتح مكتبة المواد المعيارية' : 'يتطلب فتح أو اختيار مشروع لتخصيص خواص المواد' },
         { id: 'sweep', label: 'Parametric Sweep', icon: <Sliders className="h-3.5 w-3.5" />, onClick: () => setIsParametricSweepOpen(true), disabled: !hasProject, title: hasProject ? 'مسح المتغيرات وحساب سطوح الاستجابة' : 'يتطلب فتح مشروع لتحديد متغيرات المسح' },
         { id: 'assistant', label: 'OmniSolve AI (Copilot)', icon: <Sparkles className="h-3.5 w-3.5" />, onClick: () => setIsAssistantOpen(true), disabled: !hasProject, title: hasProject ? 'فتح مستشار المحاكاة والتحليل الفيزيائي' : 'يتطلب فتح مشروع لمناقشة الحالة' },
@@ -809,8 +809,7 @@ export default function App() {
       items: [
         { id: 'keys', label: 'API Keys & Engine Mode', icon: <Key className="h-3.5 w-3.5" />, onClick: () => setIsKeyPoolModalOpen(true), title: 'إدارة مفاتيح وأنماط المحرك' },
         { id: 'cloud', label: 'Cloud Server & Licensing', icon: <Cloud className="h-3.5 w-3.5" />, onClick: () => setIsCloudModalOpen(true), title: 'إعدادات خوادم الحوسبة السحابية وعناقيد المعالجة' },
-        { id: 'audit', label: 'Technical Audit Report', icon: <Shield className="h-3.5 w-3.5" />, onClick: () => setIsAuditModalOpen(true), title: 'شهادة الاعتماد والتدقيق الفني' },
-        { id: 'deck', label: 'Executive Catalog & 4K Pitch Deck', icon: <Sparkles className="h-3.5 w-3.5 text-amber-400" />, onClick: () => { const a = document.createElement('a'); a.href = '/naseer_cae_master_catalog.html'; a.target = '_blank'; a.rel = 'noopener noreferrer'; a.click(); }, title: 'الكتالوج الاستثماري الرسمي وسلايدات العرض التفاعلية للشاشات الكبيرة' },
+        
       ],
     },
   ];
@@ -883,7 +882,7 @@ export default function App() {
             onOpenMeshGenerator={() => setIsMeshGeneratorOpen(true)}
             onOpenMaterialsModal={() => setIsMaterialsModalOpen(true)}
             onOpenParametricSweep={() => setIsParametricSweepOpen(true)}
-            onOpenPipelineTracker={() => setIsPipelineTrackerOpen(true)}
+            
             savedProjectsCount={allAvailableProjects.length}
             onResetWorkspace={() => {
               setCurrentProject(null);
@@ -1072,11 +1071,7 @@ export default function App() {
         onOpenMeshGenerator={() => setIsMeshGeneratorOpen(true)}
       />
 
-      {/* Technical Audit & 100% Completeness Report Modal */}
-      <AuditReportModal
-        isOpen={isAuditModalOpen}
-        onClose={() => setIsAuditModalOpen(false)}
-      />
+      
 
       {/* Interactive Computational Mesh Generator & Orthogonal Quality Studio */}
       <MeshGenerativeTool
@@ -1101,18 +1096,7 @@ export default function App() {
         currentProject={currentProject}
       />
 
-      {/* DHL/FedEx Style Interactive Pipeline & Container Tracking Modal */}
-      <PipelineTrackerModal
-        isOpen={isPipelineTrackerOpen}
-        onClose={() => setIsPipelineTrackerOpen(false)}
-        jobId={currentProject?.simulationRun?.taskId || 'sim_1794155318309_soyqt'}
-        field={currentProject?.field || 'CFD'}
-        solverType={currentProject?.solver?.solverType || 'OpenFOAM v2406 (SIMPLE)'}
-        solverJobStatus={solverJobStatus}
-        solverProgress={solverProgress}
-        solverLogs={solverLogs}
-        onTriggerRun={() => { runSimulation().catch(() => {}); }}
-      />
+     
 
       {/* Floating Save Toast Notification */}
       {saveToast && (
