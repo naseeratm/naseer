@@ -133,6 +133,7 @@ export default function App() {
   const [meshStudyError, setMeshStudyError] = useState<string | null>(null);
   const [solverResidualSeries, setSolverResidualSeries] = useState<ResidualSeries[]>([]);
   const [simulationInputs, setSimulationInputs] = useState<SimulationInputs>(DEFAULT_SIMULATION_INPUTS);
+  const [appliedPhysicsOverrides, setAppliedPhysicsOverrides] = useState<Record<string, unknown> | null>(null);
   const [activeStep, setActiveStep] = useState<WorkflowStep>('geometry');
   const [documentOpen, setDocumentOpen] = useState<boolean>(false);
   const [consoleTab, setConsoleTab] = useState<ConsoleTab>('logs');
@@ -175,36 +176,43 @@ export default function App() {
       if (runIdRef.current !== runId) throw new SimulationCancelledError();
     };
 
-    const requestBody = buildSimulationRequest(simulationInputs);
-    const simulationType = String(requestBody.simulation_type);
-    const isDirect = requestBody.execution_mode === 'direct';
+   const baseRequest = buildSimulationRequest(simulationInputs);
+  const requestBody: Record<string, unknown> = {
+    ...baseRequest,
+    ...(appliedPhysicsOverrides || {}),
+  };
+  const simulationType = String(requestBody.simulation_type);
 
-    setSolverJobStatus('queued');
-    setSolverProgress(null);
-    setResults(null);
-    setSolverResidualSeries([]);
-    setCurrentProject(project => project ? { ...project, simulationRun: undefined, normalizedSolverResult: undefined } : project);
-    let latestLogs = [`[${new Date().toISOString()}] Submitting ${currentProject.field} simulation (${simulationType}, ${String(requestBody.execution_mode)})`];
+  setSolverJobStatus('queued');
+  setSolverProgress(null);
+  setResults(null);
+  setSolverResidualSeries([]);
+  setCurrentProject(project => project ? { ...project, simulationRun: undefined, normalizedSolverResult: undefined } : project);
+  let latestLogs = [`[${new Date().toISOString()}] Submitting ${currentProject.field} simulation (${simulationType})`];
+  setSolverLogs(latestLogs);
+
+  const submitResponse = await fetch('/api/run-simulation', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(requestBody),
+  });
+  const submitPayload = await readJson(submitResponse);
+  assertActive();
+  if (!submitResponse.ok || submitPayload?.success === false) {
+    throw new Error(extractApiError(submitPayload, `Simulation request failed (${submitResponse.status})`));
+  }
+
+  const isDirect =
+    requestBody.execution_mode === 'direct' ||
+    (!submitPayload?.task_id && Boolean(submitPayload?.result || submitPayload?.data));
+
+  let job: any;
+  if (isDirect) {
+    const directResult = submitPayload?.result ?? submitPayload?.data ?? submitPayload;
+    job = { status: 'COMPLETED', result: directResult, logs: [] };
+    latestLogs = [...latestLogs, `[${new Date().toISOString()}] Direct solver execution completed`];
     setSolverLogs(latestLogs);
-
-    const submitResponse = await fetch('/api/run-simulation', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(requestBody),
-    });
-    const submitPayload = await readJson(submitResponse);
-    assertActive();
-    if (!submitResponse.ok || submitPayload?.success === false) {
-      throw new Error(extractApiError(submitPayload, `Simulation request failed (${submitResponse.status})`));
-    }
-
-    let job: any;
-    if (isDirect) {
-      job = { status: 'COMPLETED', result: submitPayload?.result, logs: [] };
-      latestLogs = [...latestLogs, `[${new Date().toISOString()}] Direct execution completed`];
-      setSolverLogs(latestLogs);
-    } else {
-      const taskId = submitPayload?.task_id as string | undefined;
+  } else {      const taskId = submitPayload?.task_id as string | undefined;
       if (!taskId) throw new Error('Simulation backend did not return a task_id');
 
       for (;;) {
@@ -280,6 +288,39 @@ export default function App() {
 
   // Apply computed nanofluid & flow regime directly to the active project & solver inputs
   const handleApplyWizardCaseToProject = (row: SweepCaseRow) => {
+    const isFea = row.geometryMode === 'structural_fea';
+  setAppliedPhysicsOverrides(
+    isFea
+      ? {
+          simulation_type: 'FEA',
+          geometry_mode: row.geometryMode,
+          domain_length: row.domainLengthM,
+          domain_height: row.dhMeters,
+          pressure_load_mpa: row.velocity,
+          elastic_modulus_gpa: row.elasticModulusGpa,
+          poisson_ratio: row.poissonRatio,
+          yield_strength_mpa: row.yieldStrengthMpa,
+          support_type: row.supportType,
+        }
+      : {
+          simulation_type: 'CFD',
+          geometry_mode: row.geometryMode,
+          domain_length: row.domainLengthM,
+          domain_height: row.dhMeters,
+          hydraulic_diameter: row.dhMeters,
+          velocity: row.velocity,
+          inlet_temperature: row.inletTempK,
+          heat_flux: row.heatFlux,
+          wall_temperature: row.wallTempK,
+          density: row.rhoEff,
+          viscosity: row.muEff,
+          thermal_conductivity: row.kEff,
+          specific_heat: row.cpEff,
+          turbulence_model: row.regime,
+          wave_count: row.waveCount,
+          wave_amplitude_ratio: row.waveAmplitudeRatio,
+        }
+  );
     if (!currentProject) return;
     setSimulationInputs((prev) => ({
       ...prev,
@@ -315,132 +356,121 @@ export default function App() {
 
   // Execute every queued parametric sweep row through the REAL FastAPI /api/run-simulation solver pipeline
   const handleRunRealWizardBatch = async (
-    cases: SweepCaseRow[],
-    onRowUpdate: (id: string, patch: Partial<SweepCaseRow>) => void
-  ): Promise<void> => {
-    if (!currentProject) throw new Error('No active engineering project');
-    setConsoleTab('logs');
-    setSolverJobStatus('running');
-
-    for (let i = 0; i < cases.length; i++) {
-      const c = cases[i];
-      onRowUpdate(c.id, { status: 'Running' });
-      const baseReq = buildSimulationRequest(simulationInputs);
-      const batchReq = {
-        ...baseReq,
-        simulation_type: 'CFD',
-        velocity: c.velocity,
-        inlet_temperature: c.inletTempK,
-        heat_flux: c.heatFlux,
-        density: c.rhoEff,
-        viscosity: c.muEff,
-        thermal_conductivity: c.kEff,
-        specific_heat: c.cpEff,
-        hydraulic_diameter: (c.reynolds * c.muEff) / Math.max(1e-6, c.rhoEff * c.velocity),
-        turbulence_model: c.regime,
-        corrugated: true,
-      };
-
-      setSolverLogs((prev) => [
-        ...prev,
-        `[${new Date().toISOString()}] [Batch ${i + 1}/${cases.length}] Solving ${c.caseName} (U=${c.velocity} m/s, k=${c.kEff} W/m·K)...`,
-      ]);
-
-      try {
-        const res = await fetch('/api/run-simulation', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(batchReq),
-        });
-        const submitPayload = await readJson(res);
-        if (!res.ok || submitPayload?.success === false) {
-          throw new Error(extractApiError(submitPayload, `HTTP ${res.status}`));
-        }
-
-        const jobResult = submitPayload?.result ?? submitPayload?.data ?? submitPayload;
-        const solverData = jobResult?.solver_results ?? jobResult?.data?.solver_results ?? jobResult ?? {};
-        const tMax = solverData?.max_temperature ?? solverData?.temperature_max;
-        const nuVal = solverData?.nusselt_number;
-        const hVal = solverData?.heat_transfer_coeff_h;
-        const dpVal = solverData?.pressure_drop_pa;
-
-        const summaryParts: string[] = [];
-        if (typeof nuVal === 'number') summaryParts.push(`Nu=${nuVal.toFixed(1)}`);
-        if (typeof hVal === 'number') summaryParts.push(`h=${hVal.toFixed(0)} W/m²K`);
-        if (typeof tMax === 'number') summaryParts.push(`Tmax=${tMax.toFixed(2)} K`);
-        if (typeof dpVal === 'number') summaryParts.push(`ΔP=${dpVal.toFixed(1)} Pa`);
-        const summaryText = summaryParts.length > 0 ? summaryParts.join(' · ') : 'Solved (OK)';
-
-        onRowUpdate(c.id, {
-  status: 'Completed',
-  resultSummary: summaryText,
-  nuResult: typeof nuVal === 'number' ? nuVal : undefined,
-  deltaPResult: typeof dpVal === 'number' ? dpVal : undefined,
-  hResult: typeof hVal === 'number' ? hVal : undefined,
-  tMaxResult: typeof tMax === 'number' ? tMax : undefined,
-});
-        setSolverLogs((prev) => [
-          ...prev,
-          `[${new Date().toISOString()}] ✓ [Batch ${i + 1}/${cases.length}] ${c.caseName} -> ${summaryText}`,
-        ]);
-
-        setResults({
-          ...jobResult,
-          ...solverData,
-          temperature_matrix: toRealTemperatureMatrix(solverData?.temperature_matrix),
-        });
-      } catch (err: any) {
-        const msg = err?.message || 'Failed';
-        onRowUpdate(c.id, { status: 'Error', resultSummary: msg });
-        setSolverLogs((prev) => [
-          ...prev,
-          `[${new Date().toISOString()}] ✗ [Batch ${i + 1}/${cases.length}] ${c.caseName} ERROR: ${msg}`,
-        ]);
-        recordIssue(`${c.caseName}: ${msg}`);
-      }
-    }
-
-    setSolverJobStatus('completed');
-    setSolverProgress(100);
-  };
-
-  const recordIssue = (message: string, severity: ConsoleIssue['severity'] = 'error') => {
-    issueIdRef.current += 1;
-    const issue: ConsoleIssue = {
-      id: issueIdRef.current,
-      time: new Date().toLocaleTimeString([], { hour12: false }),
-      severity,
-      message,
-    };
-    setConsoleIssues(previous => [...previous, issue]);
-  };
-
-  const runSimulation = async (): Promise<unknown> => {
-    if (isSolverRunning) return undefined;
-    setConsoleTab('logs');
+  cases: SweepCaseRow[],
+  onRowUpdate: (id: string, patch: Partial<SweepCaseRow>) => void
+) => {
+  for (const c of cases) {
+    onRowUpdate(c.id, { status: 'Running' });
     try {
-      const payload = await handleRunSimulation();
-      setActiveStep('post');
-      return payload;
+      const isFea = c.geometryMode === 'structural_fea';
+      const payload: Record<string, unknown> = isFea
+        ? {
+            simulation_type: 'FEA',
+            execution_mode: 'direct',
+            geometry_mode: c.geometryMode,
+            domain_length: c.domainLengthM,
+            domain_height: c.dhMeters,
+            pressure_load_mpa: c.velocity,
+            elastic_modulus_gpa: c.elasticModulusGpa,
+            poisson_ratio: c.poissonRatio,
+            yield_strength_mpa: c.yieldStrengthMpa,
+            support_type: c.supportType,
+          }
+        : {
+            simulation_type: 'CFD',
+            execution_mode: 'direct',
+            geometry_mode: c.geometryMode,
+            domain_length: c.domainLengthM,
+            domain_height: c.dhMeters,
+            hydraulic_diameter: c.dhMeters,
+            velocity: c.velocity,
+            inlet_temperature: c.inletTempK,
+            heat_flux: c.heatFlux,
+            wall_temperature: c.wallTempK,
+            density: c.rhoEff,
+            viscosity: c.muEff,
+            thermal_conductivity: c.kEff,
+            specific_heat: c.cpEff,
+            turbulence_model: c.regime,
+            wave_count: c.waveCount,
+            wave_amplitude_ratio: c.waveAmplitudeRatio,
+          };
+
+      const response = await fetch('/api/run-simulation', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      const data = await readJson(response);
+      if (!response.ok || data?.success === false) {
+        throw new Error(extractApiError(data, `Solver error (${response.status})`));
+      }
+
+      const raw = data?.result ?? data?.data ?? data;
+      const res = raw?.solver_results ?? raw;
+
+      if (isFea) {
+        const stressVal = Number(res?.max_von_mises_mpa ?? res?.max_von_mises_stress ?? 0);
+        const dispVal = Number(res?.max_displacement_mm ?? res?.max_displacement ?? 0);
+        onRowUpdate(c.id, {
+          status: 'Completed',
+          nuResult: stressVal,
+          deltaPResult: dispVal,
+          resultSummary: `σ_vm=${stressVal.toFixed(2)} MPa, δ=${dispVal.toFixed(3)} mm`,
+        });
+      } else {
+        const nuVal = Number(res?.nusselt_number ?? 0);
+        const dpVal = Number(res?.pressure_drop_pa ?? res?.pressure_drop ?? 0);
+        const hVal = Number(res?.heat_transfer_coeff_h ?? 0);
+        const tMaxVal = Number(res?.temperature_max ?? res?.max_temperature ?? c.inletTempK);
+        onRowUpdate(c.id, {
+          status: 'Completed',
+          nuResult: nuVal,
+          deltaPResult: dpVal,
+          hResult: hVal,
+          tMaxResult: tMaxVal,
+          resultSummary: `Nu=${nuVal.toFixed(2)}, ΔP=${dpVal.toFixed(2)} Pa`,
+        });
+      }
+
+      setResults(res);
+    } catch (err: any) {
+      onRowUpdate(c.id, {
+        status: 'Error',
+        resultSummary: err?.message || 'Execution failed',
+      });
+      throw err;
+    }
+  }
+};
+ const recordIssue = (message: string, severity: 'error' | 'warning' = 'error') => {
+    const id = ++issueIdRef.current;
+    setConsoleIssues((prev) => [
+      ...prev,
+      { id, message, severity, time: new Date().toISOString() },
+    ]);
+  };
+  const cancelSimulation = () => {
+    runIdRef.current += 1;
+    setSolverJobStatus('idle');
+    setSolverProgress(null);
+    setSolverLogs((prev) => [...prev, `[${new Date().toISOString()}] Simulation cancelled by user.`]);
+  };
+
+  const runSimulation = async () => {
+    try {
+      await handleRunSimulation();
     } catch (error) {
-      if (error instanceof SimulationCancelledError) throw error;
-      const message = error instanceof Error ? error.message : 'Solver execution failed';
+      if (error instanceof SimulationCancelledError) return;
+      const message = error instanceof Error ? error.message : 'Simulation execution failed';
       setSolverJobStatus('failed');
-      setSolverLogs(previous => [...previous, `[${new Date().toISOString()}] ERROR: ${message}`]);
+      setSolverLogs((prev) => [...prev, `[${new Date().toISOString()}] ERROR: ${message}`]);
       recordIssue(message);
       setConsoleTab('errors');
-      throw error;
     }
   };
 
-  const cancelSimulation = () => {
-    if (!isSolverRunning) return;
-    runIdRef.current += 1;
-    setSolverJobStatus('cancelled');
-    setSolverLogs(previous => [...previous, `[${new Date().toISOString()}] Polling stopped: simulation cancelled by user`]);
-    recordIssue('Simulation cancelled by user. The backend job may still finish; its result is ignored.', 'warning');
-  };
-
+  
   const runMeshStudy = async (keyResultId: string): Promise<void> => {
     if (!currentProject || meshStudyRunning) return;
     const studiedProjectId = currentProject.id;
