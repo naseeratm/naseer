@@ -1,9 +1,13 @@
 export interface BoundaryCondition {
+  id?: string;
+  markerId?: string;
   name: string;
-  type: string; // e.g. Velocity Inlet, Pressure Outlet, No-slip Wall, Fixed Support, Pressure Load
+  type: string; // e.g. Velocity Inlet, Mass Flow Inlet, Pressure Outlet, Slip Wall, Fixed Support, Force Load
   value: string;
   unit: string;
   description: string;
+  location?: string;
+  status?: 'Defined' | 'Incomplete';
 }
 
 export interface MaterialProperties {
@@ -188,6 +192,18 @@ export interface SimulationJobManifest {
   resultsSummary?: string;
 }
 
+export interface VtkFieldPayload {
+  points: number[];
+  triangles: number[];
+  scalars?: Record<string, number[]>;
+  vectors?: Record<string, number[]>;
+  active_field?: string;
+  units?: Record<string, string>;
+  bounds?: { min: [number, number, number]; max: [number, number, number] };
+  node_count?: number;
+  triangle_count?: number;
+}
+
 export interface NormalizedSolverResult {
   status: 'success';
   physics: 'CFD' | 'FEA' | 'Thermal' | string;
@@ -204,6 +220,8 @@ export interface NormalizedSolverResult {
   stressMatrix?: number[][];
   velocityMatrix?: number[][];
   displacementMatrix?: number[][];
+  vtkData?: VtkFieldPayload;
+  integrals?: Record<string, number | string>;
   logs: string[];
 }
 
@@ -394,7 +412,7 @@ export interface ThesisProject {
     name: string;
     nameEn: string;
     type: 'Engineering Data' | 'Geometry' | 'Mesh' | 'Setup' | 'Solution' | 'Results';
-    status: 'Up-to-date' | 'Solved' | 'Ready';
+    status: 'Up-to-date' | 'Solved' | 'Ready' | 'Pending';
     details: string;
   }[];
   // Academic & Physical Thesis Attributes

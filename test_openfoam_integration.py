@@ -212,6 +212,46 @@ class TestOpenFOAMIntegration(unittest.TestCase):
             self.assertEqual(fv_solution.count("solver smoothSolver;"), 2)
             self.assertNotIn("preconditioner DILU;", fv_solution)
 
+    def test_corrugated_channel_and_nusselt_metrics_in_openfoam(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            case_root = Path(temporary) / "jobs"
+            case_root.mkdir()
+            def fake_cht_run(command, cwd, **_kwargs):
+                case = Path(cwd)
+                if not str(command[0]).endswith(("blockMesh", "foamToVTK")):
+                    t_dir = case / "100"
+                    t_dir.mkdir(exist_ok=True)
+                    (t_dir / "p").write_text("dimensions [0 2 -2 0 0 0 0];\ninternalField uniform 120.0;\n", encoding="utf-8")
+                    (t_dir / "U").write_text("dimensions [0 1 -1 0 0 0 0];\ninternalField uniform (2 0 0);\n", encoding="utf-8")
+                    (t_dir / "T").write_text(
+                        "dimensions [0 0 0 1 0 0 0];\n"
+                        "internalField nonuniform List<scalar> 4 ( 320.0 310.0 312.0 325.0 );\n",
+                        encoding="utf-8",
+                    )
+                return subprocess.CompletedProcess(command, 0, stdout="Time = 100\nEnd\n", stderr="")
+
+            with patch.dict(os.environ, {"OPENFOAM_CASE_ROOT": str(case_root)}), \
+                    patch("universal_dispatcher.shutil.which", side_effect=lambda name: f"/usr/bin/{name}"), \
+                    patch("universal_dispatcher.subprocess.run", side_effect=fake_cht_run):
+                outcome = call_openfoam_solver({
+                    "simulation_type": "CHT_Coupled",
+                    "geometry_mode": "corrugated_channel",
+                    "wave_count": 3,
+                    "wave_amplitude_ratio": 0.08,
+                    "velocity": 2.0,
+                    "wall_temperature": 350.0,
+                    "thermal_conductivity_k": 0.6,
+                    "width_x": 0.5,
+                    "height_y": 0.05,
+                    "mesh": {"divisions": {"x": 2, "y": 2, "z": 1}},
+                })
+            case_dir = next(case_root.glob("openfoam-*"))
+            block_mesh = (case_dir / "system" / "blockMeshDict").read_text(encoding="utf-8")
+            self.assertIn("polyLine 0 1", block_mesh)
+            self.assertIn("polyLine 3 2", block_mesh)
+            self.assertIn("nusselt_number", outcome)
+            self.assertGreater(outcome["nusselt_number"], 0.0)
+
 
 if __name__ == "__main__":
     unittest.main()

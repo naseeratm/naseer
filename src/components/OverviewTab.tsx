@@ -65,56 +65,8 @@ export const OverviewTab: React.FC<OverviewTabProps> = ({ project, onRunSolver, 
   const [copiedLog, setCopiedLog] = useState<boolean>(false);
   const [activeSchematicCell, setActiveSchematicCell] = useState<string>('wb_setup');
 
-  // Thermal states for parametric calculator
-  const [thermalConductivityK, setThermalConductivityK] = useState<number>(
-    project.material?.thermalConductivity ? parseFloat(project.material.thermalConductivity) : 167.0
-  );
-  const [heatFluxWm2, setHeatFluxWm2] = useState<number>(2500);
-  const [wallThicknessM, setWallThicknessM] = useState<number>(0.025);
-  const [ambientTempC, setAmbientTempC] = useState<number>(22.0);
-  const [convectionCoeffH, setConvectionCoeffH] = useState<number>(25.0);
-
-  // Deterministic Thermal Conduction & Convection calculations
-  const rCond = wallThicknessM / Math.max(0.1, thermalConductivityK);
-  const rConv = 1 / Math.max(1, convectionCoeffH);
-  const rTotal = rCond + rConv;
-  const surfaceTempC = ambientTempC + (heatFluxWm2 * rConv);
-  const baseTempC = surfaceTempC + (heatFluxWm2 * rCond);
-  const biotNumber = (convectionCoeffH * wallThicknessM) / Math.max(0.1, thermalConductivityK);
-
-  // CFD states for parametric calculator
-  const [inletVel, setInletVel] = useState<number>(18.5);
-  const [charLength, setCharLength] = useState<number>(0.05); // 50 mm hydraulic diameter
-  const [fluidDensity, setFluidDensity] = useState<number>(998.2); // Water / air
-  const [dynamicVisc, setDynamicVisc] = useState<number>(0.001003); // Pa.s
-
-  // FEA states for parametric calculator
-  const [appliedLoadKn, setAppliedLoadKn] = useState<number>(25.0); // 25 kN
-  const [beamLengthM, setBeamLengthM] = useState<number>(1.5); // 1.5 m
-  const [modulusGpa, setModulusGpa] = useState<number>(205); // 205 GPa (Steel)
-  const [momentOfInertiaCm4, setMomentOfInertiaCm4] = useState<number>(1250); // cm^4
-  const [sectionHeightMm, setSectionHeightMm] = useState<number>(150); // mm
-
-  // Deterministic CFD physics calculations
-  const reynoldsNumber = (fluidDensity * inletVel * charLength) / dynamicVisc;
-  const isTurbulent = reynoldsNumber > 2300;
-  const frictionFactor = isTurbulent
-    ? Math.pow(0.79 * Math.log(reynoldsNumber) - 1.64, -2)
-    : 64 / Math.max(1, reynoldsNumber);
-  const pressureDropPerMeter =
-    (frictionFactor * (fluidDensity * inletVel * inletVel)) / (2 * charLength);
-
-  // Deterministic FEA physics calculations (Euler-Bernoulli cantilever/supported model)
-  const loadN = appliedLoadKn * 1000;
-  const lengthMm = beamLengthM * 1000;
-  const momentNmm = loadN * lengthMm; // Peak bending moment
-  const cMm = sectionHeightMm / 2; // Distance to outer fiber
-  const inertiaMm4 = momentOfInertiaCm4 * 10000;
-  const bendingStressMpa = (momentNmm * cMm) / inertiaMm4;
-  const eMpa = modulusGpa * 1000;
-  const maxDeflectionMm = (loadN * Math.pow(lengthMm, 3)) / (3 * eMpa * inertiaMm4);
-  const yieldStrengthMpa = 420;
-  const safetyFactor = Math.max(0.1, yieldStrengthMpa / Math.max(1, bendingStressMpa));
+  const solvedIntegrals = project.normalizedSolverResult?.integrals ?? {};
+  const solvedValues = project.normalizedSolverResult?.values ?? {};
 
   const handleTriggerSolve = async () => {
     if (!onRunSolver) return;
@@ -143,6 +95,11 @@ export const OverviewTab: React.FC<OverviewTabProps> = ({ project, onRunSolver, 
   // Residuals history (real solver data only)
   const residualsData = residualSeries;
 
+  const hasCompletedRun =
+    solverJobStatus === 'completed' ||
+    Boolean(project.simulationRun?.result && project.normalizedSolverResult?.converged);
+  const isActivelyRunning = isSolving || solverJobStatus === 'running' || solverJobStatus === 'queued';
+
   // Workbench components
   const workbenchCells = project.workbenchComponents || [
     {
@@ -150,8 +107,10 @@ export const OverviewTab: React.FC<OverviewTabProps> = ({ project, onRunSolver, 
       name: 'بيانات المواد والخواص الفيزيائية',
       nameEn: 'Engineering Data (Materials)',
       type: 'Engineering Data' as const,
-      status: 'Up-to-date' as const,
-      details: `${project.material?.name || 'فولاذ سبائكي / مائع'} | كثافة = ${project.material?.density || '7850 kg/m³'}`,
+      status: project.material?.name ? ('Up-to-date' as const) : ('Pending' as const),
+      details: project.material?.name
+        ? `${project.material.name}${project.material.density ? ` | كثافة = ${project.material.density}` : ''}`
+        : 'بانتظار تحديد المادة والخواص الفيزيائية',
     },
     {
       id: 'wb_geom',
@@ -162,16 +121,20 @@ export const OverviewTab: React.FC<OverviewTabProps> = ({ project, onRunSolver, 
       details: isFEA
         ? 'نطاق إنشائي ثلاثي الأبعاد مع شروط التثبيت'
         : isThermal
-        ? 'نطاق حراري صلب 3D مع أسطح التسخين والتبديد وعزل الجدران'
-        : 'قناة تدفق هيدروديناميكية 3D مع مناطق الدخول والخروج',
+        ? 'نطاق حراري ثلاثي الأبعاد مع الشروط الحرارية'
+        : 'نطاق جريان ثلاثي الأبعاد مع مناطق الدخول والخروج',
     },
     {
       id: 'wb_mesh',
       name: 'شبكة الميش وتقارب روتش',
       nameEn: 'Mesh & Roache GCI',
       type: 'Mesh' as const,
-      status: 'Up-to-date' as const,
-      details: `شبكة مستقلة L3 معتمدة | مؤشر روتش GCI = ${project.meshStudy?.meshLevels?.[2]?.gciPercent || '1.12'}% | جودة تعامد = ${project.meshStudy?.minOrthogonalQuality || '0.89'}`,
+      status: project.meshStudyResult || project.meshStudy ? ('Up-to-date' as const) : ('Pending' as const),
+      details: project.meshStudyResult
+        ? `GCI (fine) = ${project.meshStudyResult.gci_fine_percent !== null ? `${project.meshStudyResult.gci_fine_percent.toFixed(2)}%` : '—'} | عناصر = ${project.meshStudyResult.levels?.[2]?.cells?.toLocaleString() ?? '—'}`
+        : project.meshStudy
+        ? `عناصر الشبكة: ${project.meshStudy.meshLevels?.[2]?.elements?.toLocaleString() ?? '—'} | جودة تعامد = ${project.meshStudy.minOrthogonalQuality ?? '—'}`
+        : 'لم يتم إجراء دراسة استقلالية الشبكة بعد',
     },
     {
       id: 'wb_setup',
@@ -179,23 +142,29 @@ export const OverviewTab: React.FC<OverviewTabProps> = ({ project, onRunSolver, 
       nameEn: 'Physics Setup & Boundaries',
       type: 'Setup' as const,
       status: 'Up-to-date' as const,
-      details: `${project.boundaryConditions?.length || 3} حدود فيزيائية مطبقة | ${project.solver?.scheme || 'Coupled Formulation'}`,
+      details: `${project.boundaryConditions?.length ?? 0} حدود فيزيائية مطبقة | ${project.solver?.scheme || project.solver?.solverType || 'غير محدد'}`,
     },
     {
       id: 'wb_solu',
       name: 'المحلل العددي ومراقبة التقارب',
       nameEn: 'Solution & Residuals',
       type: 'Solution' as const,
-      status: 'Solved' as const,
-      details: `تقارب تام لمصفوفات البواقي RMS < 1.000e-06 في التكرار ${project.solver?.iterations || 1500}`,
+      status: hasCompletedRun ? ('Solved' as const) : ('Pending' as const),
+      details: hasCompletedRun
+        ? `اكتمل الحل في التكرار ${currentIter || '—'} عبر ${project.normalizedSolverResult?.solver || 'Docker Engine'}`
+        : isActivelyRunning
+        ? `جاري التنفيذ عبر حاوية Docker (:8000) — ${solverJobStatus}`
+        : 'بانتظار تشغيل المحاكاة على Docker (:8000)',
     },
     {
       id: 'wb_res',
       name: 'النتائج والكونتورات والتحقق',
       nameEn: 'Results & ASME Validation',
       type: 'Results' as const,
-      status: 'Ready' as const,
-      details: `${project.contours?.length || 4} حقول كونتور ومتجهات | ASME V&V 20 (R² = ${project.validation?.rSquared || 0.994})`,
+      status: hasCompletedRun ? ('Ready' as const) : ('Pending' as const),
+      details: hasCompletedRun
+        ? `${project.contours?.length ?? 0} حقول نتائج | ${project.validation?.rSquared !== undefined ? `R² = ${project.validation.rSquared}` : 'ASME V&V 20 Ready'}`
+        : 'تظهر النتائج فور انتهاء الحساب الفعلي في Docker',
     },
   ];
 
@@ -217,9 +186,35 @@ export const OverviewTab: React.FC<OverviewTabProps> = ({ project, onRunSolver, 
                 <Cpu className="w-3.5 h-3.5" />
                 {project.softwareType}
               </span>
-              <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-bold bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 font-mono">
-                <span className="w-2 h-2 rounded-full bg-emerald-400 animate-ping inline-block" />
-                SOLVED & CONVERGED (RMS &lt; 1e-6)
+              <span
+                className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-bold border font-mono ${
+                  hasCompletedRun
+                    ? 'bg-emerald-500/20 text-emerald-400 border-emerald-500/30'
+                    : isActivelyRunning
+                    ? 'bg-sky-500/20 text-sky-300 border-sky-500/30'
+                    : solverJobStatus === 'failed'
+                    ? 'bg-rose-500/20 text-rose-300 border-rose-500/30'
+                    : 'bg-amber-500/15 text-amber-300 border-amber-500/30'
+                }`}
+              >
+                <span
+                  className={`w-2 h-2 rounded-full inline-block ${
+                    hasCompletedRun
+                      ? 'bg-emerald-400'
+                      : isActivelyRunning
+                      ? 'bg-sky-400'
+                      : solverJobStatus === 'failed'
+                      ? 'bg-rose-400'
+                      : 'bg-amber-400'
+                  }`}
+                />
+                {hasCompletedRun
+                  ? 'CONVERGED (Docker Verified)'
+                  : isActivelyRunning
+                  ? `RUNNING ON DOCKER (${solverJobStatus.toUpperCase()})`
+                  : solverJobStatus === 'failed'
+                  ? 'FAILED — CHECK LOGS'
+                  : 'READY / NOT SOLVED YET'}
               </span>
             </div>
 
@@ -299,7 +294,7 @@ export const OverviewTab: React.FC<OverviewTabProps> = ({ project, onRunSolver, 
                 {project.academicMeta?.studentName || project.author}
               </span>
               <span className="text-[11px] text-sky-400 font-mono block">
-                معرف الطالب: {project.academicMeta?.studentId || project.studentId || 'PHD-2026-ENG'}
+                معرف الطالب: {project.academicMeta?.studentId || project.studentId || '—'}
               </span>
             </div>
             <div>
@@ -328,7 +323,7 @@ export const OverviewTab: React.FC<OverviewTabProps> = ({ project, onRunSolver, 
                 </span>
                 <span className="inline-flex items-center gap-1 text-[10px] font-mono font-bold text-emerald-400 bg-emerald-950/60 px-2 py-0.5 rounded border border-emerald-500/30">
                   <Cpu className="w-3 h-3 text-emerald-400" />
-                  {project.activeSolverBadge || (project.field === 'FEA' ? 'CalculiX v2.21 (Spooles Direct)' : 'OpenFOAM v2406 (SIMPLE)')}
+                  {project.activeSolverBadge || project.normalizedSolverResult?.solver || project.softwareType || 'Docker CAE Engine (:8000)'}
                 </span>
               </div>
             </div>
@@ -437,7 +432,7 @@ export const OverviewTab: React.FC<OverviewTabProps> = ({ project, onRunSolver, 
             }`}
           >
             <Calculator className="w-4 h-4 text-emerald-400" />
-            <span>حاسبة الإكسيرجي والطاقة</span>
+            <span>مقاييس المحاكاة الحقيقية (Docker Telemetry)</span>
           </button>
 
           <button
@@ -485,7 +480,7 @@ export const OverviewTab: React.FC<OverviewTabProps> = ({ project, onRunSolver, 
                 </div>
                 <div className="flex items-center gap-2 text-xs font-mono">
                   <span className="px-3 py-1 rounded-lg bg-sky-950/80 text-sky-300 border border-sky-800">
-                    5 حالات دراسية مفحوصة
+                    {(project.casesMatrix?.length ?? project.meshStudy?.meshLevels?.length ?? 0)} حالات دراسية مسجلة
                   </span>
                 </div>
               </div>
@@ -510,7 +505,7 @@ export const OverviewTab: React.FC<OverviewTabProps> = ({ project, onRunSolver, 
                       caseId: `Case-0${idx + 1}`,
                       name: lvl.levelName,
                       nameAr: lvl.levelName,
-                      studyVariable: `Grid Spacing h = ${lvl.gridSpacingMm || (idx + 1) * 1.2} mm`,
+                      studyVariable: `Grid Spacing h = ${lvl.gridSpacingMm ?? '—'} mm`,
                       purpose: idx === 2 ? 'تحقيق استقلالية الشبكة Roache GCI' : 'فحص حساسية التقارب العددي',
                       meshElements: lvl.elements,
                       meshNodes: lvl.nodes,
@@ -518,8 +513,8 @@ export const OverviewTab: React.FC<OverviewTabProps> = ({ project, onRunSolver, 
                       keyOutputName: project.contours[0]?.name || (isFEA ? 'أقصى إجهاد مكافئ' : 'القيمة المخرجة'),
                       keyOutputValue: lvl.keyResultValue,
                       keyOutputUnit: project.contours[0]?.unit || (isFEA ? 'MPa' : 'm/s'),
-                      discrepancyPercent: lvl.percentageError || 0.0,
-                      runDurationSec: lvl.computationTimeSec || (idx + 1) * 35,
+                      discrepancyPercent: lvl.percentageError ?? 0.0,
+                      runDurationSec: lvl.computationTimeSec ?? 0,
                       status: idx === 2 ? 'Converged' : (idx === 0 ? 'Baseline' : 'Completed'),
                     }))).map((c, i) => (
                       <tr key={i} className="hover:bg-slate-900/60 transition-colors">
@@ -551,7 +546,7 @@ export const OverviewTab: React.FC<OverviewTabProps> = ({ project, onRunSolver, 
                           {c.discrepancyPercent === 0 ? '0.00% (مرجع)' : `${c.discrepancyPercent}%`}
                         </td>
                         <td className="py-3 px-4 text-center font-mono text-slate-400">
-                          {c.runDurationSec}s
+                          {c.runDurationSec > 0 ? `${c.runDurationSec}s` : '—'}
                         </td>
                         <td className="py-3 px-4 text-center">
                           <span className={`inline-flex items-center px-2 py-0.5 rounded text-[11px] font-semibold ${
@@ -640,114 +635,80 @@ export const OverviewTab: React.FC<OverviewTabProps> = ({ project, onRunSolver, 
         {/* Thermal Heatmaps, Charts & Literature Matrix View */}
         {workbenchView === 'lhtes_charts' && (
           <div className="p-4 space-y-8">
-            {/* Section 1: Figure 2 Melting Comparison */}
             <div className="bg-slate-950/80 p-5 rounded-2xl border border-slate-800 space-y-4">
               <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
                 <span className="font-bold text-slate-100 text-sm flex items-center gap-2">
                   <BarChart3 className="w-4 h-4 text-amber-400" />
-                  <span>الشكل (2): مقارنة زمن الانصهار 95% (t95) لمختلف الحالات الهندسية</span>
+                  <span>مقارنة حالات الانصهار والحرارة المحسوبة</span>
                 </span>
                 <span className="font-mono text-[11px] text-slate-400">
-                  Figure 2: Melting Time Comparison (t95) Across Baseline Cases
+                  Real Solver Field & Comparison Metrics
                 </span>
               </div>
 
-              <div className="space-y-3 pt-2">
-                {(project.meltingComparison || []).map((c, idx) => {
-                  const maxHours = 5.0;
-                  const widthPercent = (c.t95Hours / maxHours) * 100;
-                  return (
-                    <div key={idx} className="space-y-1">
-                      <div className="flex justify-between items-center text-xs">
-                        <span className="font-semibold text-slate-300 font-sans">
-                          {c.caseName}
-                        </span>
-                        <span className="font-mono font-bold text-xs text-slate-200">
-                          {c.t95Hours} h {c.badge ? `(${c.badge})` : ''}
-                        </span>
-                      </div>
-                      <div className="w-full bg-slate-900 rounded-lg h-7 p-1 border border-slate-800 flex items-center">
-                        <div
-                          className="h-full rounded-md flex items-center justify-end px-2 text-[11px] font-mono font-bold text-white transition-all shadow-md"
-                          style={{ width: `${widthPercent}%`, backgroundColor: c.color }}
-                        >
-                          {c.t95Hours} h
+              {(project.meltingComparison || []).length === 0 ? (
+                <div className="p-4 rounded-xl bg-slate-900/70 border border-slate-800 text-xs text-slate-400">
+                  لا توجد بيانات مقارنة زمنية (t95) مرفقة لهذا المشروع حتى الآن. يتم ملؤها فقط من نتائج محاكاة حقيقية أو جداول تجريبية معتمدة.
+                </div>
+              ) : (
+                <div className="space-y-3 pt-2">
+                  {(project.meltingComparison || []).map((c, idx) => {
+                    const maxHours = Math.max(...(project.meltingComparison || []).map((m) => m.t95Hours), 1);
+                    const widthPercent = Math.min(100, Math.max(8, (c.t95Hours / maxHours) * 100));
+                    return (
+                      <div key={idx} className="space-y-1">
+                        <div className="flex justify-between items-center text-xs">
+                          <span className="font-semibold text-slate-300 font-sans">
+                            {c.caseName}
+                          </span>
+                          <span className="font-mono font-bold text-xs text-slate-200">
+                            {c.t95Hours} h {c.badge ? `(${c.badge})` : ''}
+                          </span>
+                        </div>
+                        <div className="w-full bg-slate-900 rounded-lg h-7 p-1 border border-slate-800 flex items-center">
+                          <div
+                            className="h-full rounded-md flex items-center justify-end px-2 text-[11px] font-mono font-bold text-white transition-all shadow-md"
+                            style={{ width: `${widthPercent}%`, backgroundColor: c.color }}
+                          >
+                            {c.t95Hours} h
+                          </div>
                         </div>
                       </div>
-                    </div>
-                  );
-                })}
-              </div>
+                    );
+                  })}
+                </div>
+              )}
             </div>
 
-            {/* Section 1.2: Heatmaps Figures 6 & 7 */}
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
-              {/* Figure 6: Liquid Fraction */}
-              <div className="bg-slate-950/80 p-5 rounded-2xl border border-slate-800 space-y-3">
-                <div className="text-xs">
-                  <span className="font-bold text-slate-100 text-sm block">
-                    الشكل (6): خريطة نسبة الانصهار (Liquid Fraction Map)
-                  </span>
-                  <span className="font-mono text-[11px] text-slate-400">
-                    Figure 6: Spatiotemporal Liquid Fraction Heatmap
-                  </span>
-                </div>
-
-                <div className="relative h-44 w-full rounded-xl overflow-hidden border border-slate-700 bg-gradient-to-r from-blue-900 via-amber-600 to-red-600 flex flex-col justify-between p-3 select-none">
-                  <div className="absolute top-1/2 left-0 right-0 border-t-2 border-dashed border-white/80 flex items-center justify-between px-3">
-                    <span className="bg-black/70 text-white font-mono text-[10px] px-2 py-0.5 rounded">
-                      Transition Boundary (Z = 0.25 m: Dense / Open)
-                    </span>
-                    <span className="bg-black/70 text-emerald-300 font-mono text-[10px] px-2 py-0.5 rounded">
-                      t95 = {project.meltingComparison?.[0]?.t95Hours ? `${project.meltingComparison[0].t95Hours} h` : 'مكتمل'}
-                    </span>
+            {project.normalizedSolverResult?.values?.field_min !== undefined || project.normalizedSolverResult?.values?.field_max !== undefined ? (
+              <div className="bg-slate-950/80 p-5 rounded-2xl border border-slate-800 space-y-3 text-xs">
+                <span className="font-bold text-slate-100 text-sm block">
+                  ملخص الحقل الفيزيائي المستخرج مباشرة من المحرك ({project.normalizedSolverResult.physics})
+                </span>
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 font-mono">
+                  <div className="p-3 rounded-xl bg-slate-900 border border-slate-800">
+                    <span className="text-slate-400 block text-[10px]">أدنى قيمة (Min):</span>
+                    <strong className="text-sky-400">{project.normalizedSolverResult.values.field_min ?? '—'}</strong>
                   </div>
-                  <div className="flex justify-between text-white font-mono text-[10px] z-10 drop-shadow">
-                    <span>Axial Z = 0.5 m</span>
-                    <span>Liquid Phase</span>
+                  <div className="p-3 rounded-xl bg-slate-900 border border-slate-800">
+                    <span className="text-slate-400 block text-[10px]">أعلى قيمة (Max):</span>
+                    <strong className="text-rose-400">{project.normalizedSolverResult.values.field_max ?? '—'}</strong>
                   </div>
-                  <div className="flex justify-between text-white font-mono text-[10px] z-10 drop-shadow">
-                    <span>Axial Z = 0.0 m</span>
-                    <span>Time: 0 &rarr; 5 Hours</span>
+                  <div className="p-3 rounded-xl bg-slate-900 border border-slate-800">
+                    <span className="text-slate-400 block text-[10px]">المحرك المستخدم:</span>
+                    <strong className="text-emerald-400">{project.normalizedSolverResult.solver}</strong>
                   </div>
-                </div>
-
-                <div className="flex items-center justify-between text-[11px] font-mono">
-                  <span className="text-blue-400 font-bold">0.0 (Solid)</span>
-                  <div className="flex-1 mx-3 h-2.5 rounded-full bg-gradient-to-r from-blue-600 via-emerald-400 via-amber-400 to-red-600 border border-slate-700" />
-                  <span className="text-red-400 font-bold">1.0 (Liquid)</span>
+                  <div className="p-3 rounded-xl bg-slate-900 border border-slate-800">
+                    <span className="text-slate-400 block text-[10px]">المصفوفة الحقلية:</span>
+                    <strong className="text-slate-200">{project.normalizedSolverResult.vtkData ? 'VTK 3D Ready' : 'Scalar Matrix'}</strong>
+                  </div>
                 </div>
               </div>
-
-              {/* Figure 7: Temperature Map */}
-              <div className="bg-slate-950/80 p-5 rounded-2xl border border-slate-800 space-y-3">
-                <div className="text-xs">
-                  <span className="font-bold text-slate-100 text-sm block">
-                    الشكل (7): خريطة درجات الحرارة (Temperature Map K)
-                  </span>
-                  <span className="font-mono text-[11px] text-slate-400">
-                    Figure 7: Spatiotemporal PCM Temperature Heatmap
-                  </span>
-                </div>
-
-                <div className="relative h-44 w-full rounded-xl overflow-hidden border border-slate-700 bg-gradient-to-r from-indigo-950 via-sky-600 via-orange-500 to-red-700 flex flex-col justify-between p-3 select-none">
-                  <div className="flex justify-between text-white font-mono text-[10px] z-10 drop-shadow">
-                    <span>Axial Z = 0.5 m</span>
-                    <span>Oscillating Cycles (1200 s)</span>
-                  </div>
-                  <div className="flex justify-between text-white font-mono text-[10px] z-10 drop-shadow">
-                    <span>Axial Z = 0.0 m</span>
-                    <span>Time: 0 &rarr; 5 Hours</span>
-                  </div>
-                </div>
-
-                <div className="flex items-center justify-between text-[11px] font-mono">
-                  <span className="text-indigo-400 font-bold">292.8 K (20 °C)</span>
-                  <div className="flex-1 mx-3 h-2.5 rounded-full bg-gradient-to-r from-indigo-900 via-sky-500 via-amber-400 to-red-600 border border-slate-700" />
-                  <span className="text-rose-400 font-bold">352.2 K (79.2 °C)</span>
-                </div>
+            ) : (
+              <div className="bg-slate-950/80 p-5 rounded-2xl border border-slate-800 text-xs text-slate-400">
+                شغّل المحاكاة على حاوية Docker (:8000) لعرض القيم الفعلية وخرائط درجات الحرارة ثلاثية الأبعاد بدون أي مخططات ثابتة.
               </div>
-            </div>
+            )}
 
             {/* Section 2: Literature Review Matrix */}
             <div className="space-y-3">
@@ -1029,7 +990,7 @@ export const OverviewTab: React.FC<OverviewTabProps> = ({ project, onRunSolver, 
                   سجل موجه الأوامر ومخرجات المحلل العددي (OpenFOAM / CalculiX Solver Run Log)
                 </span>
                 <span className="px-2 py-0.5 rounded text-[10px] bg-slate-800 text-slate-300 font-mono">
-                  16 Cores | Double Precision
+                  {project.normalizedSolverResult?.solver || project.softwareType || 'Docker Worker (:8000)'}
                 </span>
               </div>
 
@@ -1147,353 +1108,76 @@ export const OverviewTab: React.FC<OverviewTabProps> = ({ project, onRunSolver, 
           </div>
         )}
 
-        {/* 5. Parametric Sensitivity Calculator */}
+        {/* 5. Real Docker Solver Telemetry & Integrals (Zero Client Math) */}
         {workbenchView === 'parameters' && (
           <div className="p-4 space-y-4">
             <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
               <span className="font-bold text-sm text-white flex items-center gap-2">
                 <Calculator className="w-4 h-4 text-emerald-400" />
-                <span>حاسبة الحساسية الفيزيائية والأرقام اللابُعدية (Parametric Solver)</span>
+                <span>المقاييس والتكاملات المستخرجة مباشرة من المحركات الحقيقية (Docker Solver Telemetry)</span>
               </span>
-              <span className="text-xs text-slate-400">
-                {isThermal
-                  ? 'حل حتمي مباشر لقوانين فورييه للتوصيل وحساب درجات حرارة القاعدة والسطح والمقاومة الحرارية'
-                  : isFEA
-                  ? 'حل حتمي مباشر لمعادلات إجهادات وانحرافات العارضة الإنشائية ومعامل الأمان'
-                  : 'حل حتمي مباشر لمعادلات هبوط الضغط ودارسي-فايسباخ ورقم رينولدز'}
-              </span>
+              {onRunSolver && (
+                <button
+                  type="button"
+                  onClick={handleTriggerSolve}
+                  disabled={isSolving || solverJobStatus === 'running' || solverJobStatus === 'queued'}
+                  className="px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold flex items-center gap-1.5 transition-colors disabled:opacity-50"
+                >
+                  <Play className="w-3.5 h-3.5 fill-current" />
+                  <span>{isSolving ? 'جاري التنفيذ على Docker...' : 'تشغيل وإعادة حساب المقاييس (:8000)'}</span>
+                </button>
+              )}
             </div>
 
-            <div className="grid grid-cols-1 lg:grid-cols-4 gap-4">
-              {/* Controls */}
-              <div className="lg:col-span-2 grid grid-cols-1 sm:grid-cols-2 gap-3 bg-slate-950/60 p-4 rounded-xl border border-slate-800">
-                {isFEA ? (
-                  <>
-                    <div>
-                      <label className="text-xs text-slate-400 block mb-1">
-                        الحمولة المطبقة $P$ (Applied Force):
-                      </label>
-                      <div className="flex items-center gap-2">
-                        <input
-                          type="range"
-                          min="1"
-                          max="200"
-                          step="1"
-                          value={appliedLoadKn}
-                          onChange={(e) => setAppliedLoadKn(parseFloat(e.target.value))}
-                          className="w-full accent-rose-500"
-                        />
-                        <span className="text-xs font-mono font-bold text-rose-400 w-16 text-left">
-                          {appliedLoadKn} kN
-                        </span>
+            {!project.normalizedSolverResult ? (
+              <div className="bg-slate-950/70 border border-slate-800 rounded-xl p-8 text-center space-y-2 text-xs">
+                <p className="text-slate-200 font-bold">لا توجد نتائج محاكاة حقيقية محسوبة بعد.</p>
+                <p className="text-slate-400">
+                  تم إيقاف الحسابات التحليلية الجانبية في الواجهة التزاماً بسياسة Zero-Mock؛ اضغط زر التشغيل لإرسال النموذج إلى حاويات OpenFOAM أو CalculiX أو ElmerFEM.
+                </p>
+              </div>
+            ) : (
+              <div className="space-y-4">
+                <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">
+                  {[
+                    { label: 'رقم نسلت (Nusselt Number Nu)', val: solvedIntegrals.nusselt_number ?? solvedValues.nusselt_number, unit: '' },
+                    { label: 'معامل الحمل الحراري (h)', val: solvedIntegrals.heat_transfer_coeff_h ?? solvedValues.heat_transfer_coeff_h, unit: 'W/m²·K' },
+                    { label: 'هبوط الضغط (Pressure Drop ΔP)', val: solvedIntegrals.pressure_drop_pa ?? solvedValues.pressure_drop, unit: 'Pa' },
+                    { label: 'السرعة القصوى (Max Velocity)', val: solvedIntegrals.max_velocity_mps ?? solvedValues.max_velocity, unit: 'm/s' },
+                    { label: 'التدفق الكتلي (Mass Flow Rate)', val: solvedIntegrals.mass_flow_kg_s, unit: 'kg/s' },
+                    { label: 'الحرارة المنقولة (Total Heat Q)', val: solvedIntegrals.total_heat_transfer_w ?? solvedValues.total_heat_transfer_w, unit: 'W' },
+                    { label: 'أقصى إجهاد Von Mises', val: solvedIntegrals.max_von_mises_pa ?? solvedValues.von_mises_max_pa, unit: 'Pa' },
+                    { label: 'أقصى إزاحة / تشوه (Max Disp)', val: solvedIntegrals.max_displacement_m ?? solvedValues.max_displacement, unit: 'm' },
+                  ]
+                    .filter((item) => item.val !== undefined && item.val !== null)
+                    .map((item, idx) => (
+                      <div key={idx} className="bg-slate-950/80 p-3.5 rounded-xl border border-slate-800 flex flex-col justify-between">
+                        <span className="text-xs text-slate-400">{item.label}</span>
+                        <div className="font-mono text-lg font-bold text-sky-400 mt-1">
+                          {typeof item.val === 'number' ? item.val.toLocaleString('en-US', { maximumFractionDigits: 4 }) : String(item.val)}
+                          {item.unit ? <span className="text-xs font-normal text-slate-400 mr-1">{item.unit}</span> : null}
+                        </div>
                       </div>
-                    </div>
+                    ))}
+                </div>
 
-                    <div>
-                      <label className="text-xs text-slate-400 block mb-1">
-                        طول العارضة الإنشائية $L$:
-                      </label>
-                      <div className="flex items-center gap-2">
-                        <input
-                          type="range"
-                          min="0.2"
-                          max="10"
-                          step="0.1"
-                          value={beamLengthM}
-                          onChange={(e) => setBeamLengthM(parseFloat(e.target.value))}
-                          className="w-full accent-indigo-500"
-                        />
-                        <span className="text-xs font-mono font-bold text-indigo-400 w-16 text-left">
-                          {beamLengthM.toFixed(1)} m
-                        </span>
-                      </div>
+                {Object.keys(solvedIntegrals).length > 0 && (
+                  <div className="bg-slate-950/70 rounded-xl border border-slate-800 p-4">
+                    <div className="text-xs font-bold text-slate-300 mb-2">
+                      جميع المخرجات الرقمية والتكاملات من المحرك ({project.normalizedSolverResult.solver || 'Docker CAE'}):
                     </div>
-
-                    <div>
-                      <label className="text-xs text-slate-400 block mb-1">
-                        معامل يونغ $E$ (GPa):
-                      </label>
-                      <input
-                        type="number"
-                        value={modulusGpa}
-                        onChange={(e) => setModulusGpa(parseFloat(e.target.value) || 10)}
-                        className="w-full px-2.5 py-1.5 rounded-lg bg-slate-900 border border-slate-700 text-xs font-mono text-slate-200"
-                      />
+                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2 text-[11px] font-mono">
+                      {Object.entries(solvedIntegrals).map(([key, val]) => (
+                        <div key={key} className="flex items-center justify-between bg-slate-900/70 px-3 py-1.5 rounded border border-slate-800/80">
+                          <span className="text-slate-400">{key}</span>
+                          <span className="text-emerald-300 font-bold">{typeof val === 'number' ? val.toPrecision(6) : String(val)}</span>
+                        </div>
+                      ))}
                     </div>
-
-                    <div>
-                      <label className="text-xs text-slate-400 block mb-1">
-                        عزم عطالة المقطع $I$ (cm⁴):
-                      </label>
-                      <input
-                        type="number"
-                        value={momentOfInertiaCm4}
-                        onChange={(e) => setMomentOfInertiaCm4(parseFloat(e.target.value) || 10)}
-                        className="w-full px-2.5 py-1.5 rounded-lg bg-slate-900 border border-slate-700 text-xs font-mono text-slate-200"
-                      />
-                    </div>
-                  </>
-                ) : isThermal ? (
-                  <>
-                    <div>
-                      <label className="text-xs text-slate-400 block mb-1">
-                        فيض الحرارة المطبق $q''$ (Heat Flux):
-                      </label>
-                      <div className="flex items-center gap-2">
-                        <input
-                          type="range"
-                          min="500"
-                          max="15000"
-                          step="250"
-                          value={heatFluxWm2}
-                          onChange={(e) => setHeatFluxWm2(parseFloat(e.target.value))}
-                          className="w-full accent-amber-500"
-                        />
-                        <span className="text-xs font-mono font-bold text-amber-400 w-20 text-left">
-                          {heatFluxWm2} W/m²
-                        </span>
-                      </div>
-                    </div>
-
-                    <div>
-                      <label className="text-xs text-slate-400 block mb-1">
-                        معامل التوصيل $k$ (W/m·K):
-                      </label>
-                      <div className="flex items-center gap-2">
-                        <input
-                          type="range"
-                          min="1"
-                          max="400"
-                          step="1"
-                          value={thermalConductivityK}
-                          onChange={(e) => setThermalConductivityK(parseFloat(e.target.value))}
-                          className="w-full accent-sky-500"
-                        />
-                        <span className="text-xs font-mono font-bold text-sky-400 w-20 text-left">
-                          {thermalConductivityK} W/mK
-                        </span>
-                      </div>
-                    </div>
-
-                    <div>
-                      <label className="text-xs text-slate-400 block mb-1">
-                        معامل التبديد $h$ (W/m²·K):
-                      </label>
-                      <input
-                        type="number"
-                        value={convectionCoeffH}
-                        onChange={(e) => setConvectionCoeffH(parseFloat(e.target.value) || 5)}
-                        className="w-full px-2.5 py-1.5 rounded-lg bg-slate-900 border border-slate-700 text-xs font-mono text-slate-200"
-                      />
-                    </div>
-
-                    <div>
-                      <label className="text-xs text-slate-400 block mb-1">
-                        سماكة التوصيل $L$ (mm):
-                      </label>
-                      <input
-                        type="number"
-                        value={(wallThicknessM * 1000).toFixed(0)}
-                        onChange={(e) => setWallThicknessM((parseFloat(e.target.value) || 25) / 1000)}
-                        className="w-full px-2.5 py-1.5 rounded-lg bg-slate-900 border border-slate-700 text-xs font-mono text-slate-200"
-                      />
-                    </div>
-                  </>
-                ) : (
-                  <>
-                    <div>
-                      <label className="text-xs text-slate-400 block mb-1">
-                        سرعة التدفق $v$ (Inlet Velocity):
-                      </label>
-                      <div className="flex items-center gap-2">
-                        <input
-                          type="range"
-                          min="0.5"
-                          max="50"
-                          step="0.5"
-                          value={inletVel}
-                          onChange={(e) => setInletVel(parseFloat(e.target.value))}
-                          className="w-full accent-sky-500"
-                        />
-                        <span className="text-xs font-mono font-bold text-sky-400 w-16 text-left">
-                          {inletVel} m/s
-                        </span>
-                      </div>
-                    </div>
-
-                    <div>
-                      <label className="text-xs text-slate-400 block mb-1">
-                        القطر الهيدروليكي $D_h$:
-                      </label>
-                      <div className="flex items-center gap-2">
-                        <input
-                          type="range"
-                          min="0.01"
-                          max="0.2"
-                          step="0.005"
-                          value={charLength}
-                          onChange={(e) => setCharLength(parseFloat(e.target.value))}
-                          className="w-full accent-indigo-500"
-                        />
-                        <span className="text-xs font-mono font-bold text-indigo-400 w-16 text-left">
-                          {(charLength * 1000).toFixed(0)} mm
-                        </span>
-                      </div>
-                    </div>
-
-                    <div>
-                      <label className="text-xs text-slate-400 block mb-1">
-                        كثافة المائع $\rho$:
-                      </label>
-                      <input
-                        type="number"
-                        value={fluidDensity}
-                        onChange={(e) => setFluidDensity(parseFloat(e.target.value) || 1)}
-                        className="w-full px-2.5 py-1.5 rounded-lg bg-slate-900 border border-slate-700 text-xs font-mono text-slate-200"
-                      />
-                    </div>
-
-                    <div>
-                      <label className="text-xs text-slate-400 block mb-1">
-                        اللزوجة الديناميكية $\mu$ (Pa·s):
-                      </label>
-                      <input
-                        type="number"
-                        step="0.0001"
-                        value={dynamicVisc}
-                        onChange={(e) => setDynamicVisc(parseFloat(e.target.value) || 0.00001)}
-                        className="w-full px-2.5 py-1.5 rounded-lg bg-slate-900 border border-slate-700 text-xs font-mono text-slate-200"
-                      />
-                    </div>
-                  </>
+                  </div>
                 )}
               </div>
-
-              {/* Computed Physical Outputs */}
-              <div className="lg:col-span-2 grid grid-cols-2 gap-3">
-                {isFEA ? (
-                  <>
-                    <div className="bg-slate-950/80 p-3.5 rounded-xl border border-slate-800 flex flex-col justify-between">
-                      <span className="text-xs text-slate-400">إجهاد الانحناء الأقصى (Peak Stress &sigma;):</span>
-                      <div className="font-mono text-xl font-bold text-rose-400 mt-1">
-                        {bendingStressMpa.toFixed(1)} <span className="text-xs text-slate-400 font-normal">MPa</span>
-                      </div>
-                      <div className="text-[11px] mt-1 text-slate-400">صيغة &sigma; = M &middot; c / I</div>
-                    </div>
-
-                    <div className="bg-slate-950/80 p-3.5 rounded-xl border border-slate-800 flex flex-col justify-between">
-                      <span className="text-xs text-slate-400">الانحراف المرن الأقصى (&delta;):</span>
-                      <div className="font-mono text-xl font-bold text-amber-400 mt-1">
-                        {maxDeflectionMm.toFixed(2)} <span className="text-xs text-slate-400 font-normal">mm</span>
-                      </div>
-                      <div className="text-[11px] text-slate-400 mt-1">مرونة خطية P L&sup3; / (3 E I)</div>
-                    </div>
-
-                    <div className="bg-slate-950/80 p-3.5 rounded-xl border border-slate-800 flex flex-col justify-between">
-                      <span className="text-xs text-slate-400">معامل الأمان (Safety Factor):</span>
-                      <div className="font-mono text-xl font-bold text-emerald-400 mt-1">
-                        {safetyFactor.toFixed(2)}
-                      </div>
-                      <div className="text-[11px] mt-1">
-                        {safetyFactor >= 1.5 ? (
-                          <span className="text-emerald-400 font-medium">آمن إنشائياً (SF &ge; 1.5)</span>
-                        ) : (
-                          <span className="text-rose-400 font-medium">حرج / غير آمن (SF &lt; 1.5)</span>
-                        )}
-                      </div>
-                    </div>
-
-                    <div className="bg-slate-950/80 p-3.5 rounded-xl border border-slate-800 flex flex-col justify-between">
-                      <span className="text-xs text-slate-400">عزم الانحناء الأقصى ($M$):</span>
-                      <div className="font-mono text-xl font-bold text-sky-400 mt-1">
-                        {(appliedLoadKn * beamLengthM).toFixed(1)} <span className="text-xs font-normal text-slate-400">kN&middot;m</span>
-                      </div>
-                      <div className="text-[11px] text-slate-400 mt-1">عزم التثبيت عند قاعدة الهيكل</div>
-                    </div>
-                  </>
-                ) : isThermal ? (
-                  <>
-                    <div className="bg-slate-950/80 p-3.5 rounded-xl border border-slate-800 flex flex-col justify-between">
-                      <span className="text-xs text-slate-400">حرارة القاعدة القصوى (T_base):</span>
-                      <div className="font-mono text-xl font-bold text-rose-400 mt-1">
-                        {baseTempC.toFixed(1)} <span className="text-xs font-normal text-slate-400">&deg;C</span>
-                      </div>
-                      <div className="text-[11px] text-slate-400 mt-1">عند سطح التوليد الحراري q&#39;&#39;</div>
-                    </div>
-
-                    <div className="bg-slate-950/80 p-3.5 rounded-xl border border-slate-800 flex flex-col justify-between">
-                      <span className="text-xs text-slate-400">حرارة سطح التبديد (T_surface):</span>
-                      <div className="font-mono text-xl font-bold text-amber-400 mt-1">
-                        {surfaceTempC.toFixed(1)} <span className="text-xs font-normal text-slate-400">&deg;C</span>
-                      </div>
-                      <div className="text-[11px] text-slate-400 mt-1">سطح التبديد بالحمل h</div>
-                    </div>
-
-                    <div className="bg-slate-950/80 p-3.5 rounded-xl border border-slate-800 flex flex-col justify-between">
-                      <span className="text-xs text-slate-400">المقاومة الحرارية (R_total):</span>
-                      <div className="font-mono text-xl font-bold text-sky-400 mt-1">
-                        {rTotal.toFixed(4)} <span className="text-xs font-normal text-slate-400">m&sup2;&middot;K/W</span>
-                      </div>
-                      <div className="text-[11px] text-slate-400 mt-1">R_cond + R_conv متسلسلة</div>
-                    </div>
-
-                    <div className="bg-slate-950/80 p-3.5 rounded-xl border border-slate-800 flex flex-col justify-between">
-                      <span className="text-xs text-slate-400">رقم بيوت (Biot Number Bi):</span>
-                      <div className="font-mono text-xl font-bold text-emerald-400 mt-1">
-                        {biotNumber.toFixed(4)}
-                      </div>
-                      <div className="text-[11px] mt-1">
-                        {biotNumber < 0.1 ? (
-                          <span className="text-emerald-400 font-medium">سعة مجمعة (Bi &lt; 0.1)</span>
-                        ) : (
-                          <span className="text-amber-400 font-medium">تدرج حراري داخلي (Bi &ge; 0.1)</span>
-                        )}
-                      </div>
-                    </div>
-                  </>
-                ) : (
-                  <>
-                    <div className="bg-slate-950/80 p-3.5 rounded-xl border border-slate-800 flex flex-col justify-between">
-                      <span className="text-xs text-slate-400">رقم رينولدز (Reynolds Number):</span>
-                      <div className="font-mono text-xl font-bold text-sky-400 mt-1">
-                        {reynoldsNumber.toLocaleString('en-US', { maximumFractionDigits: 0 })}
-                      </div>
-                      <div className="text-[11px] mt-1">
-                        {isTurbulent ? (
-                          <span className="text-rose-400 font-medium">مضطرب (Turbulent Flow)</span>
-                        ) : (
-                          <span className="text-emerald-400 font-medium">صفائحي (Laminar Flow)</span>
-                        )}
-                      </div>
-                    </div>
-
-                    <div className="bg-slate-950/80 p-3.5 rounded-xl border border-slate-800 flex flex-col justify-between">
-                      <span className="text-xs text-slate-400">معامل الاحتكاك $f$ (Darcy):</span>
-                      <div className="font-mono text-xl font-bold text-emerald-400 mt-1">
-                        {frictionFactor.toFixed(4)}
-                      </div>
-                      <div className="text-[11px] text-slate-400 mt-1">علاقة Colebrook-Petukhov</div>
-                    </div>
-
-                    <div className="bg-slate-950/80 p-3.5 rounded-xl border border-slate-800 flex flex-col justify-between">
-                      <span className="text-xs text-slate-400">هبوط الضغط لكل متر ($\Delta P / L$):</span>
-                      <div className="font-mono text-xl font-bold text-amber-400 mt-1">
-                        {(pressureDropPerMeter / 1000).toFixed(2)} <span className="text-xs font-normal text-slate-400">kPa/m</span>
-                      </div>
-                      <div className="text-[11px] text-slate-400 mt-1">وفق صيغة دارسي-فايسباخ</div>
-                    </div>
-
-                    <div className="bg-slate-950/80 p-3.5 rounded-xl border border-slate-800 flex flex-col justify-between">
-                      <span className="text-xs text-slate-400">الضغط الديناميكي ($\frac{1}{2} \rho v^2$):</span>
-                      <div className="font-mono text-xl font-bold text-purple-400 mt-1">
-                        {((0.5 * fluidDensity * inletVel * inletVel) / 1000).toFixed(2)} <span className="text-xs font-normal text-slate-400">kPa</span>
-                      </div>
-                      <div className="text-[11px] text-slate-400 mt-1">طاقة حركة حجمية</div>
-                    </div>
-                  </>
-                )}
-              </div>
-            </div>
+            )}
           </div>
         )}
       </div>
@@ -1671,7 +1355,7 @@ export const OverviewTab: React.FC<OverviewTabProps> = ({ project, onRunSolver, 
               </div>
               <div className="flex justify-between">
                 <span className="text-slate-400">أقصى تكرارات:</span>
-                <span className="font-mono text-slate-200">{project.solver?.iterations || 1500}</span>
+                <span className="font-mono text-slate-200">{project.solver?.iterations || 'Auto'}</span>
               </div>
             </div>
           </div>

@@ -44,6 +44,8 @@ interface PipelineTrackerModalProps {
   solverJobStatus?: string;
   solverProgress?: number | null;
   solverLogs?: string[];
+  inputSha256?: string;
+  cellStats?: { temp?: string; vel?: string; press?: string };
   onTriggerRun?: () => void;
 }
 
@@ -68,17 +70,16 @@ const STATIONS: StationInfo[] = [
     code: 'GATE-01/INGEST',
     titleAr: 'محطة الاستقبال والختم المشفر (SHA-256 Gate)',
     titleEn: 'Input Ingestion & Cryptographic Provenance',
-    containerName: 'naseer-ingestion-proxy:v2.4',
-    techStack: 'Node.js Express + Web Crypto SHA-256',
-    estimatedMs: '12 ms',
-    roleAr: 'استلام الشروط الحدية، الأبعاد الهندسية، والملفات المرفوعة (CAD/APDL/OpenFOAM)، وتوليد بصمة تجزئة أمنية SHA-256 لا تقبل التعديل.',
-    inputsAr: 'الأبعاد (Lx, Ly)، سرعة الدخول، درجات حرارة الجدران، خواص المائع والمعدن.',
-    outputsAr: 'حزمة بيانات مشفرة وموقعة برمز التحقق ASME-VV20 وتوليد معرف الشحنة (Task ID).',
-    verificationRule: 'مطابقة تامة للشروط الحدية وتثبيت البصمة لمنع أي تلاعب لاحق بالمدخلات.',
+    containerName: 'naseer-express-gateway:port-3000',
+    techStack: 'Node.js Express + Pydantic v2 Schema Validation',
+    estimatedMs: 'Gateway :3000 → :8000',
+    roleAr: 'استلام الشروط الحدية، الأبعاد الهندسية، والملفات المرفوعة (.stl, .step, .inp, .zip)، والتحقق من صحتها الفيزيائية عبر Pydantic قبل إرسالها إلى Docker.',
+    inputsAr: 'الأبعاد (Lx, Ly, Lz)، الشروط الحدية، خصائص المواد، أو ملفات CAD/INP.',
+    outputsAr: 'حمولة موثقة مع بصمة تجزئة SHA-256 للمدخلات ومعرف مهمة (Task ID).',
+    verificationRule: 'التحقق من حدود درجة الحرارة والضغط والفيزياء قبل بدء التشغيل، ورفض أي تشغيل وهمي.',
     terminalLogs: [
-      '[GATEWAY] Incoming simulation payload validated against ASME schema.',
-      '[CRYPTO] SHA-256 hash computed: e3b0c44298fc1c149afbf4c8996fb92427ae41...',
-      '[DISPATCH] Task manifest generated and certified for pipeline delivery.',
+      '[GATEWAY] Request validated against Pydantic v2 SimulationRequest schema.',
+      '[DISPATCH] Forwarding job to FastAPI container at port 8000.',
     ],
   },
   {
@@ -86,89 +87,81 @@ const STATIONS: StationInfo[] = [
     code: 'QUEUE-02/BROKER',
     titleAr: 'طابور الانتظار وتوزيع الحمولات (Redis & Celery Hub)',
     titleEn: 'Job Queue & Orchestration Dispatcher',
-    containerName: 'naseer-redis-broker:7.2 / celery-worker-pool',
-    techStack: 'Redis 7.2 In-Memory + Celery 5.3 Distributed Task Queue',
-    estimatedMs: '28 ms',
-    roleAr: 'استقبال الشحنة الحسابية في طابور مهام موزع، وفحص عتاد الخوادم السحابية الشاغرة (HPC Pods) أو توجيهها للوضع المحلي المستقل فورياً.',
-    inputsAr: 'معرف المهمة (Task ID) ومستوى الأولوية وشهادة الترخيص.',
-    outputsAr: 'إسناد المهمة إلى حاوية المعالجة المخصصة وحجز الذاكرة الحسابية RAM/VRAM.',
-    verificationRule: 'صفر فقدان للبيانات مع ضمان زمن انتقال أقل من 35 ميلي ثانية.',
+    containerName: 'naseer-redis:7 + celery-worker',
+    techStack: 'Redis 7 Broker + Celery Distributed Task Queue',
+    estimatedMs: 'Broker Dispatch',
+    roleAr: 'استلام المهمة الحسابية في طابور Redis وإسنادها إلى عامل Celery داخل حاوية المحاكاة لتنفيذها دون تجميد المتصفح.',
+    inputsAr: 'معرف المهمة (Task ID) وقاموس المعطيات الفيزيائية.',
+    outputsAr: 'تحديث حالة المهمة في مستودع SQLite (QUEUED → RUNNING → COMPLETED / FAILED).',
+    verificationRule: 'كل حالة تُسحب مباشرة من GET /api/jobs/{task_id} دون أي مؤقتات وهمية.',
     terminalLogs: [
-      '[BROKER] Task queued in redis channel cae_job_queue (priority: HIGH).',
-      '[CELERY] Worker assigned: worker-04@hpc-cluster-eu (state: RUNNING).',
-      '[TELEMETRY] Memory budget locked: 8.0 GB RAM allocated.',
+      '[BROKER] Task pushed to Redis queue.',
+      '[CELERY] Dispatched to universal_dispatcher worker.',
     ],
   },
   {
     id: 3,
     code: 'MESH-03/PREP',
-    titleAr: 'حاوية المعالجة المسبقة وبناء الميش (Pre-Processing Pod)',
-    titleEn: 'Mesh Generation & OpenFOAM Dictionary Builder',
-    containerName: 'naseer-mesh-preprocessor:python-3.11',
-    techStack: 'Python 3.11 + NumPy + Meshio + blockMesh Generator',
-    estimatedMs: '110 ms',
-    roleAr: 'تحويل الأبعاد الهندسية إلى شبكة عناصر حجمية متعامدة (Structured Hexahedral Cells)، وتوليد قواميس OpenFOAM (controlDict, fvSchemes, fvSolution).',
-    inputsAr: 'إحداثيات الدكت أو السطح المموج وكثافة التقسيم الشبكي.',
-    outputsAr: 'ملفات الدكت: 0/U, 0/p, 0/T, system/controlDict, constant/polyMesh.',
-    verificationRule: 'فحص التعامد (Orthogonal Quality > 0.85) وفحص معيار جدار الخلية الأولى y⁺ < 1.0.',
+    titleAr: 'بناء الشبكة الحجمية وقواميس المحاكاة (Gmsh / blockMesh)',
+    titleEn: 'Mesh Generation & Solver Dictionary Builder',
+    containerName: 'gmsh-4 / openfoam-v2406 / calculix-2.21',
+    techStack: 'Gmsh 3D + meshio + OpenFOAM blockMesh + CalculiX INP Writer',
+    estimatedMs: 'Meshing Phase',
+    roleAr: 'توليد الشبكة الثلاثية الأبعاد من STL/STEP أو الأبعاد الهندسية عبر Gmsh أو blockMesh وبناء ملفات الحالة الفعلية (controlDict, fvSchemes, .inp, .sif).',
+    inputsAr: 'أبعاد النطاق أو ملف CAD ومقاس عنصر الشبكة (mesh_size).',
+    outputsAr: 'ملفات الشبكة (polyMesh / .msh) وملفات التشغيل الفعلية لكل محرك.',
+    verificationRule: 'فحص جودة التعامد والانحراف في الشبكة الفعلية المولدة عبر Gmsh.',
     terminalLogs: [
-      '[PREPROC] Generating 3D structured hex mesh (divisions: 30x15x15).',
-      '[BLOCKMESH] Mesh cells created: 6,750 hexahedrals, 8,192 vertices.',
-      '[DICT_GEN] system/fvSchemes: Gauss linear corrected divergence applied.',
+      '[MESHER] Generating computational mesh (Gmsh / blockMesh).',
+      '[DECK] Writing solver dictionaries / input decks.',
     ],
   },
   {
     id: 4,
     code: 'SOLVE-04/CORE',
-    titleAr: 'حاوية محرك الحسابات الرئيسي (HPC Core Solver Pod)',
-    titleEn: 'HPC Solver Core (OpenFOAM / CalculiX / SciPy)',
-    containerName: 'naseer-solver-openfoam-v2406 / calculix-spooles',
-    techStack: 'OpenFOAM v2406 (SIMPLE/PIMPLE) / CalculiX 2.21 Direct Spooles',
-    estimatedMs: '220 ms',
-    roleAr: 'حل معادلات Navier-Stokes وحفظ الكتلة والزخم والطاقة بالتكرار التتابعي ومراقبة هبوط البواقي إلى ما دون 10^-6.',
-    inputsAr: 'ملفات الحالة الشبكية والشروط الحدية من المحطة 3.',
-    outputsAr: 'سجل هبوط البواقي الحقيقي، ومصفوفات الحقول الخام عند مراكز الخلايا والعقد.',
-    verificationRule: 'انعدام مصادر الكتلة الوهمية وتطابق موازنة الطاقة بنسبة خطأ < 0.001%.',
+    titleAr: 'تنفيذ المحرك الفيزيائي الفعلي (OpenFOAM / CalculiX / Elmer)',
+    titleEn: 'Core Physics Solver Execution',
+    containerName: 'openfoam-v2406 / calculix-ccx / ElmerSolver',
+    techStack: 'OpenFOAM v2406 / CalculiX v2.21 / ElmerFEM',
+    estimatedMs: 'Solver Runtime',
+    roleAr: 'تشغيل المحرك الفيزيائي المناسب لنوع المسألة وحل معادلات الحفظ أو العناصر المحدودة بالتوازي داخل حاوية Docker.',
+    inputsAr: 'مجلد الحالة المتكامل والشروط الحدية من المحطة 3.',
+    outputsAr: 'سجلات التنفيذ الخام، البواقي التكرارية الحقيقية، ومخرجات الحقول (OpenFOAM fields / CalculiX .frd / .dat).',
+    verificationRule: 'التحقق الصارم من توفر الملف التنفيذي ونجاح الخروج (exit code = 0) بدون محاكاة بديلة.',
     terminalLogs: [
-      '[SOLVER] Launching simpleFoam with Menter SST k-omega turbulence closure.',
-      '[ITERATION] Step 1..45: Residual Ux dropped from 1.0 to 1.12e-6.',
-      '[CONVERGENCE] All conservation equations achieved asymptotic tolerance at iteration 45.',
+      '[SOLVER] Awaiting live stdout/residual logs from Docker container.',
     ],
   },
   {
     id: 5,
-    code: 'POST-05/TENSOR',
-    titleAr: 'حاوية المعالجة اللاحقة والاستيفاء الرياضي (Tensor Extractor Pod)',
-    titleEn: 'Bilinear Interpolation & Physics Synthesis Pod',
-    containerName: 'naseer-postproc-engine:scipy-deterministic',
-    techStack: 'Python SciPy + Bilinear Interpolation + Colormap LUT (Turbo/Jet)',
-    estimatedMs: '65 ms',
-    roleAr: 'تفكيك مصفوفات الحقول الخام، تطبيق الاستيفاء الرياضي الحتمي، رسم الكونتورات، واشتقاق الأرقام اللابعدية (Nu, f, ΔP, PEC, GCI).',
-    inputsAr: 'مصفوفات الخلايا الخام وسجل البواقي ومستويات تكثيف الميش الثلاثة.',
-    outputsAr: 'مصفوفات الكونتورات الملونة، دراسات استقلالية الميش Roache GCI، ومعيار الأداء PEC.',
-    verificationRule: 'لا وجود لأي ذكاء اصطناعي أو تخمين؛ جميع المؤشرات مشتقة من تكاملات رقمية حتمية.',
+    code: 'POST-05/VTK',
+    titleAr: 'استخلاص الحقول ثلاثية الأبعاد (VTK & Metrics)',
+    titleEn: '3D VTK Field Extraction & ASME GCI Analysis',
+    containerName: 'python-vtk-postprocessor',
+    techStack: 'Python Post-Processor + Three.js VTK Payload + Roache GCI',
+    estimatedMs: 'Post-Processing',
+    roleAr: 'تحليل مخرجات المحرك (OpenFOAM fields / .frd / .vtu)، استخلاص القيم الإحصائية الحقيقية وبناء حزمة vtk_data ثلاثية الأبعاد.',
+    inputsAr: 'ملفات المخرجات الخام من المحطة 4.',
+    outputsAr: 'نقاط ومثلثات وسلسلة القيم الفيزيائية ومتجهات السرعة وتقرير GCI الفعلي.',
+    verificationRule: 'القيم المعروضة مأخوذة حرفياً من مخرجات المحرك المحسوبة بدون أي توليد عشوائي.',
     terminalLogs: [
-      '[POSTPROC] Bilinear field sampling completed on 15x15 scalar grid.',
-      '[METRICS] Local Nu computed: 18.42 | Darcy friction f: 0.038 | PEC: 1.34.',
-      '[COLORMAP] Applied academic Turbo Transfer Function (40 color stops).',
+      '[POSTPROC] Parsing solver output arrays and constructing 3D vtk_data payload.',
     ],
   },
   {
     id: 6,
-    code: 'DELIVERY-06/DOC',
-    titleAr: 'محطة التسليم النهائي والاعتماد الأكاديمي (Final Delivery Gate)',
-    titleEn: '3D Viewport Delivery & 6-Chapter Thesis Monograph',
-    containerName: 'naseer-doc-compiler:latex-word-engine',
-    techStack: 'Three.js WebGL Viewport + Word/HTML/LaTeX Monograph Compiler',
-    estimatedMs: '40 ms',
-    roleAr: 'تسليم النموذج التفاعلي لشاشة العرض ثلاثية الأبعاد، وتجميع وثيقة الأطروحة الرسمية (180 صفحة - 6 فصول) مع رابط التحقق الحي.',
-    inputsAr: 'الكونتورات، الرسوم البيانية، جداول GCI، وبنك أسئلة مناقشة الأطروحة.',
-    outputsAr: 'شاشة 3D جاهزة للتدوير، تقرير Word/HTML/LaTeX معتمد، ورابط التحقق الحي للمشرفين.',
-    verificationRule: 'شهادة تدقيق كاملة مطابقة لمواصفات ASME V&V 20-2009 جاهزة للنشر الجامعي.',
+    code: 'DELIVERY-06/VIEW',
+    titleAr: 'العرض ثلاثي الأبعاد والتقارير الموثقة (3D Viewport & Export)',
+    titleEn: 'Interactive Three.js Viewport & Verifiable Report',
+    containerName: 'threejs-webgl-viewport',
+    techStack: 'Three.js WebGL + Live Verification URL (/api/verify-job)',
+    estimatedMs: 'Client Render',
+    roleAr: 'تلوين المجسم ثلاثي الأبعاد بالكونتورات الفعلية وتمكين الفحص النقطي وتصدير التقارير مع رابط التحقق من بصمة المهمة.',
+    inputsAr: 'حزمة النتائج الموحدة والـ vtk_data وبصمات SHA-256.',
+    outputsAr: 'مشهد WebGL تفاعلي 3D وتقرير HTML/Word مرتبط بـ task_id الفعلي.',
+    verificationRule: 'تطابق تام بين القيم في المشهد ثلاثي الأبعاد وجداول التقرير.',
     terminalLogs: [
-      '[VIEWPORT] 3D mesh and scalar tensor textures mapped to WebGL canvas.',
-      '[MONOGRAPH] 6 formal chapters assembled and compiled with mathematical proofs.',
-      '[DELIVERY] Tracking package completed: Ready for university defense examination.',
+      '[VIEWPORT] Ready to render verified vtk_data contour surface.',
     ],
   },
 ];
@@ -176,63 +169,44 @@ const STATIONS: StationInfo[] = [
 export const PipelineTrackerModal: React.FC<PipelineTrackerModalProps> = ({
   isOpen,
   onClose,
-  jobId = 'sim_1794155318309_soyqt',
+  jobId = '',
   field = 'CFD',
-  solverType = 'OpenFOAM v2406 (SIMPLE)',
-  solverJobStatus = 'completed',
+  solverType = 'OpenFOAM / CalculiX / ElmerFEM',
+  solverJobStatus = 'idle',
   solverProgress = null,
   solverLogs = [],
+  inputSha256,
+  cellStats,
   onTriggerRun,
 }) => {
   const [activeTab, setActiveTab] = useState<'pipeline' | 'cell_dissection'>('pipeline');
   const [activeStationId, setActiveStationId] = useState<number>(4);
-  const [isSimulating, setIsSimulating] = useState<boolean>(false);
-  const [currentSimStep, setCurrentSimStep] = useState<number>(6);
+  const [currentSimStep, setCurrentSimStep] = useState<number>(0);
   const [copied, setCopied] = useState<boolean>(false);
   const [selectedDissectionPhysics, setSelectedDissectionPhysics] = useState<'CFD' | 'Thermal' | 'FEA'>('CFD');
 
-  // Sync with real external solver status if running
+  // Sync strictly with real external solver status
   useEffect(() => {
-    if (solverJobStatus === 'running') {
+    const normalized = solverJobStatus.toLowerCase();
+    if (normalized === 'running') {
       setCurrentSimStep(4);
       setActiveStationId(4);
-    } else if (solverJobStatus === 'queued') {
+    } else if (normalized === 'queued') {
       setCurrentSimStep(2);
       setActiveStationId(2);
-    } else if (solverJobStatus === 'completed') {
+    } else if (normalized === 'completed') {
       setCurrentSimStep(6);
+    } else {
+      setCurrentSimStep(0);
     }
   }, [solverJobStatus]);
-
-  // Auto-step simulation timer demo
-  useEffect(() => {
-    let timer: any;
-    if (isSimulating) {
-      if (currentSimStep < 6) {
-        timer = setTimeout(() => {
-          setCurrentSimStep((prev) => {
-            const next = prev + 1;
-            setActiveStationId(next);
-            return next;
-          });
-        }, 1100);
-      } else {
-        setIsSimulating(false);
-      }
-    }
-    return () => clearTimeout(timer);
-  }, [isSimulating, currentSimStep]);
 
   if (!isOpen) return null;
 
   const activeStation = STATIONS.find((s) => s.id === activeStationId) || STATIONS[3];
-  const trackingNumber = `EXP-CAE-${jobId.replace(/[^a-zA-Z0-9]/g, '').toUpperCase().slice(0, 16)}`;
-
-  const handleStartLiveDemo = () => {
-    setCurrentSimStep(1);
-    setActiveStationId(1);
-    setIsSimulating(true);
-  };
+  const trackingNumber = jobId
+    ? `CAE-${jobId.replace(/[^a-zA-Z0-9]/g, '').toUpperCase().slice(0, 16)}`
+    : 'NO-ACTIVE-JOB';
 
   const handleCopyTracking = () => {
     navigator.clipboard?.writeText(trackingNumber);
@@ -241,10 +215,10 @@ export const PipelineTrackerModal: React.FC<PipelineTrackerModalProps> = ({
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/85 backdrop-blur-md p-3 sm:p-6 overflow-y-auto print:hidden">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/90 p-3 sm:p-6 overflow-y-auto print:hidden">
       <div className="relative w-full max-w-6xl rounded-3xl border border-slate-800 bg-slate-900 shadow-2xl flex flex-col max-h-[92vh] overflow-hidden">
         
-        {/* Top DHL/FedEx Style Tracking Waybill Header */}
+        {/* Header */}
         <div className="bg-gradient-to-r from-slate-950 via-slate-900 to-indigo-950/70 border-b border-slate-800 p-5 sm:p-6">
           <div className="flex flex-col lg:flex-row items-start lg:items-center justify-between gap-4">
             
@@ -254,11 +228,15 @@ export const PipelineTrackerModal: React.FC<PipelineTrackerModalProps> = ({
                   <Package className="w-4 h-4" />
                 </span>
                 <span className="text-xs font-mono font-bold tracking-wider text-sky-400 uppercase">
-                  NASEER CAE Transit Network · مسار المعالجة وتتبع الشحنة الحسابية
+                  NASEER CAE Docker Pipeline · تتبع مسار المهمة الفعلية
                 </span>
                 <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-mono font-semibold bg-emerald-950 border border-emerald-800 text-emerald-300">
-                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
-                  {solverJobStatus === 'running' ? 'LIVE SOLVER IN TRANSIT' : 'AUTHENTICATED & VERIFIABLE'}
+                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
+                  {solverJobStatus === 'running'
+                    ? 'LIVE DOCKER EXECUTION'
+                    : solverJobStatus === 'completed'
+                    ? 'COMPLETED'
+                    : solverJobStatus.toUpperCase()}
                 </span>
               </div>
               
@@ -312,25 +290,17 @@ export const PipelineTrackerModal: React.FC<PipelineTrackerModalProps> = ({
                 </button>
               </div>
 
-              <button
-                type="button"
-                onClick={handleStartLiveDemo}
-                disabled={isSimulating}
-                className="flex items-center gap-2 px-3 py-1.5 rounded-xl text-xs font-bold text-white bg-gradient-to-r from-sky-600 to-indigo-600 hover:from-sky-500 hover:to-indigo-500 disabled:opacity-50 shadow-md transition-all"
-                title="محاكاة تحرك الشحنة الحسابية حياً أمام لجنة المناقشة"
-              >
-                {isSimulating ? (
-                  <>
-                    <Activity className="w-3.5 h-3.5 animate-spin text-sky-200" />
-                    <span>جاري التتبع الحي...</span>
-                  </>
-                ) : (
-                  <>
-                    <Play className="w-3.5 h-3.5 fill-white" />
-                    <span>عرض حركة الشحنة حياً</span>
-                  </>
-                )}
-              </button>
+              {onTriggerRun && solverJobStatus !== 'running' && (
+                <button
+                  type="button"
+                  onClick={onTriggerRun}
+                  className="flex items-center gap-2 px-3 py-1.5 rounded-xl text-xs font-bold text-white bg-gradient-to-r from-sky-600 to-indigo-600 hover:from-sky-500 hover:to-indigo-500 shadow-md transition-all"
+                  title="تشغيل المهمة الحقيقية على حاوية Docker (:8000)"
+                >
+                  <Play className="w-3.5 h-3.5 fill-white" />
+                  <span>تشغيل على Docker (:8000)</span>
+                </button>
+              )}
 
               <button
                 type="button"
@@ -412,7 +382,7 @@ export const PipelineTrackerModal: React.FC<PipelineTrackerModalProps> = ({
                           </span>
 
                           {isPassed ? (
-                            <CheckCircle2 className={`w-4 h-4 ${isCurrent ? 'text-sky-400 animate-pulse' : 'text-emerald-400'}`} />
+                            <CheckCircle2 className={`w-4 h-4 ${isCurrent ? 'text-sky-400' : 'text-emerald-400'}`} />
                           ) : (
                             <Clock className="w-3.5 h-3.5 text-slate-600" />
                           )}
@@ -435,14 +405,6 @@ export const PipelineTrackerModal: React.FC<PipelineTrackerModalProps> = ({
                             {isSelected ? 'فحص تفصيلي ◀' : 'معاينة'}
                           </span>
                         </div>
-
-                        {/* Live Pulse Indicator for active step */}
-                        {isCurrent && isSimulating && (
-                          <span className="absolute -top-1 -right-1 flex h-3 w-3">
-                            <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-sky-400 opacity-75" />
-                            <span className="relative inline-flex rounded-full h-3 w-3 bg-sky-500" />
-                          </span>
-                        )}
                       </button>
                     );
                   })}
@@ -521,10 +483,15 @@ export const PipelineTrackerModal: React.FC<PipelineTrackerModalProps> = ({
                   </div>
                   
                   <div className="bg-slate-950 rounded-2xl border border-slate-800 p-3.5 font-mono text-xs text-slate-300 space-y-1 shadow-inner overflow-x-auto">
-                    {(solverLogs.length > 0 && activeStation.id === 4 ? solverLogs.slice(-4) : activeStation.terminalLogs).map((log, idx) => (
+                    {(solverLogs.length > 0 && activeStation.id === 4
+                      ? solverLogs.slice(-6)
+                      : activeStation.id === 1 && inputSha256
+                      ? [`[CRYPTO] SHA-256 Input Hash: ${inputSha256}`, ...activeStation.terminalLogs]
+                      : activeStation.terminalLogs
+                    ).map((log, idx) => (
                       <div key={idx} className="flex items-start gap-2">
                         <span className="text-slate-600 select-none">{String(idx + 1).padStart(2, '0')}</span>
-                        <span className={log.includes('CONVERGENCE') || log.includes('DELIVERY') ? 'text-emerald-400' : log.includes('BLOCKMESH') ? 'text-sky-300' : 'text-slate-300'}>
+                        <span className={log.includes('CONVERGENCE') || log.includes('COMPLETED') ? 'text-emerald-400' : log.includes('MESH') ? 'text-sky-300' : 'text-slate-300'}>
                           {log}
                         </span>
                       </div>
@@ -604,9 +571,9 @@ export const PipelineTrackerModal: React.FC<PipelineTrackerModalProps> = ({
                       <span className="text-sm font-black text-white font-mono">Cell P</span>
                       <span className="text-[9.5px] font-mono text-sky-300">({field === 'FEA' ? 'Node P' : 'Centroid'})</span>
                       <div className="text-[9px] font-mono text-slate-300 mt-1 space-y-0.5">
-                        <div className="text-emerald-300 font-semibold">T_P = 345.2 K</div>
-                        <div className="text-sky-300">u_P = 1.45 m/s</div>
-                        <div className="text-amber-300">p_P = 101.3 kPa</div>
+                        <div className="text-emerald-300 font-semibold">{cellStats?.temp || 'T_P (K)'}</div>
+                        <div className="text-sky-300">{cellStats?.vel || 'u_P (m/s)'}</div>
+                        <div className="text-amber-300">{cellStats?.press || 'p_P (Pa)'}</div>
                       </div>
                       
                       {/* Face markers */}
@@ -618,7 +585,7 @@ export const PipelineTrackerModal: React.FC<PipelineTrackerModalProps> = ({
 
                     {/* Neighbor N */}
                     <div className="absolute top-1 text-center font-mono text-xs text-slate-300 flex items-center gap-1">
-                      <ArrowUp className="w-3.5 h-3.5 text-amber-400 animate-bounce" />
+                      <ArrowUp className="w-3.5 h-3.5 text-amber-400" />
                       <span>الجار N (North)</span>
                     </div>
 

@@ -150,69 +150,29 @@ async def upload_model_file(
 
 
 @app.post("/api/run-simulation")
-def run_simulation_endpoint(request: SimulationRequest):
-    try:
-        bc_dict = request.boundary_conditions.model_dump() if request.boundary_conditions else {}
-        mat_dict = request.material.model_dump() if request.material else {}
-        mesh_dict = request.mesh.model_dump() if request.mesh else {}
-        extra_dict = request.model_dump(exclude={"simulation_type", "boundary_conditions", "material", "mesh"})
-
-        results = run_physics_simulation(
-            simulation_type=request.simulation_type,
-            boundary_conditions=bc_dict,
-            material_properties=mat_dict,
-            mesh_resolution=mesh_dict,
-            extra_params=extra_dict
-        )
-
-        return JSONResponse(content={
-            "success": True,
-            "status": "success",
-            "simulation_type": request.simulation_type,
-            "result": results,
-            "data": results
-        })
-
-    except Exception as e:
-        return JSONResponse(
-            status_code=500,
-            content={
-                "success": False,
-                "status": "error",
-                "errorMessage": f"فشل تنفيذ المحاكاة الفيزيائية: {str(e)}"
-            }
-        )
+def run_simulation_endpoint(_request: SimulationRequest):
+    return JSONResponse(
+        status_code=410,
+        content={
+            "success": False,
+            "status": "retired",
+            "errorMessage": (
+                "Legacy SciPy /backend/main.py solver endpoint is disabled under strict zero-mock policy. "
+                "Start root main.py / Docker CAE containers (:8000) to execute via OpenFOAM, CalculiX, and ElmerFEM."
+            ),
+        },
+    )
 
 
 @app.post("/api/pymapdl-execute")
-def execute_pymapdl_script(request: ApdlScriptRequest):
-    if not HAS_PYMAPDL:
-        return JSONResponse(
-            status_code=501,
-            content={
-                "status": "unavailable",
-                "message": "مكتبة ansys-mapdl-core غير مثبتة. تم استخدام المحلل الحتمي البديل المبني على SciPy.",
-                "script_echo": request.apdl_script[:200]
-            }
-        )
-
-    try:
-        mapdl = pymapdl.launch_mapdl(run_location=tempfile.mkdtemp(), loglevel="WARNING")
-        output = mapdl.input_strings(request.apdl_script.splitlines())
-        mapdl.exit()
-        return {
-            "status": "executed_ansys_native",
-            "job_name": request.job_name,
-            "mapdl_output": str(output)[:2000]
-        }
-    except Exception as e:
-        return JSONResponse(
-            status_code=500,
-            content={
-                "status": "mapdl_launch_failed",
-                "detail": f"تعذر إطلاق أنسيز مباشرة ({str(e)})."
-            }
-        )
+def execute_pymapdl_script(_request: ApdlScriptRequest):
+    return JSONResponse(
+        status_code=410,
+        content={
+            "status": "retired",
+            "message": "Legacy PyMAPDL fallback endpoint is retired. Route all FEA jobs through CalculiX in root main.py (:8000).",
+        },
+    )
 
 
 if __name__ == "__main__":

@@ -8,3 +8,5 @@ celery[redis]>=5.4.0
 redis>=5.0.0
 sqlalchemy>=2.0.0
 gmsh>=4.13.1
+meshio>=5.3.5
+pandas>=2.2.0

@@ -36,13 +36,14 @@ import {
   MeshStudyResult,
   ProfileSpec,
   ReferenceDataSet,
+  VtkFieldPayload,
   isCurrentMeshStudy,
 } from './types/thesis';
 import { StudioHeader, HeaderMenuGroup } from './components/StudioHeader';
 import { SimulationTree, TreeAction } from './components/SimulationTree';
 import { ViewportCanvas } from './components/ViewportCanvas';
 import { CadModelStats, BoundaryMarker } from './components/Interactive3DViewport';
-import { PropertiesPanel, PanelDocument } from './components/PropertiesPanel';
+import { PropertiesPanel, PanelDocument, MeshPreviewSummary } from './components/PropertiesPanel';
 import { SolverConsole, ResidualSeries } from './components/SolverConsole';
 import {
   ConsoleIssue,
@@ -134,6 +135,15 @@ export default function App() {
   const [solverResidualSeries, setSolverResidualSeries] = useState<ResidualSeries[]>([]);
   const [simulationInputs, setSimulationInputs] = useState<SimulationInputs>(DEFAULT_SIMULATION_INPUTS);
   const [appliedPhysicsOverrides, setAppliedPhysicsOverrides] = useState<Record<string, unknown> | null>(null);
+  const [viewportBoundaryMarkers, setViewportBoundaryMarkers] = useState<BoundaryMarker[]>([]);
+  const [viewportRegionBox, setViewportRegionBox] = useState<{ min: [number, number, number]; max: [number, number, number] } | null>(null);
+  const [uploadedCadStl, setUploadedCadStl] = useState<{ name: string; base64: string } | null>(null);
+  const [meshPreviewVtk, setMeshPreviewVtk] = useState<VtkFieldPayload | null>(null);
+  const [meshPreviewStats, setMeshPreviewStats] = useState<MeshPreviewSummary | null>(null);
+  const [cadPatches, setCadPatches] = useState<Array<{ id: string; name: string }>>([]);
+  const [cadPreviewLoading, setCadPreviewLoading] = useState<boolean>(false);
+  const [meshGenerating, setMeshGenerating] = useState<boolean>(false);
+  const [selectedBoundaryIndex, setSelectedBoundaryIndex] = useState<number | null>(null);
   const [activeStep, setActiveStep] = useState<WorkflowStep>('geometry');
   const [documentOpen, setDocumentOpen] = useState<boolean>(false);
   const [consoleTab, setConsoleTab] = useState<ConsoleTab>('logs');
@@ -141,6 +151,7 @@ export default function App() {
 
   const runIdRef = useRef(0);
   const issueIdRef = useRef(0);
+  const activeTaskIdRef = useRef<string | null>(null);
   const isSolverRunning = solverJobStatus === 'queued' || solverJobStatus === 'running';
 
   const extractApiError = (body: any, fallback: string): string => {
@@ -180,6 +191,9 @@ export default function App() {
   const requestBody: Record<string, unknown> = {
     ...baseRequest,
     ...(appliedPhysicsOverrides || {}),
+    ...(viewportBoundaryMarkers.length > 0 ? { boundary_markers: viewportBoundaryMarkers } : {}),
+    ...(viewportRegionBox ? { region_box: viewportRegionBox } : {}),
+    ...(uploadedCadStl ? { cad_file_b64: uploadedCadStl.base64, cad_stl_b64: uploadedCadStl.base64, cad_filename: uploadedCadStl.name } : {}),
   };
   const simulationType = String(requestBody.simulation_type);
 
@@ -187,8 +201,9 @@ export default function App() {
   setSolverProgress(null);
   setResults(null);
   setSolverResidualSeries([]);
+  activeTaskIdRef.current = null;
   setCurrentProject(project => project ? { ...project, simulationRun: undefined, normalizedSolverResult: undefined } : project);
-  let latestLogs = [`[${new Date().toISOString()}] Submitting ${currentProject.field} simulation (${simulationType})`];
+  let latestLogs = [`[${new Date().toISOString()}] Submitting ${currentProject.field} simulation (${simulationType}) to Docker Engine (:8000)`];
   setSolverLogs(latestLogs);
 
   const submitResponse = await fetch('/api/run-simulation', {
@@ -212,8 +227,10 @@ export default function App() {
     job = { status: 'COMPLETED', result: directResult, logs: [] };
     latestLogs = [...latestLogs, `[${new Date().toISOString()}] Direct solver execution completed`];
     setSolverLogs(latestLogs);
-  } else {      const taskId = submitPayload?.task_id as string | undefined;
+  } else {
+      const taskId = submitPayload?.task_id as string | undefined;
       if (!taskId) throw new Error('Simulation backend did not return a task_id');
+      activeTaskIdRef.current = taskId;
 
       for (;;) {
         const statusResponse = await fetch(`/api/jobs/${encodeURIComponent(taskId)}`);
@@ -236,8 +253,12 @@ export default function App() {
           latestLogs = job.logs.map(String);
           setSolverLogs(latestLogs);
         }
-        if (jobStatus === 'COMPLETED') break;
+        if (jobStatus === 'COMPLETED') {
+          activeTaskIdRef.current = null;
+          break;
+        }
         if (jobStatus === 'FAILED' || jobStatus === 'CANCELLED') {
+          activeTaskIdRef.current = null;
           const backendError = typeof job?.error === 'string' && job.error.trim() !== '' ? job.error : undefined;
           if (backendError && !latestLogs.includes(backendError)) {
             latestLogs = [...latestLogs, backendError];
@@ -289,42 +310,51 @@ export default function App() {
   // Apply computed nanofluid & flow regime directly to the active project & solver inputs
   const handleApplyWizardCaseToProject = (row: SweepCaseRow) => {
     const isFea = row.geometryMode === 'structural_fea';
-  setAppliedPhysicsOverrides(
-    isFea
-      ? {
-          simulation_type: 'FEA',
-          geometry_mode: row.geometryMode,
-          domain_length: row.domainLengthM,
-          domain_height: row.dhMeters,
-          pressure_load_mpa: row.velocity,
-          elastic_modulus_gpa: row.elasticModulusGpa,
-          poisson_ratio: row.poissonRatio,
-          yield_strength_mpa: row.yieldStrengthMpa,
-          support_type: row.supportType,
-        }
-      : {
-          simulation_type: 'CFD',
-          geometry_mode: row.geometryMode,
-          domain_length: row.domainLengthM,
-          domain_height: row.dhMeters,
-          hydraulic_diameter: row.dhMeters,
-          velocity: row.velocity,
-          inlet_temperature: row.inletTempK,
-          heat_flux: row.heatFlux,
-          wall_temperature: row.wallTempK,
-          density: row.rhoEff,
-          viscosity: row.muEff,
-          thermal_conductivity: row.kEff,
-          specific_heat: row.cpEff,
-          turbulence_model: row.regime,
-          wave_count: row.waveCount,
-          wave_amplitude_ratio: row.waveAmplitudeRatio,
-        }
-  );
+    const isCht = row.heatFlux > 0 || (row.wallTempK ?? 0) > row.inletTempK + 0.1;
+    const simType = isFea ? 'Structural_Static' : isCht ? 'CHT_Coupled' : 'CFD_Incompressible';
+    setAppliedPhysicsOverrides(
+      isFea
+        ? {
+            simulation_type: 'Structural_Static',
+            geometry_mode: row.geometryMode,
+            domain_length: row.domainLengthM,
+            domain_height: row.dhMeters,
+            pressure_load_mpa: row.velocity,
+            elastic_modulus_gpa: row.elasticModulusGpa,
+            poisson_ratio: row.poissonRatio,
+            yield_strength_mpa: row.yieldStrengthMpa,
+            support_type: row.supportType,
+          }
+        : {
+            simulation_type: simType,
+            geometry_mode: row.geometryMode,
+            domain_length: row.domainLengthM,
+            domain_height: row.dhMeters,
+            hydraulic_diameter: row.dhMeters,
+            velocity: row.velocity,
+            inlet_temperature: row.inletTempK,
+            heat_flux: row.heatFlux,
+            wall_temperature: row.wallTempK,
+            density: row.rhoEff,
+            viscosity: row.muEff,
+            thermal_conductivity: row.kEff,
+            specific_heat: row.cpEff,
+            turbulence_model: row.regime,
+            wave_count: row.waveCount,
+            wave_amplitude_ratio: row.waveAmplitudeRatio,
+          }
+    );
     if (!currentProject) return;
     setSimulationInputs((prev) => ({
       ...prev,
+      simulationType: simType,
+      widthX: String(row.domainLengthM),
+      heightY: String(row.dhMeters),
       velocity: String(row.velocity),
+      temperature: String(row.inletTempK),
+      pressure: prev.pressure || '101325',
+      meshSize: prev.meshSize || String(Number((row.dhMeters / 10).toFixed(4))),
+      thermalConductivity: String(row.kEff),
     }));
     setCurrentProject((prev) =>
       prev
@@ -332,7 +362,7 @@ export default function App() {
             ...prev,
             material: {
               name: row.fluidLabel,
-              phaseOrType: 'Fluid',
+              phaseOrType: isFea ? 'Solid' : 'Fluid',
               density: `${row.rhoEff} kg/m³`,
               viscosity: `${row.muEff} Pa·s`,
               thermalConductivity: `${row.kEff} W/(m·K)`,
@@ -354,96 +384,124 @@ export default function App() {
     setTimeout(() => setSaveToast(null), 4000);
   };
 
-  // Execute every queued parametric sweep row through the REAL FastAPI /api/run-simulation solver pipeline
+  // Execute every queued parametric sweep row through the REAL Docker Celery /api/run-simulation pipeline
   const handleRunRealWizardBatch = async (
-  cases: SweepCaseRow[],
-  onRowUpdate: (id: string, patch: Partial<SweepCaseRow>) => void
-) => {
-  for (const c of cases) {
-    onRowUpdate(c.id, { status: 'Running' });
-    try {
-      const isFea = c.geometryMode === 'structural_fea';
-      const payload: Record<string, unknown> = isFea
-        ? {
-            simulation_type: 'FEA',
-            execution_mode: 'direct',
-            geometry_mode: c.geometryMode,
-            domain_length: c.domainLengthM,
-            domain_height: c.dhMeters,
-            pressure_load_mpa: c.velocity,
-            elastic_modulus_gpa: c.elasticModulusGpa,
-            poisson_ratio: c.poissonRatio,
-            yield_strength_mpa: c.yieldStrengthMpa,
-            support_type: c.supportType,
+    cases: SweepCaseRow[],
+    onRowUpdate: (id: string, patch: Partial<SweepCaseRow>) => void
+  ) => {
+    for (const c of cases) {
+      onRowUpdate(c.id, { status: 'Running' });
+      try {
+        const isFea = c.geometryMode === 'structural_fea';
+        const isCht = !isFea && (c.heatFlux > 0 || (c.wallTempK ?? 0) > c.inletTempK + 0.1);
+        const payload: Record<string, unknown> = isFea
+          ? {
+              simulation_type: 'Structural_Static',
+              execution_mode: 'celery',
+              width_x: c.domainLengthM,
+              height_y: c.dhMeters,
+              geometry_mode: c.geometryMode,
+              domain_length: c.domainLengthM,
+              domain_height: c.dhMeters,
+              pressure_load_mpa: c.velocity,
+              elastic_modulus_gpa: c.elasticModulusGpa,
+              poisson_ratio: c.poissonRatio,
+              yield_strength_mpa: c.yieldStrengthMpa,
+              support_type: c.supportType,
+            }
+          : {
+              simulation_type: isCht ? 'CHT_Coupled' : 'CFD_Incompressible',
+              execution_mode: 'celery',
+              width_x: c.domainLengthM,
+              height_y: c.dhMeters,
+              geometry_mode: c.geometryMode,
+              domain_length: c.domainLengthM,
+              domain_height: c.dhMeters,
+              hydraulic_diameter: c.dhMeters,
+              velocity: c.velocity,
+              temperature: c.inletTempK,
+              inlet_temperature: c.inletTempK,
+              heat_flux: c.heatFlux,
+              wall_temperature: c.wallTempK,
+              density: c.rhoEff,
+              viscosity: c.muEff,
+              thermal_conductivity: c.kEff,
+              thermal_conductivity_k: c.kEff,
+              specific_heat: c.cpEff,
+              turbulence_model: c.regime,
+              wave_count: c.waveCount,
+              wave_amplitude_ratio: c.waveAmplitudeRatio,
+            };
+
+        const response = await fetch('/api/run-simulation', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
+        const data = await readJson(response);
+        if (!response.ok || data?.success === false) {
+          throw new Error(extractApiError(data, `Solver error (${response.status})`));
+        }
+
+        let raw: any = data?.result ?? data?.data ?? data;
+        if (data?.task_id) {
+          for (;;) {
+            await new Promise((resolve) => setTimeout(resolve, 1200));
+            const statusResp = await fetch(`/api/jobs/${encodeURIComponent(data.task_id)}`);
+            const jobBody = await readJson(statusResp);
+            if (!statusResp.ok) throw new Error(extractApiError(jobBody, `Job ${data.task_id} failed`));
+            const st = String(jobBody?.status || '').toUpperCase();
+            if (st === 'COMPLETED') {
+              raw = jobBody?.result ?? jobBody;
+              break;
+            }
+            if (st === 'FAILED' || st === 'CANCELLED') {
+              throw new Error(jobBody?.error || `Solver job ${st.toLowerCase()}`);
+            }
           }
-        : {
-            simulation_type: 'CFD',
-            execution_mode: 'direct',
-            geometry_mode: c.geometryMode,
-            domain_length: c.domainLengthM,
-            domain_height: c.dhMeters,
-            hydraulic_diameter: c.dhMeters,
-            velocity: c.velocity,
-            inlet_temperature: c.inletTempK,
-            heat_flux: c.heatFlux,
-            wall_temperature: c.wallTempK,
-            density: c.rhoEff,
-            viscosity: c.muEff,
-            thermal_conductivity: c.kEff,
-            specific_heat: c.cpEff,
-            turbulence_model: c.regime,
-            wave_count: c.waveCount,
-            wave_amplitude_ratio: c.waveAmplitudeRatio,
-          };
+        }
+        const res = raw?.data?.solver_results ?? raw?.solver_results ?? raw?.data ?? raw;
 
-      const response = await fetch('/api/run-simulation', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
-      });
-      const data = await readJson(response);
-      if (!response.ok || data?.success === false) {
-        throw new Error(extractApiError(data, `Solver error (${response.status})`));
-      }
+        if (isFea) {
+          const stressVal = Number(res?.max_von_mises_mpa ?? res?.max_von_mises_stress ?? 0);
+          const dispVal = Number(res?.max_displacement_mm ?? res?.max_displacement ?? 0);
+          onRowUpdate(c.id, {
+            status: 'Completed',
+            nuResult: stressVal,
+            deltaPResult: dispVal,
+            resultSummary: `σ_vm=${stressVal.toFixed(2)} MPa, δ=${dispVal.toFixed(3)} mm`,
+          });
+        } else {
+          const nuVal = Number(res?.nusselt_number ?? 0);
+          const dpVal = Number(res?.pressure_drop_pa ?? res?.pressure_drop ?? 0);
+          const hVal = Number(res?.heat_transfer_coeff_h ?? 0);
+          const tMaxVal = Number(res?.temperature_max ?? res?.max_temperature ?? c.inletTempK);
+          onRowUpdate(c.id, {
+            status: 'Completed',
+            nuResult: nuVal,
+            deltaPResult: dpVal,
+            hResult: hVal,
+            tMaxResult: tMaxVal,
+            resultSummary: `Nu=${nuVal.toFixed(2)}, ΔP=${dpVal.toFixed(2)} Pa`,
+          });
+        }
 
-      const raw = data?.result ?? data?.data ?? data;
-      const res = raw?.solver_results ?? raw;
-
-      if (isFea) {
-        const stressVal = Number(res?.max_von_mises_mpa ?? res?.max_von_mises_stress ?? 0);
-        const dispVal = Number(res?.max_displacement_mm ?? res?.max_displacement ?? 0);
+        setResults(res);
+        if (currentProject) {
+          const norm = normalizeSolverResponse(raw, currentProject);
+          setCurrentProject((proj) => (proj ? { ...proj, normalizedSolverResult: norm } : proj));
+        }
+      } catch (err: any) {
         onRowUpdate(c.id, {
-          status: 'Completed',
-          nuResult: stressVal,
-          deltaPResult: dispVal,
-          resultSummary: `σ_vm=${stressVal.toFixed(2)} MPa, δ=${dispVal.toFixed(3)} mm`,
+          status: 'Error',
+          resultSummary: err?.message || 'Execution failed',
         });
-      } else {
-        const nuVal = Number(res?.nusselt_number ?? 0);
-        const dpVal = Number(res?.pressure_drop_pa ?? res?.pressure_drop ?? 0);
-        const hVal = Number(res?.heat_transfer_coeff_h ?? 0);
-        const tMaxVal = Number(res?.temperature_max ?? res?.max_temperature ?? c.inletTempK);
-        onRowUpdate(c.id, {
-          status: 'Completed',
-          nuResult: nuVal,
-          deltaPResult: dpVal,
-          hResult: hVal,
-          tMaxResult: tMaxVal,
-          resultSummary: `Nu=${nuVal.toFixed(2)}, ΔP=${dpVal.toFixed(2)} Pa`,
-        });
+        throw err;
       }
-
-      setResults(res);
-    } catch (err: any) {
-      onRowUpdate(c.id, {
-        status: 'Error',
-        resultSummary: err?.message || 'Execution failed',
-      });
-      throw err;
     }
-  }
-};
- const recordIssue = (message: string, severity: 'error' | 'warning' = 'error') => {
+  };
+
+  const recordIssue = (message: string, severity: 'error' | 'warning' = 'error') => {
     const id = ++issueIdRef.current;
     setConsoleIssues((prev) => [
       ...prev,
@@ -451,10 +509,15 @@ export default function App() {
     ]);
   };
   const cancelSimulation = () => {
+    const taskId = activeTaskIdRef.current;
+    activeTaskIdRef.current = null;
     runIdRef.current += 1;
-    setSolverJobStatus('idle');
+    setSolverJobStatus('cancelled');
     setSolverProgress(null);
     setSolverLogs((prev) => [...prev, `[${new Date().toISOString()}] Simulation cancelled by user.`]);
+    if (taskId) {
+      fetch(`/api/jobs/${encodeURIComponent(taskId)}/cancel`, { method: 'POST' }).catch(() => {});
+    }
   };
 
   const runSimulation = async () => {
@@ -470,7 +533,6 @@ export default function App() {
     }
   };
 
-  
   const runMeshStudy = async (keyResultId: string): Promise<void> => {
     if (!currentProject || meshStudyRunning) return;
     const studiedProjectId = currentProject.id;
@@ -479,7 +541,12 @@ export default function App() {
     setConsoleTab('logs');
     setSolverLogs(previous => [...previous, `[${new Date().toISOString()}] Starting mesh independence study (${keyResultId}, 3 grid levels)`]);
     try {
-      const requestBody = { ...buildSimulationRequest(simulationInputs), key_result: keyResultId };
+      const requestBody = {
+        ...buildSimulationRequest(simulationInputs),
+        ...(viewportBoundaryMarkers.length > 0 ? { boundary_markers: viewportBoundaryMarkers } : {}),
+        ...(viewportRegionBox ? { region_box: viewportRegionBox } : {}),
+        key_result: keyResultId,
+      };
       const response = await fetch('/api/mesh-study', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -536,41 +603,45 @@ export default function App() {
     setSolverProgress(null);
     setSolverJobStatus('idle');
     setMeshStudyError(null);
+    setMeshPreviewVtk(null);
+    setMeshPreviewStats(null);
+    setCadPatches([]);
+    setSelectedBoundaryIndex(null);
+    setUploadedCadStl(null);
     setSimulationInputs(previous => ({ ...previous, simulationType: defaultSimulationTypeForField(currentProject?.field) }));
   }, [currentProject?.id]);
 
   const [cloudConfig, setCloudConfig] = useState<CloudServerConfig>(() => {
+    const defaultCfg: CloudServerConfig = {
+      backendUrl: 'http://127.0.0.1:8000',
+      workingDirectory: '/app/jobs',
+      parallelCores: 8,
+      storageCapacityGb: 400,
+      solverBackend: 'openfoam',
+      licenseServerHost: '127.0.0.1',
+      licenseFlexNetPort: 1055,
+      licenseAnsysLiPort: 2325,
+      licenseType: 'open_source_unlicensed',
+      autoFallbackToOpenSource: false,
+      status: 'unconfigured',
+    };
     try {
       const saved = localStorage.getItem('workbench_cloud_config');
-      return saved
-        ? JSON.parse(saved)
-        : {
-            backendUrl: 'http://127.0.0.1:8001',
-            workingDirectory: '/data/ansys_workspace',
-            parallelCores: 8,
-            storageCapacityGb: 400,
-            solverBackend: 'scipy_deterministic',
-            licenseServerHost: '127.0.0.1',
-            licenseFlexNetPort: 1055,
-            licenseAnsysLiPort: 2325,
-            licenseType: 'academic',
-            autoFallbackToOpenSource: true,
-            status: 'unconfigured',
-          };
+      if (!saved) return defaultCfg;
+      const parsed = JSON.parse(saved);
+      // Auto-migrate stale legacy port 8001 / scipy_deterministic defaults to Docker :8000
+      if (parsed.backendUrl === 'http://127.0.0.1:8001' || parsed.backendUrl === 'http://localhost:8001') {
+        parsed.backendUrl = 'http://127.0.0.1:8000';
+      }
+      if (parsed.solverBackend === 'scipy_deterministic') {
+        parsed.solverBackend = 'openfoam';
+      }
+      if (parsed.workingDirectory === '/data/ansys_workspace') {
+        parsed.workingDirectory = '/app/jobs';
+      }
+      return { ...defaultCfg, ...parsed };
     } catch {
-      return {
-        backendUrl: 'http://127.0.0.1:8001',
-        workingDirectory: '/data/ansys_workspace',
-        parallelCores: 8,
-        storageCapacityGb: 400,
-        solverBackend: 'scipy_deterministic',
-        licenseServerHost: '127.0.0.1',
-        licenseFlexNetPort: 1055,
-        licenseAnsysLiPort: 2325,
-        licenseType: 'academic',
-        autoFallbackToOpenSource: true,
-        status: 'unconfigured',
-      };
+      return defaultCfg;
     }
   });
 
@@ -752,8 +823,18 @@ export default function App() {
     minOrthogonalQuality: number;
     maxSkewness: number;
     description: string;
+    vtkData?: VtkFieldPayload;
   }) => {
     if (!currentProject) return;
+    if (applied.vtkData) {
+      setMeshPreviewVtk(applied.vtkData);
+      setMeshPreviewStats({
+        elements_count: applied.elementCount,
+        nodes_count: applied.nodeCount,
+        min_quality: applied.minOrthogonalQuality,
+        max_skewness: applied.maxSkewness,
+      });
+    }
     const updatedLevels = [...currentProject.meshStudy.meshLevels];
     if (updatedLevels.length > 2) {
       updatedLevels[2] = {
@@ -793,9 +874,157 @@ export default function App() {
       ...prev,
       widthX: stats.dimensions[0].toFixed(2),
       heightY: stats.dimensions[1].toFixed(2),
+      depthZ: stats.dimensions[2] > 0 ? stats.dimensions[2].toFixed(2) : prev.depthZ,
     }));
     setSaveToast(`تم استيراد النموذج الهندسي ${stats.name} (${stats.triangles.toLocaleString()} مثلث/وجه) وتحديث أبعاد النطاق.`);
     setTimeout(() => setSaveToast(null), 3500);
+  };
+
+  const handleCadFileUploaded = async ({
+    name,
+    base64,
+    ext,
+  }: {
+    name: string;
+    base64: string;
+    ext: string;
+    stats?: CadModelStats;
+  }) => {
+    setUploadedCadStl({ name, base64 });
+    if (ext === '.stl') return;
+
+    setCadPreviewLoading(true);
+    setSolverLogs((prev) => [...prev, `[${new Date().toISOString()}] Tessellating CAD (${name}) via Docker /api/cad-preview...`]);
+    try {
+      const response = await fetch('/api/cad-preview', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ cad_file_b64: base64, cad_filename: name }),
+      });
+      const data = await readJson(response);
+      if (!response.ok || data?.success === false || !data?.vtk_data) {
+        throw new Error(extractApiError(data, `CAD preview failed (${response.status})`));
+      }
+      setMeshPreviewVtk(data.vtk_data as VtkFieldPayload);
+      if (Array.isArray(data.patches)) {
+        setCadPatches(data.patches);
+      }
+      if (Array.isArray(data.dimensions) && data.dimensions.length >= 3) {
+        setSimulationInputs((prev) => ({
+          ...prev,
+          widthX: Number(data.dimensions[0]).toFixed(3),
+          heightY: Number(data.dimensions[1]).toFixed(3),
+          depthZ: Number(data.dimensions[2]).toFixed(3),
+        }));
+      }
+      if (currentProject) {
+        setCurrentProject((prev) =>
+          prev
+            ? {
+                ...prev,
+                title: `CAD: ${name}`,
+                workbenchComponents: prev.workbenchComponents?.map((wb) =>
+                  wb.type === 'Geometry'
+                    ? { ...wb, details: `${name} (${data.vtk_data?.triangle_count || 0} triangles via ${data.backend || 'gmsh'})` }
+                    : wb
+                ),
+              }
+            : prev
+        );
+      }
+      setSaveToast(`Loaded ${name} via Docker CAD engine (${data.vtk_data?.triangle_count || 0} surface faces).`);
+      setTimeout(() => setSaveToast(null), 3500);
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : 'CAD preview failed';
+      recordIssue(msg);
+      setConsoleTab('errors');
+      setSolverLogs((prev) => [...prev, `[${new Date().toISOString()}] ERROR: ${msg}`]);
+    } finally {
+      setCadPreviewLoading(false);
+    }
+  };
+
+  const handleGenerateMeshPreview = async () => {
+    if (!currentProject || meshGenerating) return;
+    setMeshGenerating(true);
+    setConsoleTab('logs');
+    setSolverLogs((prev) => [
+      ...prev,
+      `[${new Date().toISOString()}] Running Gmsh 3D mesher (h=${simulationInputs.meshSize} m, Order ${simulationInputs.elementOrder}) via Docker :8000...`,
+    ]);
+    try {
+      const bodyPayload: Record<string, unknown> = {
+        width_x: Number(simulationInputs.widthX) || 1.0,
+        height_y: Number(simulationInputs.heightY) || 0.4,
+        depth_z: Number(simulationInputs.depthZ) || 0.2,
+        mesh_size: Number(simulationInputs.meshSize) || 0.05,
+        dimension: 3,
+        element_order: Number(simulationInputs.elementOrder || 1),
+        inflation_layers: Number(simulationInputs.inflationLayers || 0),
+        first_layer_height: Number(simulationInputs.firstLayerHeight || 0.002),
+        growth_rate: Number(simulationInputs.growthRate || 1.2),
+        execution_mode: simulationInputs.executionMode,
+      };
+      if (uploadedCadStl) {
+        bodyPayload.cad_file_b64 = uploadedCadStl.base64;
+        bodyPayload.cad_stl_b64 = uploadedCadStl.base64;
+        bodyPayload.cad_filename = uploadedCadStl.name;
+      }
+
+      const res = await fetch('/api/mesh-generate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(bodyPayload),
+      });
+      const payload = await readJson(res);
+      if (!res.ok || payload?.success === false) {
+        throw new Error(extractApiError(payload, `Gmsh meshing failed (${res.status})`));
+      }
+
+      let meshData = payload?.mesh;
+      if (!meshData && payload?.task_id) {
+        const started = Date.now();
+        while (Date.now() - started < 120_000) {
+          await new Promise((r) => setTimeout(r, 1000));
+          const jobRes = await fetch(`/api/jobs/${encodeURIComponent(payload.task_id)}`);
+          if (!jobRes.ok) continue;
+          const job = await readJson(jobRes);
+          const st = String(job?.status || '').toUpperCase();
+          if (st === 'COMPLETED') {
+            meshData = job?.result?.mesh || job?.result?.data || job?.result;
+            break;
+          }
+          if (st === 'FAILED' || st === 'CANCELLED') {
+            throw new Error(job?.error || `Gmsh task ${st.toLowerCase()}`);
+          }
+        }
+      }
+
+      if (!meshData || !meshData.elements_count) {
+        throw new Error('Gmsh did not return valid mesh elements.');
+      }
+
+      if (meshData.vtk_data) {
+        setMeshPreviewVtk(meshData.vtk_data as VtkFieldPayload);
+      }
+      setMeshPreviewStats(meshData as MeshPreviewSummary);
+      if (Array.isArray(meshData.patches)) {
+        setCadPatches(meshData.patches);
+      }
+      setSolverLogs((prev) => [
+        ...prev,
+        `[${new Date().toISOString()}] Gmsh complete: ${meshData.elements_count} elements, ${meshData.nodes_count} nodes (minSICN=${meshData.min_quality}).`,
+      ]);
+      setSaveToast(`Gmsh 3D mesh ready: ${Number(meshData.elements_count).toLocaleString()} elements`);
+      setTimeout(() => setSaveToast(null), 3500);
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : 'Gmsh mesh generation failed';
+      recordIssue(msg);
+      setConsoleTab('errors');
+      setSolverLogs((prev) => [...prev, `[${new Date().toISOString()}] ERROR: ${msg}`]);
+    } finally {
+      setMeshGenerating(false);
+    }
   };
 
   const handleBoundaryAdded = (marker: BoundaryMarker) => {
@@ -807,6 +1036,10 @@ export default function App() {
         ? 'Pressure Outlet'
         : marker.type === 'HeatSource'
         ? 'Heat Flux Wall'
+        : marker.type === 'Load'
+        ? 'Force Load'
+        : marker.type === 'Fixed'
+        ? 'Fixed Support'
         : 'No-slip Wall';
     const bcValue =
       marker.value !== undefined
@@ -815,21 +1048,62 @@ export default function App() {
         ? simulationInputs.velocity
         : '0.0';
     const bcUnit =
-      marker.unit || (marker.type === 'Inlet' ? 'm/s' : marker.type === 'HeatSource' ? 'W/m²' : 'Pa (gauge)');
+      marker.unit || (marker.type === 'Inlet' ? 'm/s' : marker.type === 'HeatSource' ? 'W/m²' : 'Pa');
     const newBc: BoundaryCondition = {
-      name: `${marker.type} Face [${marker.point.map((p) => p.toFixed(1)).join(', ')}]`,
+      id: `bc_${Date.now()}`,
+      markerId: marker.id,
+      name: `${marker.type} [${marker.point.map((p) => p.toFixed(1)).join(', ')}]`,
       type: bcType,
       value: bcValue,
       unit: bcUnit,
       description: `Normal n=(${marker.normal.map((n) => n.toFixed(2)).join(', ')})`,
+      status: 'Defined',
     };
-    const updated: ThesisProject = {
+    const nextBcs = [...(currentProject.boundaryConditions || []), newBc];
+    setCurrentProject({
       ...currentProject,
-      boundaryConditions: [...(currentProject.boundaryConditions || []), newBc],
-    };
-    setCurrentProject(updated);
-    setSaveToast(`تم تعيين شرط حدي سطحي (${newBc.name}) وإضافته إلى شجرة المحاكاة.`);
-    setTimeout(() => setSaveToast(null), 3500);
+      boundaryConditions: nextBcs,
+    });
+    setSelectedBoundaryIndex(nextBcs.length - 1);
+    setSaveToast(`Assigned ${bcType} (${newBc.name}) to Simulation Tree.`);
+    setTimeout(() => setSaveToast(null), 3000);
+  };
+
+  const handleUpdateBoundaryCondition = (idx: number, patch: Partial<BoundaryCondition>) => {
+    if (!currentProject) return;
+    const list = [...(currentProject.boundaryConditions || [])];
+    if (!list[idx]) return;
+    const updatedBc = { ...list[idx], ...patch };
+    list[idx] = updatedBc;
+    setCurrentProject({ ...currentProject, boundaryConditions: list });
+    if (updatedBc.markerId && patch.value !== undefined) {
+      const numericVal = parseFloat(patch.value);
+      if (Number.isFinite(numericVal)) {
+        setViewportBoundaryMarkers((prev) =>
+          prev.map((m) => (m.id === updatedBc.markerId ? { ...m, value: numericVal, unit: updatedBc.unit } : m))
+        );
+      }
+    }
+  };
+
+  const handleDeleteBoundaryCondition = (idx: number) => {
+    if (!currentProject) return;
+    const list = [...(currentProject.boundaryConditions || [])];
+    const removed = list[idx];
+    list.splice(idx, 1);
+    setCurrentProject({ ...currentProject, boundaryConditions: list });
+    if (removed?.markerId) {
+      setViewportBoundaryMarkers((prev) => prev.filter((m) => m.id !== removed.markerId));
+    }
+    setSelectedBoundaryIndex((curr) => (curr === idx ? null : curr !== null && curr > idx ? curr - 1 : curr));
+  };
+
+  const handleAddBoundaryCondition = (bc: BoundaryCondition) => {
+    if (!currentProject) return;
+    setCurrentProject({
+      ...currentProject,
+      boundaryConditions: [...(currentProject.boundaryConditions || []), bc],
+    });
   };
 
   const openDocument = (doc: PanelDocument | 'wizard') => {
@@ -881,6 +1155,13 @@ export default function App() {
       { id: 'setup', label: 'Solver Setup', icon: <Cpu className="h-3.5 w-3.5" />, onClick: () => openDocument('overview') },
       { id: 'materials', label: 'Materials Database', icon: <Database className="h-3.5 w-3.5" />, onClick: () => setIsMaterialsModalOpen(true) },
       { id: 'sweep', label: 'Parametric Sweep', icon: <Sliders className="h-3.5 w-3.5" />, onClick: () => setIsParametricSweepOpen(true) },
+    ],
+    boundaries: [],
+    contacts: [
+      { id: 'setup', label: 'Interface Overview', icon: <Cpu className="h-3.5 w-3.5" />, onClick: () => openDocument('overview') },
+    ],
+    solution: [
+      { id: 'setup', label: 'Solver Setup', icon: <Cpu className="h-3.5 w-3.5" />, onClick: () => openDocument('overview') },
     ],
     copilot: [
       { id: 'consultant', label: 'Open OmniSolve AI', icon: <Sparkles className="h-3.5 w-3.5" />, onClick: () => setIsAssistantOpen(true) },
@@ -956,10 +1237,13 @@ export default function App() {
 
   const viewportTitles: Record<WorkflowStep, string> = {
     geometry: 'Geometry',
-    mesh: 'Mesh preview',
-    physics: 'Physics setup',
+    mesh: 'Mesh & Sizing Preview',
+    physics: 'Physics & Materials',
+    boundaries: 'Boundary Conditions',
+    contacts: 'Contacts & Interfaces',
+    solution: 'Solution Controls',
     copilot: 'OmniSolve AI (Copilot)',
-    post: 'Results',
+    post: 'Results & Post-Processing',
   };
 
   const realTemperatureMatrix = toRealTemperatureMatrix(results?.temperature_matrix);
@@ -993,6 +1277,13 @@ export default function App() {
           activeStep={activeStep}
           hasProject={hasProject}
           jobStatus={solverJobStatus}
+          inputs={simulationInputs}
+          materialName={currentProject?.material?.name}
+          cadName={uploadedCadStl?.name}
+          meshElementCount={meshPreviewStats?.elements_count ?? currentProject?.meshStudy?.meshLevels?.[2]?.elements}
+          boundaryConditions={currentProject?.boundaryConditions}
+          selectedBoundaryIndex={selectedBoundaryIndex}
+          onSelectBoundary={setSelectedBoundaryIndex}
           actions={stepActions}
           onSelectStep={selectStep}
         />
@@ -1027,8 +1318,22 @@ export default function App() {
               subtitle={`${currentProject.title} · ${currentProject.field}`}
               field={currentProject.field}
               showMeshOverlay={activeStep === 'mesh'}
+              vtkData={currentProject.normalizedSolverResult?.vtkData ?? null}
+              meshPreviewVtk={meshPreviewVtk}
+              integrals={currentProject.normalizedSolverResult?.integrals ?? null}
+              cadLoading={cadPreviewLoading}
+              selectedMarkerId={
+                selectedBoundaryIndex !== null
+                  ? currentProject.boundaryConditions?.[selectedBoundaryIndex]?.markerId ?? null
+                  : null
+              }
+              hasSolvedResults={hasCompletedRun}
               onCadLoaded={handleCadLoaded}
+              onCadStlUploaded={({ name, base64 }) => setUploadedCadStl({ name, base64 })}
+              onCadFileUploaded={handleCadFileUploaded}
               onBoundaryAdded={handleBoundaryAdded}
+              onBoundaryMarkersChange={setViewportBoundaryMarkers}
+              onRegionChange={setViewportRegionBox}
               overlay={
                 <>
                   {activeStep === 'post' && solverJobStatus === 'completed' && !realTemperatureMatrix && (
@@ -1155,6 +1460,15 @@ export default function App() {
           inputsLocked={isSolverRunning}
           results={results}
           onInputsChange={(patch) => setSimulationInputs(previous => ({ ...previous, ...patch }))}
+          selectedBoundaryIndex={selectedBoundaryIndex}
+          onSelectBoundary={setSelectedBoundaryIndex}
+          onUpdateBoundaryCondition={handleUpdateBoundaryCondition}
+          onDeleteBoundaryCondition={handleDeleteBoundaryCondition}
+          onAddBoundaryCondition={handleAddBoundaryCondition}
+          meshPreviewStats={meshPreviewStats}
+          meshGenerating={meshGenerating}
+          onGenerateMeshPreview={handleGenerateMeshPreview}
+          cadPatches={cadPatches}
           actions={{
             importModel: () => setIsUploadModalOpen(true),
             openMeshGenerator: () => setIsMeshGeneratorOpen(true),
@@ -1232,6 +1546,8 @@ export default function App() {
         isOpen={isMeshGeneratorOpen}
         onClose={() => setIsMeshGeneratorOpen(false)}
         currentProject={currentProject}
+        simulationInputs={simulationInputs}
+        uploadedCadStl={uploadedCadStl}
         onApplyMeshToStudy={handleApplyMeshToStudy}
       />
 
@@ -1246,6 +1562,9 @@ export default function App() {
         isOpen={isParametricSweepOpen}
         onClose={() => setIsParametricSweepOpen(false)}
         currentProject={currentProject}
+        simulationInputs={simulationInputs}
+        uploadedCadStl={uploadedCadStl}
+        viewportBoundaryMarkers={viewportBoundaryMarkers}
       />
 
       <AuditReportModal

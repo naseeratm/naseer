@@ -1,13 +1,31 @@
-export type WorkflowStep = 'geometry' | 'mesh' | 'physics' | 'copilot' | 'post';
+export type WorkflowStep =
+  | 'geometry'
+  | 'mesh'
+  | 'physics'
+  | 'boundaries'
+  | 'contacts'
+  | 'solution'
+  | 'copilot'
+  | 'post';
 
 export type JobStatus = 'idle' | 'queued' | 'running' | 'completed' | 'failed' | 'cancelled';
 
 export type SimulationTypeOption =
   | 'CFD_Incompressible'
   | 'CFD_Compressible'
+  | 'CHT_Coupled'
+  | 'Multiphase_VOF'
   | 'Structural_Static'
   | 'Structural_Dynamic'
-  | 'Thermal_Transient';
+  | 'Structural_Buckling'
+  | 'Thermal_Steady'
+  | 'Thermal_Transient'
+  | 'Thermal_Radiation'
+  | 'Thermal_Structural'
+  | 'Electromagnetic'
+  | 'Acoustics';
+
+export type SimulationType = SimulationTypeOption;
 
 export type ExecutionModeOption = 'celery' | 'direct';
 
@@ -15,29 +33,95 @@ export type TemperatureUnit = 'K' | 'C' | 'F';
 
 export type ConsoleTab = 'logs' | 'convergence' | 'errors';
 
+export const CFD_BOUNDARY_SUBTYPES = [
+  'Velocity Inlet',
+  'Mass Flow Inlet',
+  'Pressure Inlet',
+  'Pressure Outlet',
+  'No-slip Wall',
+  'Slip Wall',
+  'Moving Wall',
+  'Symmetry',
+] as const;
+
+export const FEA_BOUNDARY_SUBTYPES = [
+  'Fixed Support',
+  'Pinned Support',
+  'Displacement',
+  'Force Load',
+  'Pressure Load',
+  'Frictionless Support',
+] as const;
+
+export const THERMAL_BOUNDARY_SUBTYPES = [
+  'Fixed Temperature',
+  'Heat Flux Wall',
+  'Convection Surface',
+  'Radiation Surface',
+  'Adiabatic Wall',
+] as const;
+
 export interface SimulationInputs {
   simulationType: SimulationTypeOption;
   executionMode: ExecutionModeOption;
-  // Common domain & mesh
+  // Common domain & Gmsh controls
   meshSize: string;
+  elementOrder: '1' | '2';
+  inflationLayers: string;
+  firstLayerHeight: string;
+  growthRate: string;
   widthX: string;
   heightY: string;
-  // CFD & Thermal
+  depthZ: string;
+  // CFD, CHT, VOF & Fluid Properties
   velocity: string;
+  turbulenceModel: string;
+  fluidDensity: string;
+  dynamicViscosity: string;
   temperature: string;
   temperatureUnit: TemperatureUnit;
   pressure: string;
-  // Structural (FEA)
+  // Time Stepping, Gravity & Solution Controls (Ansys / SimScale parity)
+  timeMode: 'steady' | 'transient';
+  timeStep: string;
+  endTime: string;
+  gravityEnabled: boolean;
+  gravityY: string;
+  solverIterations: string;
+  residualTarget: string;
+  discretizationScheme: 'first_order' | 'second_order';
+  relaxationP: string;
+  relaxationU: string;
+  relaxationT: string;
+  // Structural, Modal, Buckling & Contact (CalculiX)
+  supportType: 'cantilever' | 'simply_supported' | 'fixed_both';
   displacement: string;
+  pressureLoadMpa: string;
+  forceN: string;
   youngModulus: string;
   poissonRatio: string;
   density: string;
-  // Thermal_Transient
+  thermalExpansion: string;
+  nonlinear: boolean;
+  modesCount: string;
+  contactType: 'Bonded' | 'Sliding';
+  // Thermal, Radiation & Coupled Thermal
   thermalConductivity: string;
+  specificHeat: string;
+  heatFlux: string;
+  convectionH: string;
+  emissivity: string;
+  ambientTempC: string;
   bcLeft: string;
   bcRight: string;
   bcTop: string;
   bcBottom: string;
+  // Electromagnetics & Acoustics (ElmerFEM)
+  emSubmode: 'Electrostatic' | 'Magnetostatic' | 'EddyCurrent' | 'Acoustics';
+  electricalConductivity: string;
+  relativePermeability: string;
+  relativePermittivity: string;
+  currentDensity: string;
 }
 
 export interface ConsoleIssue {
@@ -47,41 +131,110 @@ export interface ConsoleIssue {
   message: string;
 }
 
-// جميع الحقول الفيزيائية تبدأ فارغة تماماً؛ لا يُسمح بأي أرقام افتراضية وهمية
+// All physical numeric fields start blank; zero fabricated/mock defaults are supplied.
 export const DEFAULT_SIMULATION_INPUTS: SimulationInputs = {
   simulationType: 'CFD_Incompressible',
   executionMode: 'celery',
   meshSize: '',
+  elementOrder: '1',
+  inflationLayers: '',
+  firstLayerHeight: '',
+  growthRate: '',
   widthX: '',
   heightY: '',
+  depthZ: '',
   velocity: '',
+  turbulenceModel: 'laminar',
+  fluidDensity: '',
+  dynamicViscosity: '',
   temperature: '',
   temperatureUnit: 'K',
   pressure: '',
+  timeMode: 'steady',
+  timeStep: '',
+  endTime: '',
+  gravityEnabled: false,
+  gravityY: '-9.81',
+  solverIterations: '',
+  residualTarget: '',
+  discretizationScheme: 'second_order',
+  relaxationP: '',
+  relaxationU: '',
+  relaxationT: '',
+  supportType: 'cantilever',
   displacement: '',
+  pressureLoadMpa: '',
+  forceN: '',
   youngModulus: '',
   poissonRatio: '',
   density: '',
+  thermalExpansion: '',
+  nonlinear: false,
+  modesCount: '',
+  contactType: 'Bonded',
   thermalConductivity: '',
+  specificHeat: '',
+  heatFlux: '',
+  convectionH: '',
+  emissivity: '',
+  ambientTempC: '',
   bcLeft: '',
   bcRight: '',
   bcTop: '',
   bcBottom: '',
+  emSubmode: 'Electrostatic',
+  electricalConductivity: '',
+  relativePermeability: '',
+  relativePermittivity: '',
+  currentDensity: '',
 };
 
 export const SIMULATION_TYPE_OPTIONS: { value: SimulationTypeOption; label: string }[] = [
-  { value: 'CFD_Incompressible', label: 'CFD · Incompressible' },
-  { value: 'CFD_Compressible', label: 'CFD · Compressible' },
-  { value: 'Structural_Static', label: 'Structural · Static' },
-  { value: 'Structural_Dynamic', label: 'Structural · Dynamic' },
-  { value: 'Thermal_Transient', label: 'Thermal · Transient' },
+  { value: 'CFD_Incompressible', label: 'CFD · Incompressible (OpenFOAM simpleFoam / pimpleFoam)' },
+  { value: 'CFD_Compressible', label: 'CFD · Compressible (OpenFOAM rhoSimpleFoam)' },
+  { value: 'CHT_Coupled', label: 'CHT · Conjugate Heat Transfer (OpenFOAM buoyantSimpleFoam)' },
+  { value: 'Multiphase_VOF', label: 'Multiphase · Volume of Fluid (OpenFOAM interFoam)' },
+  { value: 'Structural_Static', label: 'Structural · Static FEA (CalculiX ccx)' },
+  { value: 'Structural_Dynamic', label: 'Structural · Modal / Frequency (CalculiX ccx)' },
+  { value: 'Structural_Buckling', label: 'Structural · Linear Buckling (CalculiX ccx)' },
+  { value: 'Thermal_Steady', label: 'Thermal · Steady Conduction/Convection (CalculiX)' },
+  { value: 'Thermal_Transient', label: 'Thermal · Transient Heat Transfer (CalculiX)' },
+  { value: 'Thermal_Radiation', label: 'Thermal · Radiation & Conduction (CalculiX)' },
+  { value: 'Thermal_Structural', label: 'Coupled · Thermo-Mechanical Stress (CalculiX C3D8T)' },
+  { value: 'Electromagnetic', label: 'Electromagnetic · Electrostatics / Magnetics (ElmerFEM)' },
+  { value: 'Acoustics', label: 'Acoustics · Helmholtz Wave (ElmerFEM)' },
 ];
 
 export function defaultSimulationTypeForField(field?: string): SimulationTypeOption {
-  if (field === 'CFD') return 'CFD_Incompressible';
-  if (field === 'FEA') return 'Structural_Static';
+  const f = (field || '').toLowerCase();
+  if (f === 'cfd' || f === 'supersonic') return f === 'supersonic' ? 'CFD_Compressible' : 'CFD_Incompressible';
+  if (f === 'fea') return 'Structural_Static';
+  if (f === 'fsi' || f === 'multiphysics') return 'CHT_Coupled';
+  if (f === 'pcm') return 'Multiphase_VOF';
   return 'Thermal_Transient';
 }
+
+export const isCfdFamily = (type: SimulationTypeOption): boolean =>
+  type === 'CFD_Incompressible' ||
+  type === 'CFD_Compressible' ||
+  type === 'CHT_Coupled' ||
+  type === 'Multiphase_VOF';
+
+export const isStructuralFamily = (type: SimulationTypeOption): boolean =>
+  type === 'Structural_Static' ||
+  type === 'Structural_Dynamic' ||
+  type === 'Structural_Buckling' ||
+  type === 'Thermal_Structural';
+
+export const isThermalFamily = (type: SimulationTypeOption): boolean =>
+  type === 'Thermal_Steady' ||
+  type === 'Thermal_Transient' ||
+  type === 'Thermal_Radiation' ||
+  type === 'Thermal_Structural' ||
+  type === 'CHT_Coupled';
+
+export const isElmerFamily = (type: SimulationTypeOption): boolean =>
+  type === 'Electromagnetic' || type === 'Acoustics';
 
 export const TEMPERATURE_FIELDS = ['temperature', 'bcLeft', 'bcRight', 'bcTop', 'bcBottom'] as const;
 
@@ -100,7 +253,6 @@ export function convertTemperature(value: string, from: TemperatureUnit, to: Tem
   return String(Number(fromKelvin(toKelvin(Number(value), from), to).toFixed(2)));
 }
 
-// فحص الحقول الناقصة أو غير الصالحة حسب نوع الفيزياء المختارة لقفل زر التشغيل حتى اكتمالها
 export function getMissingSimulationInputs(inputs: SimulationInputs): string[] {
   const missing: string[] = [];
 
@@ -108,7 +260,7 @@ export function getMissingSimulationInputs(inputs: SimulationInputs): string[] {
   if (!isFiniteNumberString(inputs.heightY) || Number(inputs.heightY) <= 0) missing.push('Domain height');
   if (!isFiniteNumberString(inputs.meshSize) || Number(inputs.meshSize) <= 0) missing.push('Mesh size');
 
-  if (inputs.simulationType === 'CFD_Incompressible' || inputs.simulationType === 'CFD_Compressible') {
+  if (isCfdFamily(inputs.simulationType)) {
     if (!isFiniteNumberString(inputs.velocity)) missing.push('Velocity');
     if (!isFiniteNumberString(inputs.temperature)) missing.push('Temperature');
     if (
@@ -117,8 +269,14 @@ export function getMissingSimulationInputs(inputs: SimulationInputs): string[] {
     ) {
       missing.push('Pressure');
     }
-  } else if (inputs.simulationType === 'Structural_Static' || inputs.simulationType === 'Structural_Dynamic') {
-    if (!isFiniteNumberString(inputs.displacement)) missing.push('Displacement');
+  }
+
+  if (isStructuralFamily(inputs.simulationType)) {
+    const hasLoadOrDisp =
+      isFiniteNumberString(inputs.displacement) ||
+      isFiniteNumberString(inputs.pressureLoadMpa) ||
+      isFiniteNumberString(inputs.forceN);
+    if (!hasLoadOrDisp) missing.push('Displacement / Force / Pressure Load');
     if (!isFiniteNumberString(inputs.youngModulus) || Number(inputs.youngModulus) <= 0) missing.push("Young's Modulus");
     if (
       !isFiniteNumberString(inputs.poissonRatio) ||
@@ -128,7 +286,14 @@ export function getMissingSimulationInputs(inputs: SimulationInputs): string[] {
       missing.push("Poisson's Ratio");
     }
     if (!isFiniteNumberString(inputs.density) || Number(inputs.density) <= 0) missing.push('Density');
-  } else if (inputs.simulationType === 'Thermal_Transient') {
+  }
+
+  if (
+    inputs.simulationType === 'Thermal_Steady' ||
+    inputs.simulationType === 'Thermal_Transient' ||
+    inputs.simulationType === 'Thermal_Radiation' ||
+    inputs.simulationType === 'Thermal_Structural'
+  ) {
     if (!isFiniteNumberString(inputs.temperature)) missing.push('Initial Temperature');
     if (!isFiniteNumberString(inputs.thermalConductivity) || Number(inputs.thermalConductivity) <= 0) {
       missing.push('Conductivity');
@@ -137,6 +302,18 @@ export function getMissingSimulationInputs(inputs: SimulationInputs): string[] {
     if (!isFiniteNumberString(inputs.bcRight)) missing.push('Right Temp');
     if (!isFiniteNumberString(inputs.bcTop)) missing.push('Top Temp');
     if (!isFiniteNumberString(inputs.bcBottom)) missing.push('Bottom Temp');
+  }
+
+  if (inputs.simulationType === 'CHT_Coupled') {
+    if (!isFiniteNumberString(inputs.thermalConductivity) || Number(inputs.thermalConductivity) <= 0) {
+      missing.push('Thermal Conductivity');
+    }
+  }
+
+  if (isElmerFamily(inputs.simulationType)) {
+    if (!isFiniteNumberString(inputs.bcLeft)) {
+      missing.push(inputs.simulationType === 'Acoustics' ? 'Source Sound Pressure (Pa)' : 'Source Potential (V)');
+    }
   }
 
   return missing;
@@ -156,34 +333,160 @@ export function buildSimulationRequest(inputs: SimulationInputs): Record<string,
     execution_mode: inputs.executionMode,
     simulation_type: inputs.simulationType,
     mesh_size: Number(inputs.meshSize),
+    element_order: Number(inputs.elementOrder || 1),
     width_x: Number(inputs.widthX),
     height_y: Number(inputs.heightY),
+    time_mode: inputs.timeMode,
+    gravity_enabled: Boolean(inputs.gravityEnabled),
+    discretization_scheme: inputs.discretizationScheme,
+    nonlinear: Boolean(inputs.nonlinear),
+    contact_type: inputs.contactType,
+    support_type: inputs.supportType,
   };
 
-  if (inputs.simulationType === 'CFD_Incompressible' || inputs.simulationType === 'CFD_Compressible') {
+  if (isFiniteNumberString(inputs.depthZ) && Number(inputs.depthZ) > 0) {
+    request.depth_z = Number(inputs.depthZ);
+  }
+  if (isFiniteNumberString(inputs.inflationLayers) && Number(inputs.inflationLayers) > 0) {
+    request.inflation_layers = Math.round(Number(inputs.inflationLayers));
+  }
+  if (isFiniteNumberString(inputs.firstLayerHeight) && Number(inputs.firstLayerHeight) > 0) {
+    request.first_layer_height = Number(inputs.firstLayerHeight);
+  }
+  if (isFiniteNumberString(inputs.growthRate) && Number(inputs.growthRate) >= 1) {
+    request.growth_rate = Number(inputs.growthRate);
+  }
+
+  // Solution Controls
+  if (inputs.timeMode === 'transient') {
+    if (isFiniteNumberString(inputs.timeStep) && Number(inputs.timeStep) > 0) {
+      request.time_step = Number(inputs.timeStep);
+    }
+    if (isFiniteNumberString(inputs.endTime) && Number(inputs.endTime) > 0) {
+      request.end_time = Number(inputs.endTime);
+    }
+  }
+  if (inputs.gravityEnabled && isFiniteNumberString(inputs.gravityY)) {
+    request.gravity_y = Number(inputs.gravityY);
+  }
+  if (isFiniteNumberString(inputs.solverIterations) && Number(inputs.solverIterations) > 0) {
+    request.solver_iterations = Math.round(Number(inputs.solverIterations));
+  }
+  if (isFiniteNumberString(inputs.residualTarget) && Number(inputs.residualTarget) > 0) {
+    request.residual_target = Number(inputs.residualTarget);
+  }
+  if (isFiniteNumberString(inputs.relaxationP) && Number(inputs.relaxationP) > 0) {
+    request.relaxation_p = Number(inputs.relaxationP);
+  }
+  if (isFiniteNumberString(inputs.relaxationU) && Number(inputs.relaxationU) > 0) {
+    request.relaxation_u = Number(inputs.relaxationU);
+  }
+  if (isFiniteNumberString(inputs.relaxationT) && Number(inputs.relaxationT) > 0) {
+    request.relaxation_t = Number(inputs.relaxationT);
+  }
+
+  if (isCfdFamily(inputs.simulationType)) {
     Object.assign(request, {
       velocity: Number(inputs.velocity),
       temperature: Number(inputs.temperature),
       temperature_unit: inputs.temperatureUnit,
       pressure: Number(inputs.pressure),
+      turbulence_model: inputs.turbulenceModel || 'laminar',
     });
-  } else if (inputs.simulationType === 'Structural_Static' || inputs.simulationType === 'Structural_Dynamic') {
+    const fluidProps: Record<string, number> = {};
+    if (isFiniteNumberString(inputs.fluidDensity) && Number(inputs.fluidDensity) > 0) {
+      fluidProps.density = Number(inputs.fluidDensity);
+      request.fluid_density = Number(inputs.fluidDensity);
+    }
+    if (isFiniteNumberString(inputs.dynamicViscosity) && Number(inputs.dynamicViscosity) > 0) {
+      fluidProps.viscosity = Number(inputs.dynamicViscosity);
+      request.dynamic_viscosity = Number(inputs.dynamicViscosity);
+    }
+    if (Object.keys(fluidProps).length > 0) {
+      request.fluid_properties = fluidProps;
+    }
+  }
+
+  if (isStructuralFamily(inputs.simulationType)) {
     Object.assign(request, {
-      displacement: Number(inputs.displacement),
+      displacement: isFiniteNumberString(inputs.displacement) ? Number(inputs.displacement) : 0.0,
       young_modulus: Number(inputs.youngModulus),
       poisson_ratio: Number(inputs.poissonRatio),
       density: Number(inputs.density),
     });
-  } else if (inputs.simulationType === 'Thermal_Transient') {
-    Object.assign(request, {
-      temperature: Number(inputs.temperature),
-      temperature_unit: inputs.temperatureUnit,
-      thermal_conductivity_k: Number(inputs.thermalConductivity),
-      bc_left_temp: Number(inputs.bcLeft),
-      bc_right_temp: Number(inputs.bcRight),
-      bc_top_temp: Number(inputs.bcTop),
-      bc_bottom_temp: Number(inputs.bcBottom),
-    });
+    if (isFiniteNumberString(inputs.pressureLoadMpa)) {
+      request.pressure_load_mpa = Number(inputs.pressureLoadMpa);
+    }
+    if (isFiniteNumberString(inputs.forceN)) {
+      request.force_n = Number(inputs.forceN);
+    }
+    if (isFiniteNumberString(inputs.modesCount) && Number(inputs.modesCount) > 0) {
+      request.modes_count = Math.round(Number(inputs.modesCount));
+    }
+    if (isFiniteNumberString(inputs.thermalExpansion)) {
+      request.thermal_expansion = Number(inputs.thermalExpansion);
+    }
+  }
+
+  if (isThermalFamily(inputs.simulationType)) {
+    if (isFiniteNumberString(inputs.temperature)) {
+      request.temperature = Number(inputs.temperature);
+      request.temperature_unit = inputs.temperatureUnit;
+    }
+    if (isFiniteNumberString(inputs.thermalConductivity)) {
+      request.thermal_conductivity_k = Number(inputs.thermalConductivity);
+    }
+    if (isFiniteNumberString(inputs.specificHeat)) {
+      request.specific_heat = Number(inputs.specificHeat);
+    }
+    if (isFiniteNumberString(inputs.heatFlux)) {
+      request.heat_flux = Number(inputs.heatFlux);
+    }
+    if (isFiniteNumberString(inputs.convectionH)) {
+      request.convection_h = Number(inputs.convectionH);
+    }
+    if (isFiniteNumberString(inputs.emissivity)) {
+      request.emissivity = Number(inputs.emissivity);
+    }
+    if (isFiniteNumberString(inputs.ambientTempC)) {
+      request.ambient_temp_c = Number(inputs.ambientTempC);
+    }
+    if (isFiniteNumberString(inputs.bcLeft)) request.bc_left_temp = Number(inputs.bcLeft);
+    if (isFiniteNumberString(inputs.bcRight)) request.bc_right_temp = Number(inputs.bcRight);
+    if (isFiniteNumberString(inputs.bcTop)) request.bc_top_temp = Number(inputs.bcTop);
+    if (isFiniteNumberString(inputs.bcBottom)) request.bc_bottom_temp = Number(inputs.bcBottom);
+  }
+
+  if (isElmerFamily(inputs.simulationType)) {
+    const submode = inputs.simulationType === 'Acoustics' ? 'Acoustics' : inputs.emSubmode;
+    request.em_submode = submode;
+    const emParams: Record<string, unknown> = {
+      submode,
+      source_value: Number(inputs.bcLeft),
+      reference_value: isFiniteNumberString(inputs.bcRight) ? Number(inputs.bcRight) : 0.0,
+      frequency_hz: isFiniteNumberString(inputs.velocity) ? Number(inputs.velocity) : 1000.0,
+    };
+    if (isFiniteNumberString(inputs.electricalConductivity)) {
+      const sigma = Number(inputs.electricalConductivity);
+      emParams.electrical_conductivity = sigma;
+      request.electrical_conductivity = sigma;
+    }
+    if (isFiniteNumberString(inputs.relativePermeability)) {
+      const muR = Number(inputs.relativePermeability);
+      emParams.relative_permeability = muR;
+      request.relative_permeability = muR;
+    }
+    if (isFiniteNumberString(inputs.relativePermittivity)) {
+      const epsR = Number(inputs.relativePermittivity);
+      emParams.relative_permittivity = epsR;
+      request.relative_permittivity = epsR;
+    }
+    if (isFiniteNumberString(inputs.currentDensity)) {
+      const j = Number(inputs.currentDensity);
+      emParams.current_density = j;
+      request.current_density = j;
+    }
+    request.em_parameters = emParams;
   }
 
   return request;

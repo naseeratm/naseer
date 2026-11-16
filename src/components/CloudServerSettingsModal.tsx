@@ -61,6 +61,13 @@ export function CloudServerSettingsModal({
     cpuCount: number;
     platform: string;
     pythonConnected: boolean;
+    pythonDetails?: {
+      status?: string;
+      redis?: boolean;
+      workers_online?: number;
+      worker_names?: string[];
+      solvers?: Record<string, boolean>;
+    } | null;
   } | null>(null);
 
   const [copiedBash, setCopiedBash] = useState(false);
@@ -81,7 +88,8 @@ export function CloudServerSettingsModal({
             freeMemoryGb: data.system.freeMemoryGb,
             cpuCount: data.system.cpuCount,
             platform: data.system.platform,
-            pythonConnected: data.pythonConnected,
+            pythonConnected: Boolean(data.pythonConnected),
+            pythonDetails: data.pythonDetails ?? null,
           });
         }
       })
@@ -108,12 +116,17 @@ export function CloudServerSettingsModal({
           message: data.message || `تم الاتصال بالخادم بنجاح (${data.latencyMs}ms)`,
           details: data.data,
         });
+        setSystemMetrics((prev) =>
+          prev
+            ? { ...prev, pythonConnected: true, pythonDetails: data.data }
+            : prev
+        );
         setFormData((prev) => ({ ...prev, status: 'connected', lastTestedAt: new Date().toLocaleTimeString('ar-EG') }));
       } else {
         setCloudTestResult({
           success: false,
           latencyMs: data.latencyMs,
-          message: data.error || 'فشل الاتصال بالخادم السحابي',
+          message: data.error || 'فشل الاتصال بخادم Docker FastAPI (:8000)',
         });
         setFormData((prev) => ({ ...prev, status: 'disconnected' }));
       }
@@ -147,7 +160,7 @@ export function CloudServerSettingsModal({
     } catch (err: any) {
       setLicenseTestResult({
         success: false,
-        message: 'فشل إرسال طلب الفحص لخادم الترخيص',
+        message: 'فشل إرسال طلب الفحص لخادم المحركات',
         error: err?.message,
       });
     } finally {
@@ -170,23 +183,27 @@ export function CloudServerSettingsModal({
   };
 
   const copyLicenseSetupBash = () => {
-    const text = `# إعدادات بيئة الحوسبة العالية OpenFOAM v2406 و CalculiX v2.21 على الخادم السحابي:
-source /usr/lib/openfoam/openfoam2406/etc/bashrc
+    const text = `# تشغيل منظومة Docker الكاملة (FastAPI :8000 + Redis + Celery Worker + OpenFOAM/CalculiX/Gmsh/ElmerFEM):
+docker compose up --build -d
+
+# التحقق من جاهزية المحركات عبر البوابة الموحدة:
+curl -s http://127.0.0.1:8000/api/health
+
+# أو تشغيل بوابة FastAPI مباشرة داخل حاوية المحركات:
 export OMP_NUM_THREADS=${formData.parallelCores}
 export CCX_NPROC_STIFFNESS=${formData.parallelCores}
-
-# تهيئة مجلد العمل السحابي (400GB NVMe Workspace):
 mkdir -p ${formData.workingDirectory}
-
-# تشغيل خادم الحساب السحابي المتكامل مع المعالجة المتوازية (FastAPI / Uvicorn):
-uvicorn main:app --host 0.0.0.0 --port 8000 --workers 4`;
+uvicorn main:app --host 0.0.0.0 --port 8000`;
     navigator.clipboard.writeText(text);
     setCopiedBash(true);
     setTimeout(() => setCopiedBash(false), 2500);
   };
 
+  const liveHealth = cloudTestResult?.details || systemMetrics?.pythonDetails;
+  const solverFlags = liveHealth?.solvers as Record<string, boolean> | undefined;
+
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-slate-950/85 backdrop-blur-md">
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-slate-950/90">
       <div className="bg-slate-900 border border-slate-800 rounded-2xl w-full max-w-4xl max-h-[92vh] flex flex-col shadow-2xl overflow-hidden text-right">
         {/* Header */}
         <div className="p-4 sm:p-5 border-b border-slate-800 bg-slate-900/90 flex items-center justify-between">
@@ -197,14 +214,14 @@ uvicorn main:app --host 0.0.0.0 --port 8000 --workers 4`;
             <div>
               <div className="flex items-center gap-2">
                 <h2 className="text-base sm:text-lg font-bold text-slate-100">
-                  إعدادات الحوسبة السحابية وعناقيد المعالجة (OpenFOAM & CalculiX HPC Cluster)
+                  إعدادات ربط حاويات Docker ومحركات الحوسبة (Port 8000 HPC Gateway)
                 </h2>
                 <span className="text-xs px-2 py-0.5 rounded-full font-mono bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
-                  Zero-License Freedom
+                  Open-Source Docker Stack
                 </span>
               </div>
               <p className="text-xs text-slate-400">
-                تهيئة الاتصال بين واجهة المستخدم وخوادم الحوسبة السحابية (HPC)، إدارة أنوية MPI المتوازية، وتشغيل محركات OpenFOAM و CalculiX بدون قيود تراخيص تجارية
+                توجيه كافة الحسابات الفيزيائية والشبكية من المنصة (:3000) إلى بوابة FastAPI/Celery على المنفذ :8000 لتشغيل OpenFOAM و CalculiX و Gmsh و ElmerFEM
               </p>
             </div>
           </div>
@@ -223,12 +240,12 @@ uvicorn main:app --host 0.0.0.0 --port 8000 --workers 4`;
             <div className="p-3 rounded-xl bg-slate-950/60 border border-slate-800/80">
               <div className="flex items-center gap-2 text-xs text-slate-400 mb-1">
                 <HardDrive className="w-4 h-4 text-amber-400" />
-                <span>المساحة السحابية</span>
+                <span>مسار ملفات التشغيل</span>
               </div>
-              <div className="text-lg font-bold font-mono text-amber-300">
-                400 GB <span className="text-xs text-slate-400 font-normal">SSD / NVMe</span>
+              <div className="text-xs font-bold font-mono text-amber-300 truncate" title={formData.workingDirectory}>
+                {formData.workingDirectory || '/app/jobs'}
               </div>
-              <div className="text-[10px] text-slate-500 mt-0.5">جاهزة لملفات الشبيكة والحل الضخمة</div>
+              <div className="text-[10px] text-slate-500 mt-1">مجلد مشترك بين API و Worker</div>
             </div>
 
             <div className="p-3 rounded-xl bg-slate-950/60 border border-slate-800/80">
@@ -240,7 +257,7 @@ uvicorn main:app --host 0.0.0.0 --port 8000 --workers 4`;
                 {formData.parallelCores} Cores
               </div>
               <div className="text-[10px] text-slate-500 mt-0.5">
-                {systemMetrics?.cpuCount ? `من أصل ${systemMetrics.cpuCount} نواة متاحة` : 'معالجة متوازية متعددة الأنوية'}
+                {systemMetrics?.cpuCount ? `المتوفر محلياً: ${systemMetrics.cpuCount} نواة` : 'لم تُقرأ بيانات العتاد بعد'}
               </div>
             </div>
 
@@ -250,33 +267,58 @@ uvicorn main:app --host 0.0.0.0 --port 8000 --workers 4`;
                 <span>الذاكرة العشوائية RAM</span>
               </div>
               <div className="text-lg font-bold font-mono text-emerald-300">
-                {systemMetrics?.totalMemoryGb ? `${systemMetrics.totalMemoryGb} GB` : '32+ GB'}
+                {systemMetrics?.totalMemoryGb ? `${systemMetrics.totalMemoryGb} GB` : '—'}
               </div>
               <div className="text-[10px] text-slate-500 mt-0.5">
-                {systemMetrics?.freeMemoryGb ? `${systemMetrics.freeMemoryGb} GB فارغ حالياً` : 'كافية لحل مصفوفات 5M+ Cells'}
+                {systemMetrics?.freeMemoryGb ? `${systemMetrics.freeMemoryGb} GB متاح حالياً` : 'بانتظار قراءة حالة الخادم'}
               </div>
             </div>
 
             <div className="p-3 rounded-xl bg-slate-950/60 border border-slate-800/80">
               <div className="flex items-center gap-2 text-xs text-slate-400 mb-1">
                 <Server className="w-4 h-4 text-indigo-400" />
-                <span>حالة المحرك</span>
+                <span>حالة حاوية Docker</span>
               </div>
               <div className="flex items-center gap-1.5 mt-1">
                 <div
                   className={`w-2.5 h-2.5 rounded-full ${
-                    formData.status === 'connected' ? 'bg-emerald-400 animate-pulse' : 'bg-amber-400'
+                    systemMetrics?.pythonConnected || formData.status === 'connected' ? 'bg-emerald-400' : 'bg-amber-400'
                   }`}
                 />
                 <span className="text-xs font-bold text-slate-200">
-                  {formData.status === 'connected' ? 'خادم متصل' : 'جاهز للإعداد'}
+                  {systemMetrics?.pythonConnected || formData.status === 'connected' ? 'بوابة :8000 متصلة' : 'غير متصل / بانتظار الفحص'}
                 </span>
               </div>
               <div className="text-[10px] text-slate-500 mt-0.5 font-mono">
-                {formData.lastTestedAt ? `فُحص: ${formData.lastTestedAt}` : 'اضغط فحص الاتصال'}
+                {liveHealth?.workers_online !== undefined
+                  ? `Workers: ${liveHealth.workers_online} | Redis: ${liveHealth.redis ? 'UP' : 'DOWN'}`
+                  : formData.lastTestedAt
+                  ? `فُحص: ${formData.lastTestedAt}`
+                  : 'اضغط فحص الاتصال'}
               </div>
             </div>
           </div>
+
+          {/* Live Container Solver Readiness Strip */}
+          {solverFlags && (
+            <div className="p-3 rounded-xl bg-slate-950/70 border border-slate-800 flex flex-wrap items-center justify-between gap-2 text-[11px] font-mono">
+              <span className="text-slate-400 font-sans font-bold">جاهزية المحركات داخل الحاوية:</span>
+              <div className="flex flex-wrap items-center gap-2">
+                {Object.entries(solverFlags).map(([name, ready]) => (
+                  <span
+                    key={name}
+                    className={`px-2 py-0.5 rounded border ${
+                      ready
+                        ? 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30'
+                        : 'bg-rose-500/15 text-rose-300 border-rose-500/30'
+                    }`}
+                  >
+                    {name}: {ready ? 'READY' : 'MISSING'}
+                  </span>
+                ))}
+              </div>
+            </div>
+          )}
 
           {/* Section 1: Cloud Server Backend Connection */}
           <div className="p-4 rounded-xl bg-slate-950/40 border border-slate-800 space-y-4">
@@ -284,16 +326,16 @@ uvicorn main:app --host 0.0.0.0 --port 8000 --workers 4`;
               <div className="flex items-center gap-2">
                 <Globe className="w-4 h-4 text-sky-400" />
                 <h3 className="text-sm font-bold text-slate-200">
-                  1. عنوان الخادم السحابي ومعالج الحساب (Cloud API Endpoint)
+                  1. عنوان بوابة محركات المحاكاة Docker (FastAPI Gateway Endpoint)
                 </h3>
               </div>
               <div className="flex items-center gap-1">
                 <button
                   type="button"
-                  onClick={() => setFormData((prev) => ({ ...prev, backendUrl: 'http://127.0.0.1:8001' }))}
+                  onClick={() => setFormData((prev) => ({ ...prev, backendUrl: 'http://127.0.0.1:8000' }))}
                   className="px-2 py-0.5 rounded text-[11px] bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700"
                 >
-                  محلي (Localhost:8001)
+                  Docker محلي (Localhost:8000)
                 </button>
                 <button
                   type="button"
@@ -308,25 +350,25 @@ uvicorn main:app --host 0.0.0.0 --port 8000 --workers 4`;
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
               <div className="sm:col-span-2">
                 <label className="block text-xs text-slate-400 mb-1">
-                  رابط الخادم السحابي (FastAPI / Uvicorn Server URL):
+                  رابط بوابة محركات المحاكاة (FastAPI / Celery Docker URL):
                 </label>
                 <input
                   type="text"
                   value={formData.backendUrl}
                   onChange={(e) => setFormData({ ...formData, backendUrl: e.target.value })}
-                  placeholder="http://127.0.0.1:8001 أو http://your-cloud-ip:8000"
+                  placeholder="http://127.0.0.1:8000 أو http://your-cloud-ip:8000"
                   className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-xs text-slate-200 font-mono focus:border-sky-500 focus:outline-none"
                 />
                 <div className="mt-2 p-2.5 rounded-lg bg-slate-900/80 border border-slate-800 text-[11px] space-y-1.5 text-slate-300">
                   <div className="flex items-center gap-1.5 font-bold text-sky-400">
                     <Zap className="w-3.5 h-3.5" />
-                    <span>ماذا أكتب في هذه الخانة؟</span>
+                    <span>توجيه المنفذ 3000 نحو حاويات Docker (:8000):</span>
                   </div>
                   <p className="text-slate-400 leading-relaxed">
-                    • <strong className="text-slate-200">الوضع الافتراضي (الموصى به حالياً):</strong> اترك <code className="text-sky-300 font-mono px-1 py-0.5 bg-slate-800 rounded">http://127.0.0.1:8001</code>؛ فالمنصة تستخدم المحرك الفيزيائي والرقمي المدمج مباشرة دون الحاجة لأي خادم خارجي.
+                    • <strong className="text-slate-200">التشغيل المحلي مع Docker Compose:</strong> استخدم <code className="text-sky-300 font-mono px-1 py-0.5 bg-slate-800 rounded">http://127.0.0.1:8000</code> بعد تشغيل <code className="text-emerald-300 font-mono px-1 py-0.5 bg-slate-800 rounded">docker compose up</code> ليتم إرسال كل مهام الميش والمحاكاة إلى Redis و Celery و OpenFOAM/CalculiX/Gmsh/ElmerFEM.
                   </p>
                   <p className="text-slate-400 leading-relaxed">
-                    • <strong className="text-slate-200">إذا كان لديك خادم افتراضي خارجي (VPS):</strong> ضع رابط خادمك مثل <code className="text-amber-300 font-mono px-1 py-0.5 bg-slate-800 rounded">http://IP:8000</code> لتنفيذ الحسابات المتوازية عليه.
+                    • <strong className="text-slate-200">ملاحظة النزاهة العددية:</strong> عند توقف الحاوية على المنفذ 8000 ترفض المنصة أي محاكاة صامتة أو أرقام وهمية وتبلغك فوراً بتشغيل حاوية Docker.
                   </p>
                 </div>
               </div>
@@ -340,7 +382,7 @@ uvicorn main:app --host 0.0.0.0 --port 8000 --workers 4`;
                   className="w-full h-9 flex items-center justify-center gap-1.5 px-3 rounded-lg text-xs font-semibold bg-sky-500/10 hover:bg-sky-500/20 text-sky-300 border border-sky-500/30 transition-all disabled:opacity-50"
                 >
                   <RefreshCw className={`w-3.5 h-3.5 ${isTestingCloud ? 'animate-spin' : ''}`} />
-                  <span>{isTestingCloud ? 'جارِ فحص السحابة...' : 'فحص الاتصال والزمن'}</span>
+                  <span>{isTestingCloud ? 'جارِ فحص الحاوية...' : 'فحص الاتصال والزمن'}</span>
                 </button>
               </div>
             </div>
@@ -374,13 +416,13 @@ uvicorn main:app --host 0.0.0.0 --port 8000 --workers 4`;
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-2 border-t border-slate-800/60">
               <div>
                 <label className="block text-xs text-slate-400 mb-1">
-                  مجلد العمل ومخرجات المحاكاة على الـ 400GB:
+                  مجلد العمل ومخرجات المحاكاة (Workspace Directory):
                 </label>
                 <input
                   type="text"
                   value={formData.workingDirectory}
                   onChange={(e) => setFormData({ ...formData, workingDirectory: e.target.value })}
-                  placeholder="/data/naseer_workspace"
+                  placeholder="/app/jobs"
                   className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-xs text-slate-200 font-mono focus:border-sky-500 focus:outline-none"
                 />
               </div>
@@ -411,11 +453,11 @@ uvicorn main:app --host 0.0.0.0 --port 8000 --workers 4`;
               <div className="flex items-center gap-2">
                 <Shield className="w-4 h-4 text-emerald-400" />
                 <h3 className="text-sm font-bold text-slate-200">
-                  2. بيئة محركات المحاكاة والحرية البرمجية (Open-Source HPC Engine Freedom)
+                  2. بيئة المحركات الفيزيائية مفتوحة المصدر (Docker Solvers)
                 </h3>
               </div>
               <span className="text-xs text-emerald-400/90 font-mono bg-emerald-500/10 px-2 py-0.5 rounded border border-emerald-500/20">
-                OpenFOAM v2406 + CalculiX v2.21 Native
+                OpenFOAM · CalculiX · Gmsh · ElmerFEM
               </span>
             </div>
 
@@ -430,7 +472,7 @@ uvicorn main:app --host 0.0.0.0 --port 8000 --workers 4`;
                   className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-xs text-slate-200 focus:border-emerald-500 focus:outline-none"
                 >
                   <option value="open_source_unlicensed">
-                    (موصى به) حرية مفتوحة المصدر 100% (OpenFOAM + CalculiX)
+                    (موصى به) حزمة Docker المفتوحة المصدر (OpenFOAM + CalculiX + Gmsh + ElmerFEM)
                   </option>
                   <option value="academic">ربط اختياري مع عنقود أكاديمي جامعي خارجي</option>
                   <option value="commercial">ربط اختياري مع خادم محاكاة صناعي خارجي</option>
@@ -473,7 +515,7 @@ uvicorn main:app --host 0.0.0.0 --port 8000 --workers 4`;
                   className="rounded border-slate-700 text-sky-500 focus:ring-0 bg-slate-900"
                 />
                 <span>
-                  التحويل التلقائي لمحرك OpenFOAM / SciPy عند انقطاع خادم التراخيص (منع توقف الحسابات)
+                  التوجيه التلقائي لحاوية Docker المفتوحة المصدر (OpenFOAM / CalculiX / ElmerFEM)
                 </span>
               </label>
 
@@ -488,7 +530,7 @@ uvicorn main:app --host 0.0.0.0 --port 8000 --workers 4`;
                   {isTestingLicense
                     ? 'جارِ فحص الجاهزية...'
                     : formData.licenseType === 'open_source_unlicensed'
-                    ? 'فحص جاهزية محركات OpenFOAM & CalculiX'
+                    ? 'فحص جاهزية محركات Docker'
                     : 'فحص الاتصال بخادم الترخيص الخارجي'}
                 </span>
               </button>
@@ -517,7 +559,7 @@ uvicorn main:app --host 0.0.0.0 --port 8000 --workers 4`;
                   )}
                   {licenseTestResult.fallbackAvailable && (
                     <div className="text-[11px] text-emerald-400 mt-1 font-semibold">
-                      ✓ البديل المفتوح المصدر (OpenFOAM / Python SciPy) جاهز للعمل فوراً وبدون أي عوائق ترخيص.
+                      ✓ حاوية Docker على المنفذ :8000 متصلة وجاهزة لتشغيل OpenFOAM و CalculiX و Gmsh و ElmerFEM.
                     </div>
                   )}
                 </div>
@@ -531,7 +573,7 @@ uvicorn main:app --host 0.0.0.0 --port 8000 --workers 4`;
               <div className="flex items-center gap-2">
                 <Terminal className="w-4 h-4 text-emerald-400" />
                 <h3 className="text-sm font-bold text-slate-200">
-                  3. أوامر التفعيل السريع على خادمك السحابي (Terminal Commands)
+                  3. أوامر تشغيل حاويات Docker محلياً (Docker Compose :8000)
                 </h3>
               </div>
               <button
@@ -544,11 +586,9 @@ uvicorn main:app --host 0.0.0.0 --port 8000 --workers 4`;
               </button>
             </div>
             <pre className="p-3 rounded-lg bg-slate-950 border border-slate-800 text-[11px] font-mono text-emerald-400 overflow-x-auto text-left dir-ltr">
-              {`source /usr/lib/openfoam/openfoam2406/etc/bashrc
-export OMP_NUM_THREADS=${formData.parallelCores}
-export CCX_NPROC_STIFFNESS=${formData.parallelCores}
-mkdir -p ${formData.workingDirectory}
-uvicorn main:app --host 0.0.0.0 --port 8000 --workers 4`}
+              {`docker compose up --build -d
+curl -s http://127.0.0.1:8000/api/health
+# Worker concurrency: OMP_NUM_THREADS=${formData.parallelCores}, CCX_NPROC_STIFFNESS=${formData.parallelCores}`}
             </pre>
           </div>
         </div>

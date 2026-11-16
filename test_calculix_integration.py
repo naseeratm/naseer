@@ -56,6 +56,43 @@ class CalculixIntegrationTests(unittest.TestCase):
     def test_parser_is_empty_when_dat_is_missing(self):
         self.assertEqual(universal_dispatcher._parse_calculix_dat_displacements(Path("missing.dat")), [])
 
+    def test_inp_mesh_vtk_extraction_produces_3d_surface(self):
+        inp = (
+            "*NODE\n"
+            "1, 0.0, 0.0, 0.0\n"
+            "2, 1.0, 0.0, 0.0\n"
+            "3, 0.0, 1.0, 0.0\n"
+            "4, 0.0, 0.0, 1.0\n"
+            "*ELEMENT, TYPE=C3D4, ELSET=EALL\n"
+            "1, 1, 2, 3, 4\n"
+        )
+        nodes, elems = universal_dispatcher._parse_calculix_inp_mesh(inp)
+        self.assertEqual(len(nodes), 4)
+        self.assertEqual(len(elems), 1)
+        vtk = universal_dispatcher._build_calculix_vtk_from_results(
+            nodes,
+            elems,
+            disps=[{"node": 2, "components": {"x": 0.001, "y": 0.0, "z": 0.0}, "magnitude": 0.001}],
+            stresses=[{"element": 1, "von_mises": 1.5e7}],
+            temps=[],
+        )
+        self.assertIsInstance(vtk, dict)
+        self.assertEqual(vtk["node_count"], 4)
+        self.assertEqual(vtk["triangle_count"], 4)
+        self.assertIn("von_mises", vtk["scalars"])
+        self.assertIn("displacement", vtk["vectors"])
+
+    def test_buckling_requires_explicit_compressive_load(self):
+        job_dir = Path("test-jobs") / uuid.uuid4().hex
+        job_dir.mkdir(parents=True)
+        try:
+            with patch.dict("os.environ", {"NASEER_JOB_DIR": str(job_dir)}), \
+                patch.object(universal_dispatcher.shutil, "which", return_value="ccx"):
+                with self.assertRaisesRegex(ValueError, "explicit compressive load"):
+                    universal_dispatcher.call_calculix_solver({"simulation_type": "Structural_Buckling"})
+        finally:
+            shutil.rmtree(job_dir.parent, ignore_errors=True)
+
 
 if __name__ == "__main__":
     unittest.main()

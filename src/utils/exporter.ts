@@ -424,29 +424,37 @@ export function renderReportBody(report: RealReport, assets: ReportAssets): stri
   parts.push(chapter(1, 'General Introduction, Problem Formulation & Digital Integrity', 'المقدمة العامة، صياغة الإشكالية، والنزاهة الرقمية'));
   parts.push(heading('Executive Summary', AR_TITLES.summary) + report.summary.map((line) => `<p>${esc(line)}</p>`).join(''));
 
-  // --- THE THREE DIGITAL PROVENANCE PROOFS FOR REVIEWERS & VIVA COMMITTEE ---
-  const verificationUrl = `https://ais-pre-ecw6nh5yaxxjlm5ntk7c2w-64824915184.europe-west1.run.app/api/verify-job/${report.jobId || 'sim_verified_job'}`;
+  // --- DIGITAL PROVENANCE RECORD ---
+  const originUrl = typeof window !== 'undefined' ? window.location.origin : 'http://127.0.0.1:8000';
+  const verificationUrl = `${originUrl}/api/verify-job/${encodeURIComponent(report.jobId || 'pending')}`;
+  const inputHash =
+    report.provenance.find((p) => p.label.toLowerCase().includes('sha-256') && p.label.toLowerCase().includes('input'))
+      ?.value ||
+    report.provenance.find((p) => p.label.toLowerCase().includes('sha-256'))?.value ||
+    'Not recorded for this run';
+  const gciFineText =
+    report.meshStudy?.gci_fine_percent !== null && report.meshStudy?.gci_fine_percent !== undefined
+      ? `${formatNumber(report.meshStudy.gci_fine_percent)}%`
+      : 'Not computed for this run';
+  const asympText =
+    report.meshStudy?.asymptotic_ratio !== null && report.meshStudy?.asymptotic_ratio !== undefined
+      ? formatNumber(report.meshStudy.asymptotic_ratio)
+      : '—';
+
   parts.push(
-    heading('The Three Digital Provenance Proofs for Journal Reviewers & Viva Defense Committee', AR_TITLES.provenanceProofs) +
-      `<p>تطلب المجلات الدولية الرصينة (مثل مجلات Elsevier و ASME و Springer) ولجان مناقشة الأطروحات إثباتات قاطعة على أن المحاكاة تمت بحسابات عددية حقيقية وليست بيانات مفبركة. فيما يلي وثائق الإثبات الجنائي الرقمي الثلاث المدمجة تلقائياً لهذا النموذج:</p>` +
+    heading('Digital Provenance & Solver Verification Record', AR_TITLES.provenanceProofs) +
+      `<p>توثّق هذه البطاقة البيانات المسجلة فعلياً من بوابة المحاكاة للمهمة الحالية:</p>` +
       `<div class="rp-proof-box">` +
-      `<div class="rp-proof-title">1. الدليل الجنائي الأول: البصمة التشفيرية ورابط التحقق الفوري (Cryptographic SHA-256 Provenance):</div>` +
-      `<p style="margin:4px 0 6px;">تم تشفير سجل تشغيل المحرك والشروط الحدية برمز تجزئة آمن SHA-256 لا يقبل التعديل أو التزوير، ويمكن لأي محكّم أو أستاذ جامعي التحقق من أصالة النتائج فورياً عبر الرابط الحي المفتوح:</p>` +
+      `<div class="rp-proof-title">1. رابط التحقق الفوري والبصمة التشفيرية (SHA-256 Provenance):</div>` +
       `<div class="rp-manuscript-snippet">` +
       `<strong>Verification URL:</strong> <a href="${verificationUrl}" target="_blank" style="color:#0284c7;text-decoration:underline;">${verificationUrl}</a><br/>` +
-      `<strong>SHA-256 Input Hash:</strong> e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855<br/>` +
-      `<strong>Certification Signature:</strong> ASME-VV20-${(report.jobId || 'SIM_VERIFIED').toUpperCase()} · Status: COMPLETED` +
+      `<strong>SHA-256 Hash:</strong> ${esc(inputHash)}<br/>` +
+      `<strong>Job ID:</strong> ${esc(report.jobId || 'pending')} · <strong>Draft Mode:</strong> ${report.isPreRunDraft ? 'YES (Pre-Run)' : 'NO (Verified Run)'}` +
       `</div>` +
-      `<p style="font-size:9.5pt;color:#334155;margin:4px 0 0;"><strong>الصيغة الجاهزة للاقتباس في البحث أو الأطروحة (Data Availability Statement):</strong><br/>` +
-      `<em>"Data and Model Availability: All computational fluid and thermal simulation cases, boundary conditions, and raw solver residuals supporting this study are digitally certified and openly verifiable via the permanent manifest link: <code>${verificationUrl}</code> in strict compliance with ASME V&V 20 guidelines."</em></p>` +
       `</div>` +
       `<div class="rp-proof-box">` +
-      `<div class="rp-proof-title">2. الدليل الجنائي الثاني: اتساق هبوط البواقي اللوغاريتمي (&lt; 10⁻⁶) مع كونتورات الحقول والفيزياء:</div>` +
-      `<p style="margin:4px 0 6px;">لا يقبل محكّمو المجلات العالمية بالكونتورات الملونة ما لم تثبت البواقي التزامها بقوانين الحفظ الفيزيائي. يُثبت سجل التقارب هبوط بواقي الاستمرارية والزخم والطاقة إلى ما دون <code>1.0 × 10⁻⁶</code>، مما يضمن انعدام أي مصادر كتلية وهمية في دوامات الانفصال، وتطابق ضغط نقطة الركود بالضبط مع الضغط الديناميكي الحسابي <code>p_stag = p₀ + ½ρV²</code> دون أي تشويش عددي.</p>` +
-      `</div>` +
-      `<div class="rp-proof-box">` +
-      `<div class="rp-proof-title">3. الدليل الجنائي الثالث: إثبات استقلالية الشبكة وفق معايير ASME V&V 20 ومؤشر روتش (Roache GCI):</div>` +
-      `<p style="margin:4px 0 6px;">تم تطبيق دراسة تقارب شبكية عبر مستويات متعددة بنسبة تكثيف معيارية <code>r ≈ 1.35</code>، حيث استقر مؤشر GCI دون عتبة <code>2.0%</code> وحقق النطاق التقاربي <code>Asymptotic Ratio ≈ 1.01</code>، مما يثبت للمجلة الأكاديمية انتفاء أي خطأ ناجم عن كثافة عناصر الشبكة.</p>` +
+      `<div class="rp-proof-title">2. حالة استقلالية الشبكة الفعلية (Roache GCI):</div>` +
+      `<p style="margin:4px 0 6px;">مؤشر روتش للشبكة الفائقة: <code>${esc(gciFineText)}</code> | النطاق التقاربي: <code>${esc(asympText)}</code>.</p>` +
       `</div>`,
   );
 
@@ -492,15 +500,14 @@ export function renderReportBody(report: RealReport, assets: ReportAssets): stri
     );
   }
 
-  // Boundary Layer Physics & Turbulence Justification
+  // Boundary Layer Physics & Turbulence Justification (symbolic methodology, no fabricated numbers)
   parts.push(
     heading('Boundary Layer Physics & Turbulence Closure (y⁺ Criterion)', AR_TITLES.boundaryLayer) +
       `<p><strong>معالجة الطبقة المتاخمة للجدار (Boundary Layer Treatment):</strong></p>` +
-      `<p>لضمان حل التدرجات الحادة في السرعة والحرارة عند السطح، تم ضبط أول خلية شبكية لتلبي معيار <code>y⁺ &lt; 1.0</code> (قيمة y⁺ الاسمية: 0.85). تم استخدام 5 طبقات انتفاخ منشورية (Inflation Layers) بنسبة نمو 1.2 لحل الطبقة اللزجة التحتية (Viscous Sublayer) مباشرة دون الاعتماد على دوال الجدار الجبرية التقريبية.</p>` +
+      `<p>لضمان حل التدرجات الحادة في السرعة والحرارة عند السطح في الحالات المضطربة، يُوصى بضبط ارتفاع الخلية الأولى بحيث يقع ضمن الطبقة اللزجة التحتية (<code>y⁺ &lt; 1.0</code> لنماذج Low-Re أو <code>30 &lt; y⁺ &lt; 300</code> لدوال الجدار) وفق القيم المستخرجة فعلياً بعد التشغيل.</p>` +
       `<div class="rp-math-box">` +
-      `<strong>حساب ارتفاع الخلية الأولى (First Layer Height y_H):</strong>` +
-      `<div class="rp-math-formula">y_H = (y⁺ · μ) / (ρ · u_τ), &nbsp;&nbsp; where &nbsp;&nbsp; u_τ = √(τ_w / ρ), &nbsp;&nbsp; C_f = 0.0592 · Re⁻⁰·²</div>` +
-      `<p style="margin:4px 0 0;font-size:9.5pt;color:#334155;"><strong>مبررات اعتماد نموذج Menter SST k-ω:</strong> يدمج دقة k-omega عند الجدران لحل الطبقة اللزجة التحتية وتدرجات الضغط العكسية مع استقرار k-epsilon في التيار الحر بعيداً عن الجدار، مما يجعله النموذج المعياري الأكثر رصانة في بحوث الفضاء وانتقال الحرارة والمطابق لـ ASME V&V 20.</p>` +
+      `<strong>علاقة ارتفاع الخلية الأولى (First Layer Height y_H):</strong>` +
+      `<div class="rp-math-formula">y_H = (y⁺ · μ) / (ρ · u_τ), &nbsp;&nbsp; u_τ = √(τ_w / ρ)</div>` +
       `</div>`,
   );
 
@@ -643,26 +650,24 @@ export function renderReportBody(report: RealReport, assets: ReportAssets): stri
       `</div>`,
   );
 
-  // Second-Law Thermodynamics & Exergy Destruction
+  // Second-Law Thermodynamics & Exergy Formulation (Symbolic equations only unless computed)
   parts.push(
     heading('Second-Law Thermodynamics, Entropy Generation & Exergy Destruction', AR_TITLES.exergy) +
-      `<p>في البحوث المتقدمة، يُثبت الباحث رصانة عمله عبر <strong>تحليل القانون الثاني للديناميكا الحرارية</strong> ومعدل توليد الإنتروبيا (Entropy Generation Minimization - EGM):</p>` +
+      `<p>تقييم القانون الثاني للديناميكا الحرارية يعتمد على حساب توليد الإنتروبيا الحراري والاحتكاكي ورقم بيجان (Bejan Number) من حقول درجة الحرارة والسرعة الفعلية:</p>` +
       `<div class="rp-exergy-box">` +
-      `<strong>معادلة توليد الإنتروبيا الكلية ورقم بيجان (Bejan Number):</strong>` +
+      `<strong>معادلات توليد الإنتروبيا ورقم بيجان (Symbolic Formulation):</strong>` +
       `<div class="rp-math-formula">Ṡ_gen,total = Ṡ_gen,ΔT + Ṡ_gen,Δp = (k/T²) · (∇T)² + (μ/T) · Φ</div>` +
-      `<div class="rp-math-formula">Be = Ṡ_gen,ΔT / Ṡ_gen,total ≈ 0.76 &nbsp;&nbsp; (&gt; 0.50 : انتقال الحرارة هو المصدر السائد للإنتروبيا)</div>` +
-      `<p style="margin:6px 0 0;"><strong>الاستنتاج الهندسي الدقيق:</strong> يُثبت رقم بيجان (Be = 0.76) أن 76% من التشتت الطاقوي ناتج عن الانتقال الحراري الفعّال عبر الفارق الحراري، بينما لا تتجاوز الخسارة الاحتكاكية المائعة 24%. هذا يؤكد لمحكّمي المجلات أن التصميم حقق أدنى معدل تدمير للإكسيرجي (Exergy Destruction Rate <code>İ = T₀ · Ṡ_gen</code>) وتوازناً ديناميكياً حرارياً مثالياً.</p>` +
+      `<div class="rp-math-formula">Be = Ṡ_gen,ΔT / Ṡ_gen,total , &nbsp;&nbsp; İ = T₀ · Ṡ_gen,total</div>` +
       `</div>`,
   );
 
-  // Parametric Design Modifications & PEC
+  // Parametric Design Modifications & PEC (Symbolic formula only)
   parts.push(
     heading('Parametric Design Modifications & Performance Evaluation Criterion (PEC)', AR_TITLES.parametric) +
-      `<p>في المناقشات الهندسية، يُطرح دائماً السؤال: <em>"عند تعديل التصميم، زاد التبريد ولكن ماذا حدث لهبوط الضغط وتكلفة الضخ؟"</em></p>` +
       `<div class="rp-callout-pec">` +
-      `<strong>معيار تقييم الأداء الهيدروحراري (Performance Evaluation Criterion - PEC):</strong>` +
-      `<div class="rp-math-formula">PEC = (Nu / Nu₀) / (f / f₀)^(1/3) = 1.48 / (1.52)^(1/3) ≈ 1.28 &gt; 1.0</div>` +
-      `<p style="margin:6px 0 0;"><strong>التبرير العلمي الحاسم للجنة المناقشة:</strong> بما أن قيمة PEC تتجاوز الواحد الصحيح بشكل مؤكد (PEC = 1.28)، فإن التحسن في التبادل الحراري يتفوق بمقدار 28% على الخسارة الناتجة عن زيادة احتكاك المائع، مما يثبت الجدوى الهندسية والاقتصادية للتصميم المطور.</p>` +
+      `<strong>معادلة تقييم الأداء الهيدروحراري القياسية (PEC):</strong>` +
+      `<div class="rp-math-formula">PEC = (Nu / Nu₀) / (f / f₀)^(1/3)</div>` +
+      `<p style="margin:6px 0 0;">تُحسب القيمة العددية لـ PEC فقط عند توفر تشغيلين فعليين (مرجعي ₀ ومعدل) عبر أداة المسح البارامتري في Docker.</p>` +
       `</div>`,
   );
 

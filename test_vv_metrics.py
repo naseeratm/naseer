@@ -334,13 +334,20 @@ class RefinementTests(unittest.TestCase):
         self.assertAlmostEqual(coarse["mesh_settings"]["mesh_size"], 0.2)
         self.assertEqual(base["mesh_size"], 0.1)
 
-    def test_structural_refinement_uses_divisions(self):
+    def test_structural_cad_refinement_uses_divisions(self):
         base = {"simulation_type": "Structural_Static", "mesh_size": 0.1}
         self.assertEqual(refine_payload("Structural_Static", base, 2.0)["mesh"]["divisions"], {"x": 1, "y": 1, "z": 1})
         self.assertEqual(refine_payload("Structural_Static", base, 1.0)["mesh"]["divisions"], {"x": 2, "y": 2, "z": 2})
         self.assertEqual(refine_payload("Structural_Static", base, 0.5)["mesh"]["divisions"], {"x": 4, "y": 4, "z": 4})
         custom = {"mesh": {"divisions": {"x": 4, "y": 2, "z": 2}}}
         self.assertEqual(refine_payload("Structural_Static", custom, 2.0)["mesh"]["divisions"], {"x": 2, "y": 1, "z": 1})
+
+    def test_structural_cad_refinement_scales_mesh_size(self):
+        cad_base = {"simulation_type": "Structural_Static", "mesh_size": 0.1, "cad_stl_b64": "c29saWQ="}
+        coarse = refine_payload("Structural_Static", cad_base, 2.0)
+        self.assertAlmostEqual(coarse["mesh_size"], 0.2)
+        self.assertAlmostEqual(coarse["mesh_settings"]["mesh_size"], 0.2)
+        self.assertNotIn("mesh", coarse)
 
     def test_invalid_mesh_size_is_rejected(self):
         with self.assertRaises(MeshStudyError):

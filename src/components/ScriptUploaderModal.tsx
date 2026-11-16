@@ -25,6 +25,7 @@ import {
 import { ThesisProject, IngestedFileItem, ApiKeyItem, EngineMode } from '../types/thesis';
 import { generateLocalEngineeringProject } from '../utils/physicsEngine';
 import { parseEngineeringFilesOrArchive } from '../utils/fileParser';
+import { normalizeSolverResponse } from '../utils/normalizedSolverResults';
 
 interface ScriptUploaderModalProps {
   isOpen: boolean;
@@ -145,56 +146,203 @@ export function ScriptUploaderModal({
     return <FileText className="w-4 h-4 text-amber-400" />;
   };
 
-  // Execution: Pure Local Deterministic Engine (Zero network, zero quota, instant)
-  const handleExecuteLocalEngine = () => {
-    setIsProcessing(true);
-    setProcessingStatus('جاري تشغيل المحرك الفيزيائي الرقمي الحتمي لحل النموذج...');
-    setErrorMessage(null);
-
-    setTimeout(() => {
-      try {
-        const allContent = filesList
-          .map((f) => (f.content ? `=== [ملف: ${f.name}] (${f.category}) ===\n${f.content}` : ''))
-          .filter(Boolean)
-          .join('\n\n');
-        const primaryFile = filesList.find((f) => !f.isArchive && f.content) || filesList[0];
-        const firstFileName = primaryFile?.name || 'ansys_workbench_model.jou';
-        const project = generateLocalEngineeringProject(
-          firstFileName,
-          directives,
-          projectField,
-          allContent || primaryFile?.content || '',
-          filesList
-        );
-        project.attachedFilesCount = filesList.length;
-        project.directivesApplied = directives;
-        project.extractedSummary = primaryFile?.summary || 'تم حل النموذج اعتماداً على شروطك الحدية والمعادلات الفيزيائية الحتمية.';
-
-        onAnalysisComplete(project);
-        setIsProcessing(false);
-        onClose();
-      } catch (err: any) {
-        setErrorMessage('حدث خطأ أثناء تنفيذ الحسابات المحلية: ' + String(err));
-        setIsProcessing(false);
-      }
-    }, 400);
+  const toRawFile = (item: IngestedFileItem): File | null => {
+    if (item.base64Data && item.base64Data.includes('base64,')) {
+      const b64 = item.base64Data.split('base64,')[1];
+      const bin = atob(b64);
+      const arr = new Uint8Array(bin.length);
+      for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
+      return new File([arr], item.name, { type: item.mimeType || 'application/octet-stream' });
+    }
+    if (item.content !== undefined) {
+      return new File([item.content], item.name, { type: item.mimeType || 'text/plain' });
+    }
+    return null;
   };
 
-  // Execution: Hybrid Mode with auto-rotation through API key pool and fallback to local
-  const handleExecuteHybridAnalysis = async () => {
-    if (engineMode === 'pure_local') {
-      handleExecuteLocalEngine();
+  // Open workspace setup without pretending equations were solved
+  const handleOpenWorkspaceOnly = () => {
+    setIsProcessing(true);
+    setProcessingStatus('جاري تجهيز مساحة العمل واستخلاص الشروط الحدية من الملفات...');
+    setErrorMessage(null);
+
+    try {
+      const allContent = filesList
+        .map((f) => (f.content ? `=== [ملف: ${f.name}] (${f.category}) ===\n${f.content}` : ''))
+        .filter(Boolean)
+        .join('\n\n');
+      const primaryFile = filesList.find((f) => !f.isArchive && f.content) || filesList[0];
+      const firstFileName = primaryFile?.name || 'imported_model';
+      const project = generateLocalEngineeringProject(
+        firstFileName,
+        directives,
+        projectField,
+        allContent || primaryFile?.content || '',
+        filesList,
+      );
+      project.attachedFilesCount = filesList.length;
+      project.directivesApplied = directives;
+      project.extractedSummary =
+        primaryFile?.summary || 'تم استيراد الملفات وإعداد مساحة العمل — اضغط تشغيل المحاكاة لحل المعادلات في Docker (:8000).';
+
+      onAnalysisComplete(project);
+      setIsProcessing(false);
+      onClose();
+    } catch (err: any) {
+      setErrorMessage('تعذر قراءة الملفات وتجهيز مساحة العمل: ' + String(err));
+      setIsProcessing(false);
+    }
+  };
+
+  // Upload to Docker (:8000) /api/upload-model and run genuine solver via Celery
+  const handleExecuteOnDocker = async () => {
+    if (filesList.length === 0) {
+      setErrorMessage('يرجى إرفاق ملف هندسي أولاً (.stl, .step, .inp, .zip, .jou, ...).');
       return;
     }
 
     setIsProcessing(true);
-    setProcessingStatus('جاري استدعاء المحرك الهجين وتحليل الملفات والمخططات...');
+    setErrorMessage(null);
+    setProcessingStatus('جاري رفع النموذج إلى حاوية Docker (:8000) وفحصه...');
+
+    try {
+      const primaryItem = filesList[0];
+      const rawFile = toRawFile(primaryItem);
+      if (!rawFile) {
+        throw new Error(`تعذر قراءة المحتوى الثنائي أو النصي للملف: ${primaryItem.name}`);
+      }
+
+      const form = new FormData();
+      form.append('file', rawFile);
+      form.append('directives', directives || '');
+
+      const uploadRes = await fetch('/api/upload-model', {
+        method: 'POST',
+        body: form,
+      });
+      const uploaded = await uploadRes.json();
+      if (!uploadRes.ok || !uploaded.success) {
+        throw new Error(uploaded?.error || uploaded?.detail || `فشل رفع الملف (${uploadRes.status})`);
+      }
+
+      const allContent = filesList
+        .map((f) => (f.content ? `=== [ملف: ${f.name}] ===\n${f.content}` : ''))
+        .filter(Boolean)
+        .join('\n\n');
+
+      const project = generateLocalEngineeringProject(
+        uploaded.filename || primaryItem.name,
+        directives,
+        projectField,
+        allContent || primaryItem.content || '',
+        filesList,
+      );
+      project.attachedFilesCount = filesList.length;
+      project.directivesApplied = directives;
+      project.extractedSummary = `تم رفع ${uploaded.filename} إلى Docker (${uploaded.parsed_type || primaryItem.extension}).`;
+
+      const simType =
+        projectField === 'FEA'
+          ? 'Structural_Static'
+          : projectField === 'Thermal'
+          ? 'Thermal_Steady'
+          : projectField === 'Multiphysics'
+          ? 'CHT_Coupled'
+          : 'CFD_Incompressible';
+
+      const ext = primaryItem.extension.toLowerCase();
+      const simPayload: Record<string, any> = {
+        simulation_type: simType,
+        execution_mode: 'celery',
+        width_x: 1.0,
+        height_y: 0.4,
+        depth_z: 0.1,
+        mesh_size: 0.08,
+        velocity: 2.5,
+        pressure: 101325.0,
+        temperature: 350.0,
+        temperature_unit: 'K',
+        uploaded_file_path: uploaded.uploaded_file_path,
+      };
+      if (uploaded.cad_stl_b64) {
+        simPayload.cad_stl_b64 = uploaded.cad_stl_b64;
+        simPayload.cad_filename = uploaded.filename;
+      }
+      if (ext === 'inp' && primaryItem.content) {
+        simPayload.inp_deck = primaryItem.content;
+      }
+
+      setProcessingStatus('جاري تشغيل المحاكاة الفعلية عبر Docker (:8000)...');
+      const runRes = await fetch('/api/run-simulation', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(simPayload),
+      });
+      const runData = await runRes.json();
+      if (!runRes.ok) {
+        throw new Error(runData?.error || runData?.message || `فشل إرسال المهمة (${runRes.status})`);
+      }
+
+      let finalJobResult = runData.result;
+      const taskId = runData.task_id;
+      if (taskId) {
+        const started = Date.now();
+        while (Date.now() - started < 180_000) {
+          await new Promise((r) => setTimeout(r, 1200));
+          const jobRes = await fetch(`/api/jobs/${encodeURIComponent(taskId)}`);
+          if (!jobRes.ok) continue;
+          const job = await jobRes.json();
+          const st = String(job.status || '').toUpperCase();
+          setProcessingStatus(`جاري التنفيذ في Celery (${st}${job.progress ? ` - ${job.progress}%` : ''})...`);
+          if (st === 'COMPLETED') {
+            finalJobResult = job.result;
+            break;
+          }
+          if (st === 'FAILED' || st === 'CANCELLED') {
+            throw new Error(job.error || 'فشلت المحاكاة داخل حاوية Docker.');
+          }
+        }
+      }
+
+      if (finalJobResult) {
+        const normalized = normalizeSolverResponse(finalJobResult, project);
+        project.simulationRun = {
+          taskId: taskId || `docker_${Date.now()}`,
+          executionMode: 'celery',
+          submittedRequest: simPayload,
+          result: finalJobResult,
+          logs: Array.isArray(finalJobResult?.logs) ? finalJobResult.logs.map(String) : [],
+          recordedAt: new Date().toISOString(),
+        };
+        project.normalizedSolverResult = normalized;
+        project.solver = {
+          ...project.solver,
+          solverType: normalized.solver,
+        };
+      }
+
+      onAnalysisComplete(project);
+      setIsProcessing(false);
+      onClose();
+    } catch (err: any) {
+      setErrorMessage(err?.message || 'تعذر الاتصال ببوابة Docker (:8000). تأكد من تشغيل docker compose.');
+      setIsProcessing(false);
+    }
+  };
+
+  // Optional AI schema extraction (no fake offline fallback on failure)
+  const handleExecuteHybridAnalysis = async () => {
+    if (engineMode === 'pure_local') {
+      await handleExecuteOnDocker();
+      return;
+    }
+
+    setIsProcessing(true);
+    setProcessingStatus('جاري تحليل الملفات واستخراج المواصفات الهندسية...');
     setErrorMessage(null);
 
     const candidateKeys = apiKeys.filter((k) => k.status !== 'exhausted').map((k) => k.key);
     const keyPoolToTry = candidateKeys.length > 0 ? candidateKeys : [''];
-
-    let succeeded = false;
     let lastErr = '';
 
     for (let i = 0; i < keyPoolToTry.length; i++) {
@@ -202,7 +350,7 @@ export function ScriptUploaderModal({
       setProcessingStatus(
         candidateKeys.length > 0
           ? `جاري التحليل بالمفتاح (${i + 1}/${candidateKeys.length})...`
-          : 'جاري التحليل بالخادم السحابي...'
+          : 'جاري التحليل عبر السيرفر...'
       );
 
       try {
@@ -237,18 +385,17 @@ export function ScriptUploaderModal({
         const data = await res.json();
 
         if (res.ok && data.success && data.data) {
-          succeeded = true;
           const proj: ThesisProject = data.data;
           proj.attachedFilesCount = filesList.length;
           proj.directivesApplied = directives;
           proj.extractedSummary =
             proj.extractedSummary ||
-            `تم استخراج وتحليل بيانات ملف (${filesList[0]?.name || 'المشروع'}) وتطبيق شروطه الحدية بدقة.`;
+            `تم استخراج بيانات ملف (${filesList[0]?.name || 'المشروع'}) — شغّل المحاكاة على Docker للحصول على النتائج العددية.`;
 
           onAnalysisComplete(proj);
           setIsProcessing(false);
           onClose();
-          break;
+          return;
         } else {
           lastErr = data.details || data.error || 'فشل معالجة النموذج عبر السيرفر';
         }
@@ -257,28 +404,8 @@ export function ScriptUploaderModal({
       }
     }
 
-    // Fallback to local deterministic physics engine if cloud failed
-    if (!succeeded) {
-      setProcessingStatus('جاري التحول التلقائي للمحرك الفيزيائي المحلي بدقة 100%...');
-      setTimeout(() => {
-        const firstFile = filesList[0];
-        const firstFileName = firstFile?.name || 'ansys_workbench_model.jou';
-        const project = generateLocalEngineeringProject(
-          firstFileName,
-          directives,
-          projectField,
-          firstFile?.content || '',
-          filesList
-        );
-        project.attachedFilesCount = filesList.length;
-        project.directivesApplied = directives;
-        project.extractedSummary = `تم تحليل الملف محلياً بواسطة المحرك الفيزيائي الحتمي بدقة 100% (${lastErr ? `ملاحظة: ${lastErr}` : ''})`;
-
-        onAnalysisComplete(project);
-        setIsProcessing(false);
-        onClose();
-      }, 500);
-    }
+    setErrorMessage(`تعذر إتمام التحليل السحابي للمستندات: ${lastErr || 'يرجى التحقق من مفتاح API أو استخدام الرفع المباشر لـ Docker (:8000).'}`);
+    setIsProcessing(false);
   };
 
   return (
@@ -323,7 +450,7 @@ export function ScriptUploaderModal({
               ref={fileInputRef}
               type="file"
               multiple
-              accept=".docx,.doc,.docm,.rtf,.pdf,.txt,.py,.jou,.mac,.inp,.cas,.dat,.cdb,.m,.xlsx,.xls,.csv,.png,.jpg,.jpeg,.svg,.webp,.zip,.wbpz"
+              accept=".stl,.step,.stp,.iges,.igs,.msh,.obj,.inp,.cas,.dat,.cdb,.zip,.wbpz,.docx,.doc,.docm,.rtf,.pdf,.txt,.py,.jou,.mac,.m,.xlsx,.xls,.csv,.png,.jpg,.jpeg,.svg,.webp"
               className="hidden"
               onChange={(e) => handleFilesSelected(e.target.files)}
             />
@@ -335,10 +462,10 @@ export function ScriptUploaderModal({
               )}
             </div>
             <h4 className="text-sm font-bold text-slate-200">
-              {isParsingFiles ? 'جاري فحص وقراءة محتويات المستند والملفات المرفقة...' : 'انقر لاختيار ملف وورد (.docx/.doc) أو السكربتات والأرشيف'}
+              {isParsingFiles ? 'جاري فحص وقراءة محتويات المستند والملفات المرفقة...' : 'انقر لاختيار ملف CAD (.stl/.step) أو (.inp/.zip/.msh) أو المستندات'}
             </h4>
             <p className="text-[11px] text-slate-400 mt-1">
-              يدعم مستندات وورد Word (.docx / .doc)، PDF، بايثون (.py)، أنسيز (.jou, .mac, .inp)، إكسل، والأرشيف المضغوط (.zip, .wbpz)
+              يدعم الهندسة ثلاثية الأبعاد (.stl, .step)، ملفات CalculiX/OpenFOAM (.inp, .msh, .zip)، بايثون (.py)، والمستندات (.docx, .pdf, .xlsx)
             </p>
           </div>
 
@@ -519,12 +646,12 @@ export function ScriptUploaderModal({
 
           {/* Processing Status */}
           {isProcessing && (
-            <div className="p-4 rounded-xl bg-sky-500/10 border border-sky-500/20 flex items-center gap-3 text-sky-200 animate-pulse">
+            <div className="p-4 rounded-xl bg-sky-500/10 border border-sky-500/20 flex items-center gap-3 text-sky-200">
               <Cpu className="w-5 h-5 text-sky-400 shrink-0 animate-spin" />
               <div>
                 <p className="font-bold text-sky-300">{processingStatus}</p>
                 <p className="text-[11px] text-sky-400/80 mt-0.5">
-                  جاري استخراج المعطيات وحل المعادلات وتوليد الميش والكونتورات بدقة حتمية...
+                  يتم إرسال الملفات مباشرة إلى خادم Docker (:8000) ومحركات OpenFOAM / CalculiX / Gmsh
                 </p>
               </div>
             </div>
@@ -542,9 +669,9 @@ export function ScriptUploaderModal({
           <div className="flex items-center gap-2 text-slate-400 text-xs">
             <Cpu className="w-4 h-4 text-emerald-400" />
             <span>
-              الوضع الحالي:{' '}
+              التوجيه الفعلي:{' '}
               <strong className="text-slate-200">
-                {engineMode === 'pure_local' ? 'محلي 100%' : 'هجين ذكي فائق'}
+                Docker Engine (:8000)
               </strong>
             </span>
           </div>
@@ -553,21 +680,32 @@ export function ScriptUploaderModal({
             <button
               type="button"
               disabled={isProcessing}
-              onClick={handleExecuteLocalEngine}
-              className="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-emerald-300 border border-emerald-500/30 text-xs font-semibold transition-colors disabled:opacity-50"
+              onClick={handleOpenWorkspaceOnly}
+              className="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 text-xs font-semibold transition-colors disabled:opacity-50"
             >
-              حل فوري محلياً (Offline)
+              فتح في مساحة العمل (بدون تشغيل المحاكي)
             </button>
 
             <button
               type="button"
               disabled={isProcessing}
-              onClick={handleExecuteHybridAnalysis}
-              className="px-5 py-2 rounded-xl bg-gradient-to-r from-sky-500 to-indigo-600 hover:from-sky-400 hover:to-indigo-500 text-white font-bold text-xs shadow-md shadow-sky-500/20 active:scale-95 transition-all flex items-center gap-1.5 disabled:opacity-50"
+              onClick={handleExecuteOnDocker}
+              className="px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold transition-colors disabled:opacity-50"
             >
-              <Sparkles className="w-4 h-4" />
-              <span>بدء التحليل والمعالجة</span>
+              رفع وتشغيل عبر Docker (:8000)
             </button>
+
+            {engineMode !== 'pure_local' && (
+              <button
+                type="button"
+                disabled={isProcessing}
+                onClick={handleExecuteHybridAnalysis}
+                className="px-4 py-2 rounded-xl bg-gradient-to-r from-sky-500 to-indigo-600 hover:from-sky-400 hover:to-indigo-500 text-white font-bold text-xs shadow-md shadow-sky-500/20 active:scale-95 transition-all flex items-center gap-1.5 disabled:opacity-50"
+              >
+                <Sparkles className="w-4 h-4" />
+                <span>استخلاص المعطيات بالذكاء الاصطناعي</span>
+              </button>
+            )}
           </div>
         </div>
 

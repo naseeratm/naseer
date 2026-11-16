@@ -232,29 +232,19 @@ function defaultDefensePoints(field: string) {
   if (field === 'FEA' || field === 'Structural') {
     return [
       {
-        question: 'لماذا اعتمدت معيار فون ميسيس (Von Mises) ولم تستخدم معيار تريسكا (Tresca) أو موهر-كولومب (Mohr-Coulomb)؟ وكيف تعاملت مع ثلاثية الإجهاد؟',
-        answer: 'معيار فون ميسيس مبني على طاقة تشوه القص القصوى (Octahedral Distortion Energy) وهو الأكثر دقة للمواد المعدنية المطيلية (Ductile Metals). معيار تريسكا أكثر تحفظاً بنسبة 15.5%، بينما موهر-كولومب مخصص للمواد الهشة غير المتناظرة بالشد والضغط. كما تم رصد ثلاثية الإجهاد (Stress Triaxiality η = σ_m / σ_eq) عند الحواف للتحقق من عدم حدوث تقصف إجهادي ناتج عن الشد الهيدروستاتيكي ثلاثي المحاور.',
-        scientificJustification: 'معايير ASME Section VIII Div 2 ومعايير ASTM E8 لاختبارات الإجهاد المتعدد المحاور.',
+        question: 'لماذا اعتمدت معيار فون ميسيس (Von Mises) ولم تستخدم معيار تريسكا (Tresca) أو موهر-كولومب (Mohr-Coulomb)؟',
+        answer: 'معيار فون ميسيس مبني على طاقة تشوه القص القصوى (Octahedral Distortion Energy) وهو الأكثر ملاءمة للمواد المعدنية المطيلية (Ductile Metals)، بينما يُستخدم موهر-كولومب للمواد الهشة غير المتناظرة بالشد والضغط. وتُحسب قيم ثلاثية الإجهاد مباشرة من نتائج CalculiX بعد التشغيل الفعلي.',
+        scientificJustification: 'معايير ASME Section VIII Div 2 واختبارات ASTM E8.',
       },
       {
-        question: 'هل تعرض النموذج لظاهرة الانغلاق القصي أو الحجمي (Shear or Volumetric Locking) في العناصر المحدودة؟',
-        answer: 'تم تفادي الانغلاق القصي تماماً باعتماد عناصر ثلاثية الأبعاد تربيعية عالية الرتبة (SOLID186 ذات 20 عقدة) مع تقنية التكامل التام/المختلط (Enhanced Strain Formulation)، وتجنب العناصر الخطية (SOLID185 ذات 8 عقد) المعرضة للانغلاق الكاذب تحت تأثير قوى الانحناء.',
-        scientificJustification: 'مرجع Bathe (Finite Element Procedures) يوصي بعناصر 20-node Serendipity لحساب الانحناء والإجهادات بدقة تامة دون تيبس مصطنع.',
+        question: 'كيف تتعامل مع الانغلاق القصي ونقاط التركيز الإجهادي (Stress Concentration vs. Singularity)؟',
+        answer: 'يتم التحقق من استقرار الإجهادات المحلية عبر دراسة استقلالية الشبكة وفق منهجية Roache GCI باستخدام ثلاث شبكات متدرجة الكثافة، مع تجنب الزوايا الحادة غير الفيزيائية باستخدام أقواس انتقال هندسية.',
+        scientificJustification: 'منهجية Peterson (Stress Concentration Design Factors) ومعيار ASME V&V 20.',
       },
       {
-        question: 'كيف ميزت بين نقطة تركيز إجهاد حقيقية (Stress Concentration Kt) ونقطة انفرادية عددية (Stress Singularity)؟',
-        answer: 'النقاط الانفرادية تنشأ عند الزوايا الحادة نظرياً (R = 0) ويستمر إجهادها بالزيادة اللا نهائية كلما صغرت الشبكة. لتفادي هذا الخطأ، تم تصميم جميع الزوايا بأقواس انتقال حقيقية (Fillet R ≥ 2.5 mm)، وأثبتت دراسة Roache GCI استقرار قيمة أقصى إجهاد وتوقفها عن التغير عند كثافة 180,000 عنصر بنسبة تباين أقل من 1.1%.',
-        scientificJustification: 'منهجية Peterson (Stress Concentration Design Factors) ومعيار ASME V&V 20 لتقييم تقارب الإجهادات المحلية.',
-      },
-      {
-        question: 'كيف أثبت أمان الهيكل ضد الانبعاج غير الخطي (Nonlinear Buckling)؟',
-        answer: 'أجرينا فحص الانبعاج الأولي (Eigenvalue Buckling) وأظهر أدنى معامل حمل حرج (BLF) بقيمة 4.2، ثم تلاه فحص التشوهات الكبيرة (NLGEOM) مع إدخال عيب تصنيعي بدائي (Geometric Imperfection = L/1000) للتحقق من عدم حدوث انهيار مفاجئ (Snap-through Buckling).',
-        scientificJustification: 'كود التصميم الإنشائي Eurocode 3 و AISC 360 للاستقرار الإنشائي.',
-      },
-      {
-        question: 'كيف ضمنت عدم تقييد تمدد بواسون (Poisson Expansion) في الشروط الحدية؟',
-        answer: 'تم تطبيق شرط التثبيت المقيد (Fixed Support) على السطح المرجعي فقط، مع ترك الأسطح الحرة طليقة الحركة في الاتجاهات العرضية، لتفادي تولد إجهادات حرارية أو ضغطية اصطناعية ناتجة عن التقييد الزائد لحرية انفعال بواسون.',
-        scientificJustification: 'مبادئ ميكانيكا الأجسام المرنة (Timoshenko & Goodier: Theory of Elasticity).',
+        question: 'كيف يُفحص استقرار الهيكل ضد الانبعاج والتقييد العرضي؟',
+        answer: 'يوفر محرك CalculiX تحليل الانبعاج الخطي (Eigenvalue Buckling via *BUCKLE) وتحليل التشوهات الكبيرة (*NLGEOM)، مع تطبيق شروط التثبيت المرجعية دون تقييد تمدد بواسون على الأسطح الحرة.',
+        scientificJustification: 'كود Eurocode 3 و Timoshenko & Goodier (Theory of Elasticity).',
       },
     ];
   }
@@ -262,14 +252,9 @@ function defaultDefensePoints(field: string) {
   if (field === 'FSI') {
     return [
       {
-        question: 'كيف تم التعامل مع معضلة الكتلة المضافة (Added Mass Effect) وعدم الاستقرار العددي في تفاعل المائع مع الهيكل؟',
-        answer: 'في اقتران FSI الثنائي (Two-way FSI)، يؤدي تقارب كثافة المائع مع الهيكل إلى حدوث عدم استقرار عددي. تم حل ذلك باعتماد خوارزمية الاقتران الضمني القوي (Implicit Partitioned Coupling) مع استرخاء عددي سفلي (Under-relaxation) لضمان اتزان القوى وإزاحة الشبكة الحركية (ALE Formulation) عند كل تكرار زمني.',
-        scientificJustification: 'دراسات Donea et al. في الصياغة التوافقية لاقتران لاغرانج مع أويلر (Arbitrary Lagrangian-Eulerian).',
-      },
-      {
-        question: 'هل تم رصد ظاهرة الاهتزاز المستحث بالدوامات وحالة الانحباس الترددي (VIV Lock-in)؟',
-        answer: 'تم تتبع تردد انفصال الدوامات (Strouhal frequency fs = St·U/D) ومقارنته بالتردد الطبيعي للهيكل (fn). أظهرت النتائج أن ظاهرة الانحباس (Lock-in) تحدث في نطاق السرعة المختزلة Vr = 4.8 إلى 7.2 حيث يتطابق تردد المائع مع تردد الهيكل مسبباً سعة تذبذب قصوى.',
-        scientificJustification: 'معيار Blevins (Flow-Induced Vibration) ومطابقة بيانات السحب اللحظي والرفع التذبذبي.',
+        question: 'كيف يتم التعامل مع استقرار الاقتران بين المائع والهيكل (FSI)؟',
+        answer: 'يتطلب الاقتران الحقيقي استرخاءً عددياً متزناً ونقل الأحمال الحدية بين شبكتي المائع والهيكل مع مراقبة البواقي التكرارية عند كل خطوة زمنية.',
+        scientificJustification: 'صياغة ALE التوافقية (Donea et al.).',
       },
     ];
   }
@@ -277,14 +262,9 @@ function defaultDefensePoints(field: string) {
   if (field === 'Supersonic') {
     return [
       {
-        question: 'كيف استطاع المحلل التقاط الموجة الصادمة (Shock Wave) دون حدوث تذبذبات عددية (Gibbs Phenomenon)؟',
-        answer: 'تم اعتماد مصيدة الصدمات المركزية (Central-upwind Kurganov-Tadmor scheme / rhoCentralFoam) مع محددات التدفق المقيدة (Van Leer Flux Limiter)، مما يتيح التقاط الصدمة المائلة والموجة المتعامدة بسماكة خلية واحدة دون تذبذب كاذب في الضغط أو الكثافة.',
-        scientificJustification: 'دراسات Kurganov & Tadmor (2000) في حلول معادلات أويلر ونافييه-ستوكس الانضغاطية فائقة السرعة.',
-      },
-      {
-        question: 'هل تتطابق زاوية الصدمة المائلة المحسوبة مع العلاقات التحليلية لنظرية ماخ؟',
-        answer: 'تمت مطابقة زاوية الموجة الصادمة المائلة (β) مع زاوية انحراف الجدار (θ) ورقم ماخ (M = 2.4) وفق معادلة (θ-β-M Relation)، وجاء الخطأ العددي دون 0.6% مقارنة بالقيمة الدقيقة لمعادلة رانكين-هوغونيوت.',
-        scientificJustification: 'كتاب ديناميكا الغازات الكلاسيكي (Anderson: Modern Compressible Flow).',
+        question: 'كيف يلتقط المحلل الانضغاطي الموجات الصادمة؟',
+        answer: 'يعتمد المحلل الانضغاطي مخططات مركزية-تصاعدية مع محددات تدفق (Flux Limiters) لمنع التذبذبات العددية غير الفيزيائية ومطابقة علاقات رانكين-هوغونيوت النظرية.',
+        scientificJustification: 'Kurganov & Tadmor (2000) و Anderson (Modern Compressible Flow).',
       },
     ];
   }
@@ -292,44 +272,28 @@ function defaultDefensePoints(field: string) {
   if (field === 'PCM') {
     return [
       {
-        question: 'ما هي مبررات اعتماد طريقة المحتوى الحراري-المسامية (Enthalpy-Porosity Method) لحل ذوبان الـ PCM؟',
-        answer: 'طريقة Enthalpy-Porosity تتيح حل جبهة الانصهار السائلة-الصلبة (Mushy Zone) كشبكة ثابتة دون الحاجة لإعادة تقسيم الشبكة مع الزمن، حيث يُعامل الطور الانتقالي كوسط مسامي تنخفض سرعته عبر حد دارسي المضاف (Darcy Source Term = -C·(1-f_L)² / (f_L³ + ε) · V).',
-        scientificJustification: 'دراسة Brent, Voller & Reid (1988) المعيارية لانصهار وتصلب المواد متغيرة الفاز في التجاويف.',
-      },
-      {
-        question: 'ما هي القيمة المعتمدة لثابت المنطقة العجينية (Mushy Zone Constant C) وما تأثيرها؟',
-        answer: 'تم اعتماد C = 10^5 kg/(m³·s) استناداً إلى المعايرة المعملية؛ حيث تمنع القيم الأقل من التثبيط الكافي للسرعة في الطور الصلب، بينما تسبب القيم الأعلى تيبساً مفرطاً وتراجعاً في تقارب بواقي كمية الحركة.',
-        scientificJustification: 'المقارنة مع بيانات Gau & Viskanta المعملية لانصهار الغاليوم وشمع البارافين.',
+        question: 'ما هو الأساس الرياضي لنمذجة تغير الطور والانتقال الحراري؟',
+        answer: 'تُصاغ جبهة تغير الطور باستخدام طريقة المحتوى الحراري-المسامية (Enthalpy-Porosity) مع حد إخماد دارسي في المنطقة العجينية لتتبع حركة الجبهة على شبكة ثابتة.',
+        scientificJustification: 'دراسة Brent, Voller & Reid (1988).',
       },
     ];
   }
 
-  // Default CFD & Thermal
   return [
     {
-      question: 'لماذا اعتمدت نموذج SST k-omega ولم تستخدم نموذج k-epsilon القياسي أو Spalart-Allmaras؟',
-      answer: 'تم اعتماد نموذج Menter SST k-omega لأن نموذج k-epsilon القياسي يعتمد على دوال جدارية تجريبية تفشل تماماً في التنبؤ بانفصال الجريان وتدرجات الضغط العكسية. بينما يدمج SST دقة k-omega عند الجدار لحل الطبقة اللزجة التحتية مباشرة دون دوال تقريبية، وينتقل تلقائياً عبر دالة المزج F1 إلى k-epsilon في التيار الحر لتجنب حساسية k-omega لظروف الدخول.',
-      scientificJustification: 'معيار الجمعية الأمريكية ASME V&V 20 يوصي صراحة بنماذج SST للجريانات ذات التدرج العكسي للضغط وانفصال التدفق والانتقال الحراري المترافق.',
+      question: 'ما هي مبررات اختيار نموذج الاضطراب k-omega SST أو النموذج الصفائحي في OpenFOAM؟',
+      answer: 'يُختار نموذج التدفق بناءً على رقم رينولدز المحسوب؛ حيث يُدمج k-omega SST دقة حل الطبقة اللزجة قرب الجدار مع استقرار k-epsilon في التيار الحر في التدفقات المضطربة ذات تدرجات الضغط العكسية.',
+      scientificJustification: 'معيار الجمعية الأمريكية ASME V&V 20-2009.',
     },
     {
-      question: 'كيف تحققت من دقة الطبقة المتاخمة للسطح (Boundary Layer) وقيمة y+؟',
-      answer: 'تم تصميم شبكة الميش بحيث تكون قيمة y+ أقل من 1 (y+ ≈ 0.85) عند الأسطح الحرجة، مع استخدام 5 طبقات انتفاخ منشورية (Inflation Layers) بنسبة نمو 1.2 لحل الطبقة اللزجة التحتية (Viscous Sublayer: y+ < 5) بالكامل دون الحاجة لدوال الجدار الجبرية.',
-      scientificJustification: 'حل التدرجات الحرارية والهيدروديناميكية الشديدة يتطلب احتواء العقد الأولى داخل الطبقة اللزجة التحتية لحساب إجهاد القص الجداري ومعامل انتقال الحرارة بدقة.',
+      question: 'كيف تُثبت استقلالية النتائج عن كثافة الشبكة (Grid Independence)؟',
+      answer: 'تُحسب استقلالية الشبكة فعلياً بتشغيل ثلاث شبكات متدرجة (خشنة، متوسطة، ناعمة) عبر المسار /api/mesh-study واستخراج مؤشر Roache GCI والقيمة المستقرة بطريقة ريتشاردسون من مخرجات المحرك الفعلية.',
+      scientificJustification: 'منهجية Celik et al. (2008) المعتمدة في ASME V&V 20.',
     },
     {
-      question: 'كيف أثبت أن النتائج عددية حقيقية وليست تابعة لحجم الشبكة (Mesh Dependency)؟',
-      answer: 'أجرينا دراسة استقلالية شبكة معتمدة وفق مؤشر روتش (Roache GCI) على ثلاثة مستويات (خشنة: 42,000 خلية، متوسطة: 96,000 خلية، فائقة: 184,200 خلية) بنسبة تكثيف r = 1.35. بلغت قيمة GCI للشبكة الفائقة 0.82%، وهي بأمان دون الحد الموصى به (2%).',
-      scientificJustification: 'قيمة النطاق التقاربي بلغت 1.01، مما يثبت استقرار الحل الحتمي وتطابقه مع استقراء ريتشاردسون (Richardson Extrapolation).',
-    },
-    {
-      question: 'ما هو التبرير الفيزيائي لزيادة التبريد عند تعديل التصميم، وهل تم تقييم هبوط الضغط؟',
-      answer: 'التعديل الهندسي زاد من اضطراب الطبقة الحدية ومساحة التبادل الحراري مما رفع رقم نسلت (Nu). ولم نغفل ضريبة هبوط الضغط (Pressure Drop Δp)؛ حيث قمنا بحساب معيار الأداء الهيدروحراري (Performance Evaluation Criterion - PEC): PEC = (Nu/Nu0) / (f/f0)^(1/3) وبلغت قيمته 1.28 (> 1.0)، مما يثبت هندسياً أن الزيادة في التبريد تفوق بكثير خسائر الاحتكاك وضخ المائع.',
-      scientificJustification: 'تحقيق PEC > 1.0 هو الشرط الأكاديمي والصناعي لإثبات الجدوى الطاقوية والاقتصادية لأي تعديل هندسي.',
-    },
-    {
-      question: 'كيف تم تمثيل الموائع النانوية وخصائصها الفعالة في المحاكاة؟',
-      answer: 'تم تطبيق معادلات التوازن الحراري أحادي الطور (Single-phase homogeneous model) مع حساب الكثافة الفعالة وفق معادلة Pak & Cho، والسعة الحرارية وفق معادلة Xuan & Roetzel، والتوصيل الحراري الفعّال بكسر حجمي φ وفق معادلة Maxwell/Corcione، واللزوجة الديناميكية وفق معادلة Brinkman.',
-      scientificJustification: 'المقارنة مع البيانات المعملية لـ Pak & Cho و Xuan أظهرت ارتباطاً فائقاً بنسبة R² = 0.998 ومتوسط خطأ مطلق أقل من 1.3%.',
+      question: 'كيف يُقيَّم التحسن الحراري مقابل خسائر هبوط الضغط؟',
+      answer: 'يُقاس الأداء الهيدروحراري بمقارنة نسبة التحسن في انتقال الحرارة (Nu/Nu0) مع نسبة الزيادة في معامل الاحتكاك المرفوعة للأس (1/3) ضمن معادلة معيار الأداء PEC من القيم الفعلية المحسوبة بعد التشغيل.',
+      scientificJustification: 'صياغة معيار الأداء الهيدروحراري القياسي PEC = (Nu/Nu0) / (f/f0)^(1/3).',
     },
   ];
 }
@@ -339,49 +303,31 @@ function defaultLiteratureReview(field: string) {
     return [
       {
         study: 'Timoshenko & Goodier (1970) - Elasticity Benchmark',
-        configuration: 'Analytical solutions for cantilever beams and notched plates under bending and tension',
-        keyFinding: 'Established classical closed-form stress concentration and deflection equations.',
-        gap: 'Our FEA model captures local 3D triaxiality and Poisson constraints that classical 1D/2D beam theory neglects.',
-      },
-      {
-        study: 'Peterson (1974) - Stress Concentration Factors',
-        configuration: 'Charts and empirical formulas for fillets, holes, and grooves in structural members',
-        keyFinding: 'Provided stress concentration factor Kt charts based on radius-to-thickness ratio (r/d).',
-        gap: 'Validated against our fine-mesh FEA results, achieving Kt match within 1.15% deviation.',
+        configuration: 'Analytical solutions for beams and plates under bending and tension',
+        keyFinding: 'Classical closed-form stress and deflection relationships.',
+        gap: '3D CalculiX finite-element solution captures full triaxial stress states.',
       },
       {
         study: 'ASME Boiler and Pressure Vessel Code (Section VIII Div 2)',
-        configuration: 'Design-by-Analysis criteria for plastic collapse, local failure, and ratcheting',
-        keyFinding: 'Prescribed stress linearization and primary/secondary stress classification standards.',
-        gap: 'Directly adopted in our stress assessment to guarantee safety factor compliance against yield.',
+        configuration: 'Design-by-Analysis criteria for structural stress evaluation',
+        keyFinding: 'Standardized primary/secondary stress classification criteria.',
+        gap: 'Used as reference methodology for yield safety assessment.',
       },
     ];
   }
 
   return [
     {
-      study: 'Pak & Cho (1998) - Experimental Benchmark',
-      configuration: 'Circular tube flow with Al2O3/water nanofluids (Re = 10,000 to 100,000)',
-      keyFinding: 'Nusselt number increased by up to 35% at 3% volume fraction, but friction factor penalty was observed.',
-      gap: 'Our study optimizes the channel geometry to maintain PEC > 1.25 while reducing the pumping power penalty.',
-    },
-    {
-      study: 'Celik et al. (2008) - ASME Verification Standard',
-      configuration: 'Procedure for Estimation and Reporting of Uncertainty Due to Discretization in CFD',
-      keyFinding: 'Established GCI formula with safety factor 1.25 for systematic grid independence reporting.',
-      gap: 'Applied strictly in our mesh study, achieving GCI < 1.0% across 3 grid levels.',
+      study: 'Celik et al. (2008) - ASME V&V 20 Verification Standard',
+      configuration: 'Three-grid discretization uncertainty estimation via Roache GCI',
+      keyFinding: 'Standardized GCI formula and observed order of accuracy extraction.',
+      gap: 'Implemented directly in /api/mesh-study over real solver runs.',
     },
     {
       study: 'Menter (1994) - SST Turbulence Modeling',
-      configuration: 'Two-equation eddy-viscosity turbulence models for engineering applications',
-      keyFinding: 'Demonstrated superior accuracy in adverse pressure gradient and flow separation zones.',
-      gap: 'Adopted in our solver setup to accurately resolve flow separation and reattachment downstream.',
-    },
-    {
-      study: 'Dittus & Boelter (1985) - Classical Correlation Benchmark',
-      configuration: 'Fully developed turbulent flow heat transfer in smooth tubes (Nu = 0.023 Re^0.8 Pr^0.4)',
-      keyFinding: 'Established standard empirical heat transfer baseline for single-phase liquid convection.',
-      gap: 'Used as baseline reference Nu0 to prove our modified design achieves Nu/Nu0 = 1.48.',
+      configuration: 'Two-equation eddy-viscosity turbulence closure for internal/external flows',
+      keyFinding: 'Blends near-wall k-omega with freestream k-epsilon stability.',
+      gap: 'Available for turbulent OpenFOAM RANS configurations.',
     },
   ];
 }
@@ -399,23 +345,36 @@ export function buildRealReport(project: ThesisProject): RealReport {
       institution: identity(project.university) || 'قسم الهندسة الميكانيكية والحرارية',
       generatedAt: new Date().toISOString(),
       job: [
-        { label: 'Status', value: 'PRE-RUN DRAFT / إطار مناقشة الأطروحة الأكاديمية' },
+        { label: 'Status', value: 'PRE-RUN DRAFT / بانتظار التنفيذ على Docker (:8000)' },
         { label: 'Mode', value: 'Interactive CAE Workbench' },
       ],
       parameters: [
-        { label: 'Domain width Lx', value: '1.0', unit: 'm' },
-        { label: 'Domain height Ly', value: '1.0', unit: 'm' },
         { label: 'Simulation type', value: project.field },
       ],
       solver: [
-        { label: 'Solver', value: project.solver?.solverType || 'OpenFOAM / CalculiX' },
-        { label: 'Scheme', value: project.solver?.scheme || 'SIMPLE' },
-        { label: 'Discretization', value: project.solver?.discretization || 'Second Order Upwind' },
+        { label: 'Solver', value: project.solver?.solverType || 'OpenFOAM / CalculiX / ElmerFEM' },
+        { label: 'Scheme', value: project.solver?.scheme || 'Pending solve' },
+        { label: 'Discretization', value: project.solver?.discretization || 'Pending solve' },
       ],
       mesh: [
-        { label: 'Elements', value: formatNumber(project.meshStudy?.meshLevels?.[2]?.elements || 184200) },
-        { label: 'Min Orthogonal Quality', value: String(project.meshStudy?.minOrthogonalQuality || 0.89) },
-        { label: 'Max Skewness', value: String(project.meshStudy?.maxSkewness || 0.22) },
+        {
+          label: 'Elements',
+          value: project.meshStudy?.meshLevels?.[2]?.elements
+            ? formatNumber(project.meshStudy.meshLevels[2].elements)
+            : 'Not meshed yet',
+        },
+        {
+          label: 'Min Orthogonal Quality',
+          value: project.meshStudy?.minOrthogonalQuality !== undefined
+            ? String(project.meshStudy.minOrthogonalQuality)
+            : '—',
+        },
+        {
+          label: 'Max Skewness',
+          value: project.meshStudy?.maxSkewness !== undefined
+            ? String(project.meshStudy.maxSkewness)
+            : '—',
+        },
       ],
       results: [],
       matrices: [],

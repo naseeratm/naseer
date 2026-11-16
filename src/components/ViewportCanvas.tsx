@@ -1,20 +1,29 @@
 import React, { useState } from 'react';
 import {
   Interactive3DViewport,
-  ShadingMode,
   ViewPreset,
   CadModelStats,
   BoundaryMarker,
 } from './Interactive3DViewport';
+import { VtkFieldPayload } from '../types/thesis';
 
 interface ViewportCanvasProps {
   title: string;
   subtitle?: string;
   showMeshOverlay?: boolean;
   field?: string;
+  vtkData?: VtkFieldPayload | null;
+  meshPreviewVtk?: VtkFieldPayload | null;
+  integrals?: Record<string, number | string> | null;
+  cadLoading?: boolean;
+  selectedMarkerId?: string | null;
+  hasSolvedResults?: boolean;
   onCadLoaded?: (stats: CadModelStats) => void;
+  onCadStlUploaded?: (file: { name: string; base64: string; stats: CadModelStats }) => void;
+  onCadFileUploaded?: (file: { name: string; base64: string; ext: string; stats?: CadModelStats }) => void;
   onBoundaryAdded?: (marker: BoundaryMarker) => void;
-  // When provided (e.g. a 2D scalar field result) it renders inside the viewport container
+  onBoundaryMarkersChange?: (markers: BoundaryMarker[]) => void;
+  onRegionChange?: (bounds: { min: [number, number, number]; max: [number, number, number] } | null) => void;
   children?: React.ReactNode;
   overlay?: React.ReactNode;
 }
@@ -24,8 +33,18 @@ export const ViewportCanvas: React.FC<ViewportCanvasProps> = ({
   subtitle,
   showMeshOverlay = false,
   field,
+  vtkData = null,
+  meshPreviewVtk = null,
+  integrals = null,
+  cadLoading = false,
+  selectedMarkerId = null,
+  hasSolvedResults = false,
   onCadLoaded,
+  onCadStlUploaded,
+  onCadFileUploaded,
   onBoundaryAdded,
+  onBoundaryMarkersChange,
+  onRegionChange,
   children,
   overlay,
 }) => {
@@ -51,17 +70,27 @@ export const ViewportCanvas: React.FC<ViewportCanvasProps> = ({
             field={detectedField}
             showMeshOverlay={showMeshOverlay}
             activePreset={preset}
+            vtkData={vtkData}
+            meshPreviewVtk={meshPreviewVtk}
+            integrals={integrals}
+            cadLoading={cadLoading}
+            selectedMarkerId={selectedMarkerId}
+            hasSolvedResults={hasSolvedResults}
             onPresetChange={setPreset}
             onCadLoaded={onCadLoaded}
+            onCadStlUploaded={onCadStlUploaded}
+            onCadFileUploaded={onCadFileUploaded}
             onBoundaryAdded={onBoundaryAdded}
+            onBoundaryMarkersChange={onBoundaryMarkersChange}
+            onRegionChange={onRegionChange}
           />
         )}
       </div>
 
       {/* Top-Left Model & Field Breadcrumbs */}
-      <div className="pointer-events-none absolute left-3 top-3 z-20 max-w-[32%] select-none rounded-lg border border-slate-800/80 bg-slate-950/80 px-2.5 py-1.5 backdrop-blur-md shadow-lg">
+      <div className="pointer-events-none absolute left-3 top-3 z-20 max-w-[32%] select-none rounded-lg border border-slate-800 bg-slate-950/90 px-2.5 py-1.5 shadow-lg">
         <div className="flex items-center gap-2">
-          <span className="h-2 w-2 rounded-full bg-emerald-400 animate-pulse" />
+          <span className="h-2 w-2 rounded-full bg-emerald-400" />
           <span className="truncate text-[12px] font-bold text-slate-100">{title}</span>
         </div>
         {subtitle && (

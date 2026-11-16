@@ -89,7 +89,7 @@ export const CleanWorkspaceHome: React.FC<CleanWorkspaceHomeProps> = ({
       <input
         ref={fileInputRef}
         type="file"
-        accept=".stl,.step,.stp,.iges,.igs,.obj,.inp,.zip"
+        accept=".stl,.step,.stp,.iges,.igs,.obj,.inp,.msh,.zip"
         className="hidden"
         onChange={(e) => handleCadImport(e.target.files)}
       />
@@ -107,7 +107,7 @@ export const CleanWorkspaceHome: React.FC<CleanWorkspaceHomeProps> = ({
               Start a New Engineering Simulation
             </h1>
             <p className="text-xs text-slate-400">
-              Create a physics setup, import a 3D CAD model, or resume a saved simulation case.
+              Create a multiphysics setup, import 3D CAD / INP / OpenFOAM archives, or resume a saved case.
             </p>
           </div>
 
@@ -135,7 +135,7 @@ export const CleanWorkspaceHome: React.FC<CleanWorkspaceHomeProps> = ({
             </div>
             <div>
               <div className="text-sm font-bold">New Project</div>
-              <div className="text-[11px] text-sky-100/80 mt-0.5">CFD, FEA or Thermal</div>
+              <div className="text-[11px] text-sky-100/80 mt-0.5">CFD, FEA, Thermal, Multiphysics</div>
             </div>
           </button>
 
@@ -149,8 +149,8 @@ export const CleanWorkspaceHome: React.FC<CleanWorkspaceHomeProps> = ({
               {isImporting ? <Loader2 className="w-5 h-5 animate-spin" /> : <Upload className="w-5 h-5" />}
             </div>
             <div>
-              <div className="text-sm font-bold text-slate-100">Import CAD</div>
-              <div className="text-[11px] text-slate-400 mt-0.5">.STL, .STEP, .IGES, .INP</div>
+              <div className="text-sm font-bold text-slate-100">Import CAD / Deck</div>
+              <div className="text-[11px] text-slate-400 mt-0.5">.STL, .STEP, .INP, .MSH, .ZIP</div>
             </div>
           </button>
 
@@ -178,7 +178,7 @@ export const CleanWorkspaceHome: React.FC<CleanWorkspaceHomeProps> = ({
         <div className="pt-4 border-t border-slate-800/80 flex flex-wrap items-center justify-between gap-2 text-[11px] font-mono text-slate-400">
           <div className="flex items-center gap-2">
             <Cpu className="w-3.5 h-3.5 text-sky-400" />
-            <span>Solvers: OpenFOAM v2406 · CalculiX v2.21</span>
+            <span>Docker Engines (:8000): OpenFOAM · CalculiX · Gmsh · ElmerFEM</span>
           </div>
           <span>Units: SI (m, kg, s, K, Pa)</span>
         </div>

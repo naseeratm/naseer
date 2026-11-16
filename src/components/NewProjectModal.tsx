@@ -9,7 +9,7 @@ interface NewProjectModalProps {
   onOpenMeshGenerator?: () => void;
 }
 
-type DomainType = 'CFD' | 'FEA' | 'Thermal';
+type DomainType = 'CFD' | 'FEA' | 'Thermal' | 'Multiphysics';
 
 const MATERIAL_PRESETS: Record<DomainType, MaterialProperties> = {
   CFD: {
@@ -40,6 +40,16 @@ const MATERIAL_PRESETS: Record<DomainType, MaterialProperties> = {
     thermalConductivity: '167 W/(m·K)',
     specificHeat: '896 J/(kg·K)',
   },
+  Multiphysics: {
+    name: 'Copper-Water CHT & Thermo-Elastic Assembly',
+    phaseOrType: 'Composite',
+    density: '8940 kg/m³',
+    elasticModulus: '117 GPa',
+    poissonRatio: '0.34',
+    yieldStrength: '210 MPa',
+    thermalConductivity: '391 W/(m·K)',
+    specificHeat: '385 J/(kg·K)',
+  },
 };
 
 export const NewProjectModal: React.FC<NewProjectModalProps> = ({
@@ -66,10 +76,12 @@ export const NewProjectModal: React.FC<NewProjectModalProps> = ({
 
   const solverName =
     field === 'FEA'
-      ? 'CalculiX v2.21 (Static / Thermal FEA)'
+      ? 'CalculiX v2.21 (Static / Dynamic / Buckling FEA)'
       : field === 'Thermal'
-      ? 'OpenFOAM v2406 (chtMultiRegionFoam)'
-      : 'OpenFOAM v2406 (simpleFoam / pimpleFoam)';
+      ? 'CalculiX / OpenFOAM Thermal Solver'
+      : field === 'Multiphysics'
+      ? 'OpenFOAM CHT / CalculiX C3D8T / ElmerFEM'
+      : 'OpenFOAM v2406 (simpleFoam / interFoam / rhoSimpleFoam)';
 
   const handleCreate = (e: React.FormEvent) => {
     e.preventDefault();
@@ -112,6 +124,14 @@ export const NewProjectModal: React.FC<NewProjectModalProps> = ({
                 description: 'Conjugate conductive and convective heat transfer.',
               },
             ]
+          : field === 'Multiphysics'
+          ? [
+              {
+                name: 'Coupled Fluid-Thermal-Elastic System',
+                latex: '\\nabla\\cdot(\\boldsymbol{\\sigma} - \\beta \\Delta T \\mathbf{I}) = \\mathbf{0}, \\quad \\rho c_p (\\vec{U}\\cdot\\nabla T) = \\nabla\\cdot(k\\nabla T)',
+                description: 'Coupled conjugate heat transfer, thermo-elastic stress, multiphase VOF, and Maxwell/Helmholtz fields.',
+              },
+            ]
           : [
               {
                 name: 'Incompressible Navier-Stokes',
@@ -134,7 +154,7 @@ export const NewProjectModal: React.FC<NewProjectModalProps> = ({
         maxSkewness: 0,
         maxAspectRatio: 0,
         averageEquisizeSkew: 0,
-        recommendation: 'Import CAD geometry and generate mesh to compute quality metrics.',
+        recommendation: 'Import CAD geometry and generate mesh via Gmsh to compute quality metrics.',
         meshLevels: [],
       },
       validation: {
@@ -153,7 +173,7 @@ export const NewProjectModal: React.FC<NewProjectModalProps> = ({
       thesisTables: [],
       supervisorDefensePoints: [],
       workbenchComponents: [
-        { id: 'wb_geom', name: '1. Geometry', nameEn: 'Geometry', type: 'Geometry', status: 'Pending', details: 'Awaiting CAD import (.stl / .step)' },
+        { id: 'wb_geom', name: '1. Geometry', nameEn: 'Geometry', type: 'Geometry', status: 'Pending', details: 'Awaiting CAD import (.stl / .step / .inp)' },
         { id: 'wb_mesh', name: '2. Mesh', nameEn: 'Mesh', type: 'Mesh', status: 'Pending', details: 'Not generated yet' },
         { id: 'wb_eng_data', name: '3. Material', nameEn: 'Material', type: 'Engineering Data', status: 'Up-to-date', details: material.name },
         { id: 'wb_setup', name: '4. Boundary Conditions', nameEn: 'Boundary Conditions', type: 'Setup', status: 'Pending', details: '0 boundaries defined' },
@@ -212,26 +232,32 @@ export const NewProjectModal: React.FC<NewProjectModalProps> = ({
 
           {/* Active Solver Domains */}
           <div className="space-y-1.5">
-            <label className="font-semibold text-slate-300 block">Analysis Type (Active Solvers)</label>
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
+            <label className="font-semibold text-slate-300 block">Analysis Type (Active Docker Solvers)</label>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
               {[
                 {
                   id: 'CFD' as DomainType,
-                  title: 'Fluid Flow (CFD)',
+                  title: 'Fluid Flow (CFD / VOF)',
                   engine: 'OpenFOAM v2406',
                   icon: <Wind className="w-4 h-4 text-sky-400" />,
                 },
                 {
                   id: 'FEA' as DomainType,
-                  title: 'Structural (FEA)',
+                  title: 'Structural & Buckling (FEA)',
                   engine: 'CalculiX v2.21',
                   icon: <Cpu className="w-4 h-4 text-emerald-400" />,
                 },
                 {
                   id: 'Thermal' as DomainType,
-                  title: 'Heat Transfer',
-                  engine: 'OpenFOAM CHT',
+                  title: 'Heat Transfer & Radiation',
+                  engine: 'CalculiX / OpenFOAM',
                   icon: <Flame className="w-4 h-4 text-amber-400" />,
+                },
+                {
+                  id: 'Multiphysics' as DomainType,
+                  title: 'Coupled Multiphysics / EM',
+                  engine: 'CHT · C3D8T · ElmerFEM',
+                  icon: <Cpu className="w-4 h-4 text-purple-400" />,
                 },
               ].map((item) => (
                 <button

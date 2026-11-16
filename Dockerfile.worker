@@ -20,6 +20,8 @@ RUN apt-get update && apt-get install -y \
     gmsh \
     openfoam \
     calculix-ccx \
+    elmerfem-csc \
+    unzip \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app

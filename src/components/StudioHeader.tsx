@@ -32,8 +32,8 @@ interface StudioHeaderProps {
 
 const STATUS_STYLES: Record<JobStatus, { label: string; dot: string; text: string }> = {
   idle: { label: 'Idle', dot: 'bg-slate-500', text: 'text-slate-400' },
-  queued: { label: 'Queued', dot: 'bg-amber-400 animate-pulse', text: 'text-amber-300' },
-  running: { label: 'Running', dot: 'bg-sky-400 animate-pulse', text: 'text-sky-300' },
+  queued: { label: 'Queued', dot: 'bg-amber-400', text: 'text-amber-300' },
+  running: { label: 'Running', dot: 'bg-sky-400', text: 'text-sky-300' },
   completed: { label: 'Completed', dot: 'bg-emerald-400', text: 'text-emerald-300' },
   failed: { label: 'Failed', dot: 'bg-red-500', text: 'text-red-300' },
   cancelled: { label: 'Cancelled', dot: 'bg-orange-400', text: 'text-orange-300' },

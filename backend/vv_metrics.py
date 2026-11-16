@@ -103,17 +103,28 @@ KEY_RESULTS: dict[str, list[KeyResultSpec]] = {
                    "independent of the mesh.",
         ),
     ],
+    "electromagnetic": [
+        KeyResultSpec(
+            "peak_field",
+            "Peak field magnitude",
+            "Maximum nodal potential, electric field, magnetic flux density, or acoustic pressure from ElmerFEM.",
+            unit="",
+            default=True,
+        ),
+    ],
 }
 
 
 def family_of(physics_type: str) -> str:
     kind = str(physics_type).strip().lower()
+    if kind in {"cht_coupled", "multiphase_vof"} or kind.startswith("cfd"):
+        return "cfd"
+    if kind in {"thermal_structural", "structural_buckling"} or kind.startswith("structural"):
+        return "structural"
     if kind.startswith("thermal") or kind == "multiphysics":
         return "thermal"
-    if kind.startswith("cfd"):
-        return "cfd"
-    if kind.startswith("structural"):
-        return "structural"
+    if kind in {"electromagnetic", "acoustics"}:
+        return "electromagnetic"
     raise KeyResultUnavailable(f"No mesh-study key results are defined for physics type '{physics_type}'.")
 
 
@@ -187,16 +198,23 @@ _TEMPERATURE_UNITS = {"degc": ("°C", 273.15), "c": ("°C", 273.15), "k": ("K", 
 
 def _thermal_key(key_id: str, data: Mapping[str, Any]) -> KeyValue:
     matrix = _matrix(data.get("temperature_matrix"))
-    if matrix is None:
-        raise KeyResultUnavailable("The thermal result contains no valid temperature_matrix.")
-    if len(matrix) < 2 or len(matrix[0]) < 2:
-        raise KeyResultUnavailable("The temperature field needs at least 2 × 2 nodes to locate the domain centre.")
-    units = data.get("units") if isinstance(data.get("units"), Mapping) else {}
-    unit_label, offset = _TEMPERATURE_UNITS.get(str(units.get("temperature", "degC")).lower(), (None, None))
-    if unit_label is None:
-        raise KeyResultUnavailable(f"Unsupported temperature unit '{units.get('temperature')}'.")
-    value = bilinear(matrix, (len(matrix[0]) - 1) / 2.0, (len(matrix) - 1) / 2.0)
-    return KeyValue(value=value, unit=unit_label, offset=offset)
+    if matrix is not None and len(matrix) >= 2 and len(matrix[0]) >= 2:
+        units = data.get("units") if isinstance(data.get("units"), Mapping) else {}
+        unit_label, offset = _TEMPERATURE_UNITS.get(str(units.get("temperature", "degC")).lower(), ("°C", 273.15))
+        value = bilinear(matrix, (len(matrix[0]) - 1) / 2.0, (len(matrix) - 1) / 2.0)
+        return KeyValue(value=value, unit=unit_label or "°C", offset=offset or 273.15)
+    temps = data.get("temperatures")
+    if isinstance(temps, list) and temps:
+        vals = [v for v in (_finite(t.get("temperature") if isinstance(t, Mapping) else t) for t in temps) if v is not None]
+        if vals:
+            units = data.get("units") if isinstance(data.get("units"), Mapping) else {}
+            raw_unit = str(units.get("temperature", "K")).lower()
+            unit_label, offset = _TEMPERATURE_UNITS.get(raw_unit, ("K", 0.0))
+            return KeyValue(value=sum(vals) / len(vals), unit=unit_label or "K", offset=offset or 0.0)
+    center = _finite(data.get("center_temperature"))
+    if center is not None:
+        return KeyValue(value=center, unit="°C", offset=273.15)
+    raise KeyResultUnavailable("The thermal result contains no valid temperature_matrix or nodal temperature list.")
 
 
 def _openfoam_key(key_id: str, data: Mapping[str, Any]) -> KeyValue:
@@ -245,6 +263,14 @@ def _structural_key(key_id: str, data: Mapping[str, Any]) -> KeyValue:
     return KeyValue(value=max(values), unit=str(units.get("displacement", "m")))
 
 
+def _em_key(key_id: str, data: Mapping[str, Any]) -> KeyValue:
+    summary = data.get("field_summary") if isinstance(data.get("field_summary"), Mapping) else {}
+    val = _finite(summary.get("max"))
+    if val is None:
+        raise KeyResultUnavailable("ElmerFEM result contains no peak field summary value.")
+    return KeyValue(value=val, unit=str(summary.get("unit", "")))
+
+
 def extract_key_result(key_id: str, physics_type: str, data: Mapping[str, Any]) -> KeyValue:
     family = family_of(physics_type)
     resolve_key_result(physics_type, key_id)
@@ -252,6 +278,8 @@ def extract_key_result(key_id: str, physics_type: str, data: Mapping[str, Any]) 
         return _thermal_key(key_id, data)
     if family == "cfd":
         return _openfoam_key(key_id, data)
+    if family == "electromagnetic":
+        return _em_key(key_id, data)
     return _structural_key(key_id, data)
 
 
@@ -261,14 +289,22 @@ def mesh_stats(physics_type: str, data: Mapping[str, Any]) -> MeshStats:
     if family == "thermal":
         cells, nodes = _finite(data.get("mesh_elements")), _finite(data.get("mesh_nodes"))
         if cells is None or cells <= 0:
+            temps = data.get("temperatures") if isinstance(data.get("temperatures"), list) else []
+            if temps:
+                return MeshStats(cells=len(temps), nodes=len(temps), dimension=3)
             raise KeyResultUnavailable("The thermal result does not report its element count.")
-        return MeshStats(cells=int(cells), nodes=int(nodes) if nodes is not None else None, dimension=2)
+        return MeshStats(cells=int(cells), nodes=int(nodes) if nodes is not None else None, dimension=3 if data.get("temperatures") else 2)
     if family == "cfd":
         metrics = data.get("metrics")
         mesh = metrics.get("mesh") if isinstance(metrics, Mapping) else None
         if not isinstance(mesh, Mapping) or not mesh.get("cells"):
             raise KeyResultUnavailable("The CFD result does not report its mesh size.")
         return MeshStats(cells=int(mesh["cells"]), nodes=None, dimension=int(mesh.get("dimension", 2)))
+    if family == "electromagnetic":
+        cells, nodes = _finite(data.get("mesh_elements")), _finite(data.get("mesh_nodes"))
+        if cells is None or cells <= 0:
+            raise KeyResultUnavailable("The ElmerFEM result does not report its element count.")
+        return MeshStats(cells=int(cells), nodes=int(nodes) if nodes is not None else None, dimension=3)
     elements = {s.get("element") for s in (data.get("stress") or []) if isinstance(s, Mapping)}
     nodes = {d.get("node") for d in (data.get("displacements") or []) if isinstance(d, Mapping)}
     elements.discard(None)
@@ -568,11 +604,20 @@ def _base_divisions(payload: Mapping[str, Any]) -> dict[str, int]:
     return result
 
 
+def _has_cad_source(payload: Mapping[str, Any]) -> bool:
+    return bool(
+        payload.get("cad_stl_b64")
+        or payload.get("cad_file_b64")
+        or payload.get("uploaded_file_path")
+        or payload.get("inp_deck")
+    )
+
+
 def refine_payload(physics_type: str, base: Mapping[str, Any], factor: float) -> dict[str, Any]:
     """Return a copy of the solver payload with the mesh scaled by ``factor`` (cell size × factor)."""
     payload = json.loads(json.dumps(base))
-    if family_of(physics_type) == "structural":
-        # The CalculiX deck is driven by divisions, not mesh_size.
+    if family_of(physics_type) == "structural" and not _has_cad_source(base):
+        # Parametric CalculiX box deck is driven by divisions.
         divisions = {axis: max(1, int(round(n / factor))) for axis, n in _base_divisions(base).items()}
         payload["mesh"] = {**(payload.get("mesh") if isinstance(payload.get("mesh"), dict) else {}), "divisions": divisions}
         return payload
@@ -593,6 +638,7 @@ def run_mesh_study(
     """Run the solver on coarse/medium/fine meshes and compute the GCI of the chosen key result."""
     spec = resolve_key_result(physics_type, key_result_id)
     family = family_of(physics_type)
+    uses_divisions = family == "structural" and not _has_cad_source(base_payload)
 
     levels: list[dict[str, Any]] = []
     solver_name: str | None = None
@@ -614,8 +660,8 @@ def run_mesh_study(
         unit, offset, dimension = value.unit or unit, value.offset, stats.dimension
         levels.append({
             "level": name,
-            "mesh_size": payload.get("mesh_size") if family != "structural" else None,
-            "divisions": payload["mesh"]["divisions"] if family == "structural" else None,
+            "mesh_size": None if uses_divisions else payload.get("mesh_size"),
+            "divisions": payload["mesh"]["divisions"] if uses_divisions else None,
             "cells": stats.cells,
             "nodes": stats.nodes,
             "key_result": value.value,
@@ -628,13 +674,13 @@ def run_mesh_study(
             f"The solver did not change its mesh between levels (cells: {cells[0]}, {cells[1]}, {cells[2]}). "
             "A GCI would be meaningless, so none was computed."
             + (" Structural models start at 2 divisions per direction; a model already at 1 cannot be coarsened."
-               if family == "structural" else ""),
+               if uses_divisions else ""),
         )
     for level in levels:
         level["relative_size"] = _round((cells[2] / level["cells"]) ** (1.0 / dimension))
 
     gci = compute_gci([l["key_result"] for l in levels], cells, dimension, offset=offset)
-    if family == "structural" and min(levels[0]["divisions"].values()) <= 1:
+    if uses_divisions and levels[0].get("divisions") and min(levels[0]["divisions"].values()) <= 1:
         gci["warnings"].append(
             "The coarse level has a single element in at least one direction, so it cannot resolve stress gradients "
             "and is unlikely to be in the asymptotic range; refine the base mesh and re-run before trusting the verdict."

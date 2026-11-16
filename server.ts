@@ -37,20 +37,20 @@ function resolveHost(): string {
 const PORT = resolvePort();
 const HOST = resolveHost();
 const app = express();
-const PYTHON_PORT = process.env.PYTHON_PORT || '8001';
+const PYTHON_PORT = process.env.PYTHON_PORT || '8000';
 const DEFAULT_PYTHON_URL = process.env.PYTHON_BACKEND_URL || `http://127.0.0.1:${PYTHON_PORT}`;
 let activeCloudUrl = DEFAULT_PYTHON_URL;
 let activeLicenseConfig = {
   licenseServerHost: '127.0.0.1',
   licenseFlexNetPort: 1055,
   licenseAnsysLiPort: 2325,
-  licenseType: 'academic',
+  licenseType: 'open_source_unlicensed',
   parallelCores: 8,
-  workingDirectory: '/data/naseer_workspace',
+  workingDirectory: '/app/jobs',
 };
 
 // Integrated CAE & Physics Backend Ready natively on Node.js
-console.log(`[NASEER Universal CAE Studio] Solver bridge starting on port ${PORT}`);
+console.log(`[NASEER Universal CAE Studio] Solver bridge starting on port ${PORT} -> Docker FastAPI ${DEFAULT_PYTHON_URL}`);
 
 
 // Canonical job authority: FastAPI owns all simulation jobs. These routes are a strict
@@ -76,11 +76,12 @@ async function proxyToFastApi(req: Request, res: Response) {
     }
 
     const targetUrl = `${activeCloudUrl}${req.originalUrl}`;
+    const timeoutMs = req.originalUrl.includes('mesh-study') || req.originalUrl.includes('parametric-sweep') ? 180000 : 45000;
     const upstream = await fetch(targetUrl, {
       method: req.method,
       headers,
       body: body ? new Uint8Array(body) : undefined,
-      signal: AbortSignal.timeout(30000),
+      signal: AbortSignal.timeout(timeoutMs),
     });
 
     upstream.headers.forEach((value, name) => {
@@ -91,11 +92,22 @@ async function proxyToFastApi(req: Request, res: Response) {
     return res.status(502).json({
       success: false,
       code: 'PYTHON_SOLVER_UNREACHABLE',
-      error: `تعذر الوصول إلى محرك الفيزياء الحتمي على (${activeCloudUrl}): ${err?.message || String(err)}`,
+      error: `تعذر الوصول إلى محرك المحاكاة في Docker على (${activeCloudUrl}): ${err?.message || String(err)}`,
     });
   }
 }
-app.use(['/api/run-simulation', '/api/jobs', '/api/verify-job', '/api/provenance', '/api/mesh-study'], proxyToFastApi);
+app.use(
+  ['/api/run-simulation', '/api/jobs', '/api/verify-job', '/api/provenance', '/api/mesh-study', '/api/mesh-generate', '/api/cad-preview', '/api/parametric-sweep'],
+  proxyToFastApi,
+);
+// Stream raw multipart/form-data CAD/mesh uploads directly to FastAPI without JSON buffering
+app.use('/api/upload-model', (req, res, next) => {
+  const ct = String(req.headers['content-type'] || '').toLowerCase();
+  if (ct.includes('multipart/form-data')) {
+    return proxyToFastApi(req, res);
+  }
+  return next();
+});
 
 app.use(express.json({ limit: '100mb' }));
 app.use(express.urlencoded({ extended: true, limit: '100mb' }));
@@ -116,8 +128,8 @@ function getGeminiClient(req: Request): GoogleGenAI | null {
   });
 }
 
-// Resilient model cascade: tries stable high-speed models first, then falls back
-const MODEL_CASCADE = ['gemini-3.8-flash', 'gemini-2.5-flash', 'gemini-flash-latest'];
+// Supported @google/genai text models
+const MODEL_CASCADE = ['gemini-4-hydrogen', 'gemini-3.1-flash-lite'];
 
 async function generateWithModelFallback(client: GoogleGenAI, requestPayload: any) {
   let lastError: any = null;
@@ -137,11 +149,9 @@ async function generateWithModelFallback(client: GoogleGenAI, requestPayload: an
         const msg = err?.message || String(err);
         const isTemporary = msg.includes('503') || msg.includes('UNAVAILABLE') || msg.includes('high demand');
         if (isTemporary && attempt === 0) {
-          // Wait 600ms and retry same model once
           await new Promise((r) => setTimeout(r, 600));
           continue;
         }
-        // Otherwise break to try next model in cascade
         break;
       }
     }
@@ -167,7 +177,7 @@ app.post('/api/keys/test', async (req: Request, res: Response) => {
 
     const { response, usedModel } = await generateWithModelFallback(testClient, {
       contents: [{ role: 'user', parts: [{ text: 'Respond with exactly: OK' }] }],
-      config: { maxOutputTokens: 5 },
+      config: { systemInstruction: 'Reply with a single word: OK.' },
     });
 
     if (response && response.text !== undefined) {
@@ -341,17 +351,56 @@ app.post('/api/license/test', async (req: Request, res: Response) => {
   const testPort = Number(port) || 1055;
 
   if (cleanHost === 'localhost' || cleanHost === '127.0.0.1') {
-    return res.json({
-      success: true,
-      reachable: true,
-      host: cleanHost,
-      port: testPort,
-      licenseType,
-      status: 'simulated_ready',
-      message: licenseType === 'open_source_unlicensed'
-        ? 'تم التحقق من جاهزية بيئة الحوسبة العالية. محركات OpenFOAM v2406 و CalculiX v2.21 جاهزة للتشغيل الموازي الحر (Zero-License Freedom).'
-        : 'تم التحقق من إعدادات خادم الحوسبة والترخيص الخارجي. المحرك جاهز للتشغيل في وضع الـ Headless Batch.',
-    });
+    try {
+      const startTime = Date.now();
+      const healthRes = await fetch(`${activeCloudUrl}/api/health`, { signal: AbortSignal.timeout(3000) });
+      const latencyMs = Date.now() - startTime;
+      if (!healthRes.ok) {
+        return res.status(healthRes.status).json({
+          success: false,
+          reachable: false,
+          host: cleanHost,
+          port: testPort,
+          licenseType,
+          status: 'api_error',
+          error: `استجاب خادم Docker على ${activeCloudUrl} برمز خطأ HTTP ${healthRes.status}.`,
+        });
+      }
+      const healthData = await healthRes.json();
+      const workersOnline = Number(healthData?.workers_online ?? 0);
+      const solvers = healthData?.solvers || {};
+      const solverSummary = Object.entries(solvers)
+        .filter(([, info]: [string, any]) => info?.available)
+        .map(([name, info]: [string, any]) => `${name}${info?.version ? ` (${info.version})` : ''}`)
+        .join(', ');
+
+      return res.json({
+        success: true,
+        reachable: true,
+        host: cleanHost,
+        port: testPort,
+        licenseType,
+        latencyMs,
+        status: workersOnline > 0 ? 'docker_worker_ready' : 'api_online_no_worker',
+        solvers,
+        redis: healthData?.redis,
+        workersOnline,
+        message:
+          workersOnline > 0
+            ? `تم التحقق الفعلي من حاوية Docker (${activeCloudUrl}) خلال ${latencyMs}ms. عمال Celery النشطون: ${workersOnline}. المحركات: ${solverSummary || 'تحقق من حاوية worker'}.`
+            : `خادم FastAPI يعمل على ${activeCloudUrl} (${latencyMs}ms)، لكن لم يُرصد عامل Celery نشط (workers_online=${workersOnline}). تأكد من تشغيل خدمة worker و redis في docker-compose.`,
+      });
+    } catch (err: any) {
+      return res.status(502).json({
+        success: false,
+        reachable: false,
+        host: cleanHost,
+        port: testPort,
+        licenseType,
+        status: 'docker_unreachable',
+        error: `تعذر الوصول إلى خادم محركات Docker على ${activeCloudUrl}: ${err?.message || String(err)}. تأكد من تشغيل docker compose up.`,
+      });
+    }
   }
 
   // Socket TCP probe for remote license server
@@ -377,7 +426,7 @@ app.post('/api/license/test', async (req: Request, res: Response) => {
       host: cleanHost,
       port: testPort,
       latencyMs: latency,
-      message: `تم الوصول لخادم ترخيص أنسيز (FlexNet) على المنفذ ${testPort} بنجاح (${latency}ms).`,
+      message: `تم الوصول لخادم الترخيص الشبكي على المنفذ ${testPort} بنجاح (${latency}ms).`,
     });
   });
 
@@ -390,9 +439,7 @@ app.post('/api/license/test', async (req: Request, res: Response) => {
       reachable: false,
       host: cleanHost,
       port: testPort,
-      error: `انتهت مهلة الاتصال (Timeout) بخادم الترخيص ${cleanHost}:${testPort}. تأكد من تفعيل VPN الجامعة/الشركة وفتح المنفذ في جدار الحماية (Firewall).`,
-      fallbackAvailable: true,
-      fallbackEngine: 'OpenFOAM + CalculiX / SciPy Deterministic Solver',
+      error: `انتهت مهلة الاتصال (Timeout) بخادم الترخيص ${cleanHost}:${testPort}. تأكد من اتصال الشبكة وفتح المنفذ.`,
     });
   });
 
@@ -406,8 +453,6 @@ app.post('/api/license/test', async (req: Request, res: Response) => {
       host: cleanHost,
       port: testPort,
       error: `تعذر الاتصال بخادم الترخيص: ${err.message}`,
-      fallbackAvailable: true,
-      fallbackEngine: 'OpenFOAM + CalculiX / SciPy Deterministic Solver',
     });
   });
 
@@ -426,23 +471,30 @@ app.post('/api/license/test', async (req: Request, res: Response) => {
   }
 });
 
-// Upload and Parse Engineering Model File via Cloud / Python Parser
+// Upload and Parse Engineering Model File via Cloud / Docker FastAPI Parser
 app.post('/api/upload-model', async (req: Request, res: Response) => {
   try {
-    // When called from frontend with JSON payload containing file content
-    if (req.body && (req.body.content || req.body.file_content || req.body.filename)) {
+    if (req.body && (req.body.content || req.body.file_content || req.body.base64Data || req.body.filename)) {
       const filename = req.body.filename || 'model.inp';
-      const fileData = req.body.content || req.body.file_content || '';
       const directives = req.body.directives || '';
+      let buffer: Buffer;
+      if (req.body.base64Data && typeof req.body.base64Data === 'string') {
+        const cleanB64 = req.body.base64Data.replace(/^data:[^;]+;base64,/, '');
+        buffer = Buffer.from(cleanB64, 'base64');
+      } else {
+        const fileData = req.body.content || req.body.file_content || '';
+        buffer = Buffer.from(String(fileData), 'utf-8');
+      }
 
       const formData = new FormData();
-      const blob = new Blob([fileData], { type: 'text/plain' });
+      const blob = new Blob([new Uint8Array(buffer)], { type: 'application/octet-stream' });
       formData.append('file', blob, filename);
       if (directives) formData.append('directives', directives);
 
       const pyRes = await fetch(`${activeCloudUrl}/api/upload-model`, {
         method: 'POST',
         body: formData,
+        signal: AbortSignal.timeout(45000),
       });
       const data = await pyRes.json();
       return res.status(pyRes.status).json(data);
@@ -452,7 +504,7 @@ app.post('/api/upload-model', async (req: Request, res: Response) => {
   } catch (err: any) {
     return res.status(502).json({
       status: 'error',
-      errorMessage: `فشل تمرير الملف لمحرك بايثون على (${activeCloudUrl})`,
+      errorMessage: `فشل تمرير الملف لمحرك Docker على (${activeCloudUrl})`,
       detail: err?.message,
     });
   }
@@ -520,110 +572,63 @@ User Directives & Specifications:
 Uploaded Engineering Documentation & Data:
 ${filesSummary || 'No raw files; generate a rigorous CAE model based on the directives.'}
 
-Generate a comprehensive engineering dataset matching this exact JSON structure:
+Generate a JSON specification strictly grounded ONLY in the uploaded files and directives. CRITICAL INTEGRITY RULE: Do NOT fabricate, invent, or guess numerical simulation results, GCI percentages, R^2 values, or contour min/max results unless those exact numbers are explicitly printed inside the user's uploaded files. Leave unexecuted solver result arrays empty ([]) and numeric fields as null when not present in the source files.
+
+Expected JSON shape:
 {
   "id": "eng_proj_${Date.now()}",
-  "title": "Arabic title of the exact engineering model (عنوان النموذج الهندسي الفعلي)",
+  "title": "Arabic title of the exact engineering model",
   "titleEn": "English title of the engineering model",
-  "author": "مهندس التحليل والمحاكاة الرئيسي (Lead Simulation Engineer)",
-  "supervisor": "الجهة الاستشارية والاعتماد الهندسي (Certified CAE Authority)",
-  "university": "المنظومة التقنية والتحليلية المتقدمة",
-  "department": "وحدة التطوير والنمذجة المتخصصة",
+  "author": "مهندس التحليل والمحاكاة",
+  "supervisor": "مراجعة هندسية",
+  "university": "NASEER CAE Workbench",
+  "department": "Computational Engineering",
   "date": "${new Date().toLocaleDateString('ar-EG', { year: 'numeric', month: 'long', day: 'numeric' })}",
-  "field": "Exact field detected from files (e.g. AI, Data Science, Control, Robotics, Software, CFD, FEA, Thermal, Electrical)",
-  "softwareType": "Actual framework or technology detected (e.g. Python, PyTorch, MATLAB, C++, ANSYS, ROS)",
-  "abstractAr": "ملخص فني وافي باللغة العربية يشرح المشكلة الهندسية والفيزياء المطبقة والنتائج المستخرجة بدقة من الملف المرفق",
-  "abstractEn": "Detailed technical abstract in English explaining the engineering model and findings",
-  "extractedSummary": "ملخص دقيق لما تم قراءته واستخراجه من الملف المرفق والتوجيهات وتأكيد المتغيرات الفعلية المستخدمة",
+  "field": "Exact field detected from files (e.g. CFD, FEA, Thermal, CHT, Multiphase, Electromagnetic, Control)",
+  "softwareType": "Actual solver or format detected (e.g. OpenFOAM, CalculiX, ElmerFEM, Gmsh, STL, STEP, INP)",
+  "abstractAr": "ملخص فني دقيق بالعربية يصف المشكلة الهندسية والمدخلات المستخرجة من الملفات فقط",
+  "abstractEn": "Technical abstract in English describing only the geometry, physics, and inputs extracted from the files",
+  "extractedSummary": "ملخص دقيق لما تم استخراجه فعلياً من الملف المرفق والمتغيرات والشروط الحدية",
   "governingEquations": [
-    { "name": "Equation name", "latex": "\\\\nabla \\\\cdot \\\\vec{V} = 0", "description": "Arabic explanation" }
+    { "name": "Governing equation name", "latex": "\\\\nabla \\\\cdot \\\\vec{V} = 0", "description": "Arabic explanation" }
   ],
   "boundaryConditions": [
-    { "name": "Boundary name", "type": "Inlet/Fixed Support/Load/Wall", "value": "25.0", "unit": "m/s", "description": "Explanation" }
+    { "name": "Boundary name", "type": "Inlet/Outlet/Wall/Fixed Support/Load/Heat Flux", "value": "exact value from file or empty string", "unit": "unit", "description": "Explanation" }
   ],
   "material": {
-    "name": "Material name",
+    "name": "Material name from file",
     "phaseOrType": "Fluid" | "Solid" | "Gas" | "Composite",
-    "density": "Value with unit",
-    "viscosity": "Value with unit",
-    "thermalConductivity": "Value with unit",
-    "specificHeat": "Value with unit",
-    "elasticModulus": "Value with unit",
-    "poissonRatio": "Value",
-    "yieldStrength": "Value with unit"
+    "density": "Value with unit if specified",
+    "viscosity": "Value with unit if specified",
+    "thermalConductivity": "Value with unit if specified",
+    "specificHeat": "Value with unit if specified",
+    "elasticModulus": "Value with unit if specified",
+    "poissonRatio": "Value if specified",
+    "yieldStrength": "Value with unit if specified"
   },
   "solverSettings": {
-    "solverType": "Pressure-Based Coupled / Sparse Solver",
-    "scheme": "Second Order Upwind / Full Newton-Raphson",
-    "discretization": "Least Squares Cell-Based",
-    "convergenceCriteria": "1e-6",
-    "iterations": 1200
+    "solverType": "Recommended OpenFOAM / CalculiX / ElmerFEM solver",
+    "scheme": "Numerical discretization scheme",
+    "discretization": "Spatial scheme",
+    "convergenceCriteria": "Target residual tolerance from file or empty string",
+    "iterations": null
   },
   "meshStudy": {
-    "description": "Roache GCI analysis explanation tailored to this geometry",
-    "minOrthogonalQuality": 0.88,
-    "maxSkewness": 0.21,
-    "maxAspectRatio": 2.3,
-    "averageEquisizeSkew": 0.17,
-    "recommendation": "Technical justification for grid independence",
-    "meshLevels": [
-      { "levelName": "شبكة خشنة (Coarse)", "elements": 120000, "nodes": 135000, "gridSpacingMm": 2.5, "keyResultValue": 45.2, "percentageError": 8.4, "gciPercent": 9.2, "computationTimeSec": 45 },
-      { "levelName": "شبكة متوسطة (Medium)", "elements": 340000, "nodes": 370000, "gridSpacingMm": 1.7, "keyResultValue": 48.6, "percentageError": 2.1, "gciPercent": 3.4, "computationTimeSec": 120 },
-      { "levelName": "شبكة دقيقة معتمدة (Fine - Optimal)", "elements": 820000, "nodes": 890000, "gridSpacingMm": 1.1, "keyResultValue": 49.8, "percentageError": 0.4, "gciPercent": 1.15, "computationTimeSec": 310 },
-      { "levelName": "شبكة فائقة الدقة (Very Fine)", "elements": 1750000, "nodes": 1890000, "gridSpacingMm": 0.75, "keyResultValue": 50.0, "percentageError": 0.0, "gciPercent": 0.48, "computationTimeSec": 780 }
-    ]
+    "description": "Mesh independence methodology note — do not invent numeric GCI outcomes before Docker execution",
+    "meshLevels": []
   },
   "validation": {
-    "benchmarkSource": "Benchmark literature / ASME Standard",
-    "independentVarName": "Reynolds Number / Load / Temperature",
+    "benchmarkSource": "Benchmark reference if cited in uploaded files, otherwise empty string",
+    "independentVarName": "Independent parameter",
     "independentVarUnit": "-",
-    "dependentVarName": "Nusselt / Peak Stress / Velocity",
+    "dependentVarName": "Dependent response",
     "dependentVarUnit": "-",
-    "rSquared": 0.992,
-    "rmse": 0.042,
-    "meanAbsoluteErrorPercent": 1.85,
-    "scientificDiscussion": "Detailed Arabic paragraph verifying accuracy within ASME V&V 20 limits (< 3%)",
-    "points": [
-      { "independentVar": 5000, "independentLabel": "Point 1", "experimentalVal": 28.5, "numericalCfdVal": 28.1, "empiricalVal": 27.9, "errorPercent": 1.4 },
-      { "independentVar": 10000, "independentLabel": "Point 2", "experimentalVal": 52.4, "numericalCfdVal": 51.8, "empiricalVal": 51.5, "errorPercent": 1.15 },
-      { "independentVar": 15000, "independentLabel": "Point 3", "experimentalVal": 74.8, "numericalCfdVal": 73.9, "empiricalVal": 73.6, "errorPercent": 1.2 },
-      { "independentVar": 20000, "independentLabel": "Point 4", "experimentalVal": 95.3, "numericalCfdVal": 94.6, "empiricalVal": 94.2, "errorPercent": 0.73 }
-    ]
+    "scientificDiscussion": "Only experimental/benchmark comparison data actually extracted from the uploaded files; empty if none uploaded.",
+    "points": []
   },
-  "contours": [
-    {
-      "id": "field_1",
-      "name": "اسم الحقل بالعربية",
-      "nameEn": "Field Name in English",
-      "field": "velocity" | "pressure" | "temperature" | "stress" | "deformation",
-      "unit": "m/s or MPa or °C",
-      "minVal": 0.0,
-      "maxVal": 50.0,
-      "physicalDescription": "وصف السلوك الفيزيائي للتدرج",
-      "gradientStyle": "channel_flow" | "airfoil_separation" | "pressure_vessel" | "solar_tube" | "vortex",
-      "pointsOfInterest": [
-        { "label": "نقطة حرجة / ذروة", "xPercent": 50, "yPercent": 50, "value": 50.0, "note": "ملاحظة هندسية" }
-      ]
-    }
-  ],
-  "thesisTables": [
-    {
-      "tableName": "جدول معايير المحاكاة والخصائص الفيزيائية",
-      "tableNameEn": "Physical & Simulation Properties Matrix",
-      "caption": "مصفوفة المعايير والمؤشرات المستخرجة",
-      "headers": ["المتغير الفيزيائي", "الرمز", "القيمة المحسوبة", "الوحدة", "المعيار المرجعي"],
-      "rows": [
-        ["السرعة / الحمولة", "V / P", "قيمة", "وحدة", "ASME / ISO"]
-      ]
-    }
-  ],
-  "supervisorDefensePoints": [
-    {
-      "question": "سؤال التدقيق والمراجعة الهندسية الفنية؟",
-      "answer": "الإجابة العلمية المعتمدة وفق معايير المحاكاة",
-      "scientificJustification": "السند الفيزيائي والمعياري"
-    }
-  ]
+  "contours": [],
+  "thesisTables": [],
+  "supervisorDefensePoints": []
 }
 `;
 
@@ -633,7 +638,6 @@ Generate a comprehensive engineering dataset matching this exact JSON structure:
       contents: [{ role: 'user', parts }],
       config: {
         responseMimeType: 'application/json',
-        temperature: 0.15,
       },
     });
 
@@ -678,21 +682,18 @@ app.post(['/api/supervisor-query', '/api/consultant-query'], async (req: Request
           role: 'user',
           parts: [
             {
-              text: `You are a Senior Principal Engineering Simulation Consultant with mastery of OpenFOAM v2406 (CFD/Thermal), CalculiX v2.21 (FEA Structural), Python SciPy, and ASME V&V 20 simulation standards.
+              text: `You are a Senior Principal Engineering Simulation Consultant with mastery of OpenFOAM (CFD/CHT/VOF), CalculiX (FEA/Thermal-Structural), ElmerFEM (Electromagnetics/Acoustics), Gmsh, and ASME V&V 20 simulation standards.
 Context of the current NASEER Universal CAE Studio model:
 ${JSON.stringify(currentModelContext || {}).slice(0, 10000)}
 
 Engineer / Analyst Query:
 "${query}"
 
-Provide an authoritative, mathematically rigorous answer in clear Arabic with standard English engineering terminology. Explain the physics, equations, numerical stability criteria, and step-by-step resolution. Never use student/supervisor phrasing; speak as a senior engineering consultant advising a professional engineer.`,
+Provide an authoritative, mathematically rigorous answer in clear Arabic with standard English engineering terminology. Explain the physics, equations, numerical stability criteria, and step-by-step resolution. Do not invent solver results that are not present in the context.`,
             },
           ],
         },
       ],
-      config: {
-        temperature: 0.25,
-      },
     });
 
     return res.json({ success: true, answer: response.text, usedModel });
@@ -742,9 +743,9 @@ async function ensureLocalPythonBackend(): Promise<void> {
       // The local backend is not running yet.
     }
 
-    const backendDir = fs.existsSync(path.join(__dirname, 'backend'))
-      ? path.join(__dirname, 'backend')
-      : __dirname;
+    const backendDir = fs.existsSync(path.join(__dirname, 'main.py'))
+      ? __dirname
+      : path.join(__dirname, 'backend');
 
     const pythonCandidates = [
       path.join(backendDir, '.venv312', 'bin', 'python'),
