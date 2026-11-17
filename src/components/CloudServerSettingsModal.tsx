@@ -4,7 +4,6 @@ import {
   Server,
   Cpu,
   HardDrive,
-  Key,
   Shield,
   Activity,
   CheckCircle2,
@@ -12,15 +11,12 @@ import {
   X,
   RefreshCw,
   Terminal,
-  Settings2,
   Zap,
   Globe,
-  Database,
-  Layers,
-  ArrowRight,
-  ExternalLink,
   Copy,
   Check,
+  Download,
+  Layers,
 } from 'lucide-react';
 import { CloudServerConfig } from '../types/thesis';
 
@@ -31,6 +27,31 @@ interface CloudServerSettingsModalProps {
   onSaveConfig: (newConfig: CloudServerConfig) => void;
 }
 
+interface ClusterWorkerNode {
+  name: string;
+  status: string;
+  pid?: number;
+  concurrency: number;
+  mpi_cores: number;
+  active_tasks: number;
+  queued_tasks: number;
+}
+
+interface ClusterStatusTelemetry {
+  connected: boolean;
+  status: string;
+  redis: boolean;
+  workers_online: number;
+  worker_names: string[];
+  workers: ClusterWorkerNode[];
+  total_cluster_cores: number;
+  host_cpu_cores: number;
+  mpi_cores_per_worker: number;
+  active_tasks_count: number;
+  queued_tasks_count: number;
+  solvers?: Record<string, any>;
+}
+
 export function CloudServerSettingsModal({
   isOpen,
   onClose,
@@ -38,7 +59,9 @@ export function CloudServerSettingsModal({
   onSaveConfig,
 }: CloudServerSettingsModalProps) {
   const [formData, setFormData] = useState<CloudServerConfig>(config);
+  const [workerReplicas, setWorkerReplicas] = useState<number>(4);
   const [isTestingCloud, setIsTestingCloud] = useState(false);
+  const [isRefreshingCluster, setIsRefreshingCluster] = useState(false);
   const [cloudTestResult, setCloudTestResult] = useState<{
     success: boolean;
     latencyMs?: number;
@@ -66,22 +89,26 @@ export function CloudServerSettingsModal({
       redis?: boolean;
       workers_online?: number;
       worker_names?: string[];
-      solvers?: Record<string, boolean>;
+      solvers?: Record<string, any>;
     } | null;
   } | null>(null);
 
+  const [clusterTelemetry, setClusterTelemetry] = useState<ClusterStatusTelemetry | null>(null);
   const [copiedBash, setCopiedBash] = useState(false);
 
   useEffect(() => {
     setFormData(config);
   }, [config]);
 
-  // Fetch initial system and cloud metrics when opened
-  useEffect(() => {
-    if (!isOpen) return;
-    fetch('/api/cloud/status')
-      .then((res) => res.json())
-      .then((data) => {
+  const fetchClusterAndSystemMetrics = async () => {
+    setIsRefreshingCluster(true);
+    try {
+      const [cloudRes, clusterRes] = await Promise.all([
+        fetch('/api/cloud/status').catch(() => null),
+        fetch('/api/cluster/status').catch(() => null),
+      ]);
+      if (cloudRes && cloudRes.ok) {
+        const data = await cloudRes.json();
         if (data.system) {
           setSystemMetrics({
             totalMemoryGb: data.system.totalMemoryGb,
@@ -92,8 +119,21 @@ export function CloudServerSettingsModal({
             pythonDetails: data.pythonDetails ?? null,
           });
         }
-      })
-      .catch((err) => console.warn('Could not fetch cloud metrics:', err));
+      }
+      if (clusterRes && clusterRes.ok) {
+        const cData = await clusterRes.json();
+        setClusterTelemetry(cData);
+      }
+    } catch (err) {
+      console.warn('Could not fetch cluster metrics:', err);
+    } finally {
+      setIsRefreshingCluster(false);
+    }
+  };
+
+  useEffect(() => {
+    if (!isOpen) return;
+    fetchClusterAndSystemMetrics();
   }, [isOpen]);
 
   if (!isOpen) return null;
@@ -122,6 +162,7 @@ export function CloudServerSettingsModal({
             : prev
         );
         setFormData((prev) => ({ ...prev, status: 'connected', lastTestedAt: new Date().toLocaleTimeString('ar-EG') }));
+        await fetchClusterAndSystemMetrics();
       } else {
         setCloudTestResult({
           success: false,
@@ -182,25 +223,25 @@ export function CloudServerSettingsModal({
     onClose();
   };
 
-  const copyLicenseSetupBash = () => {
-    const text = `# تشغيل منظومة Docker الكاملة (FastAPI :8000 + Redis + Celery Worker + OpenFOAM/CalculiX/Gmsh/ElmerFEM):
-docker compose up --build -d
+  const copyClusterScalingBash = () => {
+    const text = `# 1. التشغيل المتوازي متعدد العمال (Multi-Worker HPC Cluster: ${workerReplicas} Workers x ${formData.parallelCores} MPI Cores):
+NASEER_MPI_CORES_PER_WORKER=${formData.parallelCores} docker compose -f docker-compose.cluster.yml up -d --build --scale worker=${workerReplicas}
 
-# التحقق من جاهزية المحركات عبر البوابة الموحدة:
-curl -s http://127.0.0.1:8000/api/health
+# 2. أو التشغيل الآلي بضغطة واحدة على خادم سحابي Ubuntu HPC أو محطة عمل Linux:
+chmod +x deploy-hpc-cluster.sh
+./deploy-hpc-cluster.sh ${workerReplicas} ${formData.parallelCores}
 
-# أو تشغيل بوابة FastAPI مباشرة داخل حاوية المحركات:
-export OMP_NUM_THREADS=${formData.parallelCores}
-export CCX_NPROC_STIFFNESS=${formData.parallelCores}
-mkdir -p ${formData.workingDirectory}
-uvicorn main:app --host 0.0.0.0 --port 8000`;
+# 3. فحص حالة العنقود والأنوية النشطة:
+curl -s http://127.0.0.1:8000/api/cluster/status | python3 -m json.tool`;
     navigator.clipboard.writeText(text);
     setCopiedBash(true);
     setTimeout(() => setCopiedBash(false), 2500);
   };
 
-  const liveHealth = cloudTestResult?.details || systemMetrics?.pythonDetails;
-  const solverFlags = liveHealth?.solvers as Record<string, boolean> | undefined;
+  const liveHealth = cloudTestResult?.details || clusterTelemetry || systemMetrics?.pythonDetails;
+  const solverFlags = liveHealth?.solvers as Record<string, any> | undefined;
+  const workerNodes: ClusterWorkerNode[] = Array.isArray(clusterTelemetry?.workers) ? clusterTelemetry!.workers : [];
+  const totalClusterCores = clusterTelemetry?.total_cluster_cores || (workerReplicas * formData.parallelCores);
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-slate-950/90">
@@ -208,20 +249,17 @@ uvicorn main:app --host 0.0.0.0 --port 8000`;
         {/* Header */}
         <div className="p-4 sm:p-5 border-b border-slate-800 bg-slate-900/90 flex items-center justify-between">
           <div className="flex items-center gap-3">
-            <div className="w-11 h-11 rounded-xl bg-gradient-to-tr from-sky-500/20 via-indigo-500/20 to-amber-500/20 border border-sky-500/30 flex items-center justify-center text-sky-400">
+            <div className="w-11 h-11 rounded-xl bg-sky-500/15 border border-sky-500/30 flex items-center justify-center text-sky-400">
               <Cloud className="w-6 h-6" />
             </div>
             <div>
               <div className="flex items-center gap-2">
                 <h2 className="text-base sm:text-lg font-bold text-slate-100">
-                  إعدادات ربط حاويات Docker ومحركات الحوسبة (Port 8000 HPC Gateway)
+                  مركز إدارة العنقود السحابي وتعدد العمال (HPC Cluster & Multi-Worker Gateway)
                 </h2>
-                <span className="text-xs px-2 py-0.5 rounded-full font-mono bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
-                  Open-Source Docker Stack
-                </span>
               </div>
               <p className="text-xs text-slate-400">
-                توجيه كافة الحسابات الفيزيائية والشبكية من المنصة (:3000) إلى بوابة FastAPI/Celery على المنفذ :8000 لتشغيل OpenFOAM و CalculiX و Gmsh و ElmerFEM
+                مراقبة حية لعقد Celery و MPI وتوسيع حاويات المعالجة المتوازية (OpenFOAM · CalculiX · Gmsh · ElmerFEM)
               </p>
             </div>
           </div>
@@ -236,89 +274,135 @@ uvicorn main:app --host 0.0.0.0 --port 8000`;
         {/* Content Body */}
         <div className="p-4 sm:p-6 overflow-y-auto space-y-6">
           {/* Quick Hardware & Cloud Capacity Summary */}
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 font-mono tabular-nums">
             <div className="p-3 rounded-xl bg-slate-950/60 border border-slate-800/80">
-              <div className="flex items-center gap-2 text-xs text-slate-400 mb-1">
-                <HardDrive className="w-4 h-4 text-amber-400" />
-                <span>مسار ملفات التشغيل</span>
+              <div className="flex items-center gap-2 text-xs text-slate-400 mb-1 font-sans">
+                <Server className="w-4 h-4 text-emerald-400" />
+                <span>عمال العنقود النشطون</span>
               </div>
-              <div className="text-xs font-bold font-mono text-amber-300 truncate" title={formData.workingDirectory}>
-                {formData.workingDirectory || '/app/jobs'}
+              <div className="text-lg font-bold text-emerald-300">
+                {clusterTelemetry?.workers_online ?? 0} Workers
               </div>
-              <div className="text-[10px] text-slate-500 mt-1">مجلد مشترك بين API و Worker</div>
+              <div className="text-[10px] text-slate-500 mt-0.5 font-sans">
+                {clusterTelemetry?.redis ? 'وسيط Redis متصل ونشط' : 'بانتظار تشغيل حاويات العنقود'}
+              </div>
             </div>
 
             <div className="p-3 rounded-xl bg-slate-950/60 border border-slate-800/80">
-              <div className="flex items-center gap-2 text-xs text-slate-400 mb-1">
+              <div className="flex items-center gap-2 text-xs text-slate-400 mb-1 font-sans">
                 <Cpu className="w-4 h-4 text-sky-400" />
-                <span>الأنوية المتوازية (MPI)</span>
+                <span>إجمالي أنوية العنقود (MPI)</span>
               </div>
-              <div className="text-lg font-bold font-mono text-sky-300">
-                {formData.parallelCores} Cores
+              <div className="text-lg font-bold text-sky-300">
+                {totalClusterCores} Cores
               </div>
-              <div className="text-[10px] text-slate-500 mt-0.5">
-                {systemMetrics?.cpuCount ? `المتوفر محلياً: ${systemMetrics.cpuCount} نواة` : 'لم تُقرأ بيانات العتاد بعد'}
+              <div className="text-[10px] text-slate-500 mt-0.5 font-sans">
+                {systemMetrics?.cpuCount ? `أنوية الجهاز المضيف: ${systemMetrics.cpuCount} نواة` : `${formData.parallelCores} أنوية لكل عامل`}
               </div>
             </div>
 
             <div className="p-3 rounded-xl bg-slate-950/60 border border-slate-800/80">
-              <div className="flex items-center gap-2 text-xs text-slate-400 mb-1">
-                <Activity className="w-4 h-4 text-emerald-400" />
+              <div className="flex items-center gap-2 text-xs text-slate-400 mb-1 font-sans">
+                <Activity className="w-4 h-4 text-amber-400" />
+                <span>المهام الجارية / بالانتظار</span>
+              </div>
+              <div className="text-lg font-bold text-amber-300">
+                {clusterTelemetry?.active_tasks_count ?? 0} / {clusterTelemetry?.queued_tasks_count ?? 0}
+              </div>
+              <div className="text-[10px] text-slate-500 mt-0.5 font-sans">
+                مهام نشطة · مهام في طابور Celery
+              </div>
+            </div>
+
+            <div className="p-3 rounded-xl bg-slate-950/60 border border-slate-800/80">
+              <div className="flex items-center gap-2 text-xs text-slate-400 mb-1 font-sans">
+                <HardDrive className="w-4 h-4 text-indigo-400" />
                 <span>الذاكرة العشوائية RAM</span>
               </div>
-              <div className="text-lg font-bold font-mono text-emerald-300">
+              <div className="text-lg font-bold text-indigo-300">
                 {systemMetrics?.totalMemoryGb ? `${systemMetrics.totalMemoryGb} GB` : '—'}
               </div>
-              <div className="text-[10px] text-slate-500 mt-0.5">
-                {systemMetrics?.freeMemoryGb ? `${systemMetrics.freeMemoryGb} GB متاح حالياً` : 'بانتظار قراءة حالة الخادم'}
-              </div>
-            </div>
-
-            <div className="p-3 rounded-xl bg-slate-950/60 border border-slate-800/80">
-              <div className="flex items-center gap-2 text-xs text-slate-400 mb-1">
-                <Server className="w-4 h-4 text-indigo-400" />
-                <span>حالة حاوية Docker</span>
-              </div>
-              <div className="flex items-center gap-1.5 mt-1">
-                <div
-                  className={`w-2.5 h-2.5 rounded-full ${
-                    systemMetrics?.pythonConnected || formData.status === 'connected' ? 'bg-emerald-400' : 'bg-amber-400'
-                  }`}
-                />
-                <span className="text-xs font-bold text-slate-200">
-                  {systemMetrics?.pythonConnected || formData.status === 'connected' ? 'بوابة :8000 متصلة' : 'غير متصل / بانتظار الفحص'}
-                </span>
-              </div>
-              <div className="text-[10px] text-slate-500 mt-0.5 font-mono">
-                {liveHealth?.workers_online !== undefined
-                  ? `Workers: ${liveHealth.workers_online} | Redis: ${liveHealth.redis ? 'UP' : 'DOWN'}`
-                  : formData.lastTestedAt
-                  ? `فُحص: ${formData.lastTestedAt}`
-                  : 'اضغط فحص الاتصال'}
+              <div className="text-[10px] text-slate-500 mt-0.5 font-sans">
+                {systemMetrics?.freeMemoryGb ? `${systemMetrics.freeMemoryGb} GB متاح حالياً` : 'مجلد مشترك /app/jobs'}
               </div>
             </div>
           </div>
 
-          {/* Live Container Solver Readiness Strip */}
-          {solverFlags && (
-            <div className="p-3 rounded-xl bg-slate-950/70 border border-slate-800 flex flex-wrap items-center justify-between gap-2 text-[11px] font-mono">
-              <span className="text-slate-400 font-sans font-bold">جاهزية المحركات داخل الحاوية:</span>
-              <div className="flex flex-wrap items-center gap-2">
-                {Object.entries(solverFlags).map(([name, ready]) => (
-                  <span
-                    key={name}
-                    className={`px-2 py-0.5 rounded border ${
-                      ready
-                        ? 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30'
-                        : 'bg-rose-500/15 text-rose-300 border-rose-500/30'
-                    }`}
-                  >
-                    {name}: {ready ? 'READY' : 'MISSING'}
-                  </span>
-                ))}
+          {/* Live HPC Cluster Worker Nodes Table */}
+          <div className="p-4 rounded-xl bg-slate-950/50 border border-slate-800 space-y-3">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="flex items-center gap-2">
+                <Layers className="w-4 h-4 text-emerald-400" />
+                <h3 className="text-sm font-bold text-slate-200">
+                  مراقب عقد الحوسبة المتوازية (Live Celery & MPI Worker Nodes)
+                </h3>
               </div>
+              <button
+                type="button"
+                onClick={fetchClusterAndSystemMetrics}
+                disabled={isRefreshingCluster}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 transition-colors disabled:opacity-50"
+              >
+                <RefreshCw className={`w-3.5 h-3.5 ${isRefreshingCluster ? 'animate-spin text-sky-400' : 'text-slate-400'}`} />
+                <span>تحديث حالة العنقود</span>
+              </button>
             </div>
-          )}
+
+            {workerNodes.length > 0 ? (
+              <div className="overflow-x-auto rounded-lg border border-slate-800">
+                <table className="w-full text-xs text-right font-mono tabular-nums">
+                  <thead className="bg-slate-900/90 text-slate-400 border-b border-slate-800 font-sans">
+                    <tr>
+                      <th className="py-2 px-3 text-right">اسم عقدة العامل (Worker Hostname)</th>
+                      <th className="py-2 px-3 text-right">الحالة</th>
+                      <th className="py-2 px-3 text-right">PID</th>
+                      <th className="py-2 px-3 text-right">أنوية MPI/OpenMP</th>
+                      <th className="py-2 px-3 text-right">مهام نشطة</th>
+                      <th className="py-2 px-3 text-right">في الطابور</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-800/70 bg-slate-950/60">
+                    {workerNodes.map((node) => (
+                      <tr key={node.name} className="hover:bg-slate-900/40">
+                        <td className="py-2 px-3 text-sky-300 font-semibold">{node.name}</td>
+                        <td className="py-2 px-3 text-emerald-400">{node.status}</td>
+                        <td className="py-2 px-3 text-slate-400">{node.pid ?? '—'}</td>
+                        <td className="py-2 px-3 text-slate-200">{node.mpi_cores} Cores</td>
+                        <td className="py-2 px-3 text-amber-300">{node.active_tasks}</td>
+                        <td className="py-2 px-3 text-slate-400">{node.queued_tasks}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            ) : (
+              <div className="p-3 rounded-lg bg-slate-900/70 border border-slate-800 text-xs text-slate-400 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2">
+                <div>
+                  لا توجد حاويات <code className="text-sky-300 font-mono">worker</code> متصلة حالياً على المنفذ <code className="text-sky-300 font-mono">:8000</code>. استخدم ملفات التوسع أدناه لتشغيل عدة عمال بالتوازي على جهازك أو خادمك السحابي.
+                </div>
+              </div>
+            )}
+
+            {/* Live Container Solver Readiness Strip */}
+            {solverFlags && Object.keys(solverFlags).length > 0 && (
+              <div className="pt-2 border-t border-slate-800/80 flex flex-wrap items-center justify-between gap-2 text-[11px] font-mono">
+                <span className="text-slate-400 font-sans font-semibold">جاهزية المحركات الفيزيائية في العنقود:</span>
+                <div className="flex flex-wrap items-center gap-3 text-slate-300">
+                  {Object.entries(solverFlags).map(([name, info]) => {
+                    const ready = typeof info === 'object' && info !== null ? Boolean(info.available) : Boolean(info);
+                    return (
+                      <span
+                        key={name}
+                        className={ready ? 'text-emerald-300' : 'text-rose-300'}
+                      >
+                        {name.toUpperCase()}: {ready ? 'READY' : 'MISSING'}
+                      </span>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+          </div>
 
           {/* Section 1: Cloud Server Backend Connection */}
           <div className="p-4 rounded-xl bg-slate-950/40 border border-slate-800 space-y-4">
@@ -342,7 +426,7 @@ uvicorn main:app --host 0.0.0.0 --port 8000`;
                   onClick={() => setFormData((prev) => ({ ...prev, backendUrl: 'http://192.168.1.100:8000' }))}
                   className="px-2 py-0.5 rounded text-[11px] bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700"
                 >
-                  سحابي / IP مخصص
+                  خادم سحابي خارجي (Cloud VM IP)
                 </button>
               </div>
             </div>
@@ -359,18 +443,6 @@ uvicorn main:app --host 0.0.0.0 --port 8000`;
                   placeholder="http://127.0.0.1:8000 أو http://your-cloud-ip:8000"
                   className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-xs text-slate-200 font-mono focus:border-sky-500 focus:outline-none"
                 />
-                <div className="mt-2 p-2.5 rounded-lg bg-slate-900/80 border border-slate-800 text-[11px] space-y-1.5 text-slate-300">
-                  <div className="flex items-center gap-1.5 font-bold text-sky-400">
-                    <Zap className="w-3.5 h-3.5" />
-                    <span>توجيه المنفذ 3000 نحو حاويات Docker (:8000):</span>
-                  </div>
-                  <p className="text-slate-400 leading-relaxed">
-                    • <strong className="text-slate-200">التشغيل المحلي مع Docker Compose:</strong> استخدم <code className="text-sky-300 font-mono px-1 py-0.5 bg-slate-800 rounded">http://127.0.0.1:8000</code> بعد تشغيل <code className="text-emerald-300 font-mono px-1 py-0.5 bg-slate-800 rounded">docker compose up</code> ليتم إرسال كل مهام الميش والمحاكاة إلى Redis و Celery و OpenFOAM/CalculiX/Gmsh/ElmerFEM.
-                  </p>
-                  <p className="text-slate-400 leading-relaxed">
-                    • <strong className="text-slate-200">ملاحظة النزاهة العددية:</strong> عند توقف الحاوية على المنفذ 8000 ترفض المنصة أي محاكاة صامتة أو أرقام وهمية وتبلغك فوراً بتشغيل حاوية Docker.
-                  </p>
-                </div>
               </div>
 
               <div>
@@ -412,11 +484,11 @@ uvicorn main:app --host 0.0.0.0 --port 8000`;
               </div>
             )}
 
-            {/* Storage directory & Cores configuration */}
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-2 border-t border-slate-800/60">
+            {/* Storage directory, Worker Replicas & MPI Cores configuration */}
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 pt-2 border-t border-slate-800/60">
               <div>
                 <label className="block text-xs text-slate-400 mb-1">
-                  مجلد العمل ومخرجات المحاكاة (Workspace Directory):
+                  مجلد العمل المشترك (Shared Workspace):
                 </label>
                 <input
                   type="text"
@@ -429,114 +501,109 @@ uvicorn main:app --host 0.0.0.0 --port 8000`;
 
               <div>
                 <label className="block text-xs text-slate-400 mb-1">
-                  عدد المعالجات المتوازية (Parallel Cores -np):
+                  عدد حاويات العمال المتوازية (Worker Replicas):
+                </label>
+                <select
+                  value={workerReplicas}
+                  onChange={(e) => setWorkerReplicas(Number(e.target.value))}
+                  className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-xs text-slate-200 font-mono focus:border-sky-500 focus:outline-none"
+                >
+                  <option value={1}>1 Worker (مهمة واحدة باللحظة)</option>
+                  <option value={2}>2 Workers (مهمتان بالتوازي)</option>
+                  <option value={4}>4 Workers (موصى به للمسح البارامتري و GCI)</option>
+                  <option value={8}>8 Workers (خادم سحابي متقدم)</option>
+                  <option value={16}>16 Workers (عنقود سحابي تجاري)</option>
+                </select>
+              </div>
+
+              <div>
+                <label className="block text-xs text-slate-400 mb-1">
+                  أنوية MPI/OpenMP لكل عامل (Cores/Worker):
                 </label>
                 <select
                   value={formData.parallelCores}
                   onChange={(e) => setFormData({ ...formData, parallelCores: Number(e.target.value) })}
                   className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-xs text-slate-200 font-mono focus:border-sky-500 focus:outline-none"
                 >
-                  <option value={2}>2 Cores (توفير الموارد)</option>
-                  <option value={4}>4 Cores (معالجة قياسية)</option>
-                  <option value={8}>8 Cores (موصى بها للأبحاث)</option>
-                  <option value={16}>16 Cores (شبيكات ضخمة High Density)</option>
-                  <option value={32}>32 Cores (محاكاة متوازية فائقة HPC)</option>
-                  <option value={64}>64 Cores (خوادم الحوسبة العالية)</option>
+                  <option value={2}>2 Cores / Worker</option>
+                  <option value={4}>4 Cores / Worker</option>
+                  <option value={8}>8 Cores / Worker</option>
+                  <option value={16}>16 Cores / Worker</option>
+                  <option value={32}>32 Cores / Worker</option>
+                  <option value={64}>64 Cores / Worker</option>
                 </select>
               </div>
             </div>
           </div>
 
-          {/* Section 2: CAE Solvers & HPC Cluster Management */}
+          {/* Section 2: Ready-to-Run Multi-Worker Compose & Automated Ubuntu Cloud Script */}
+          <div className="p-4 rounded-xl bg-slate-950/40 border border-slate-800 space-y-3">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="flex items-center gap-2">
+                <Terminal className="w-4 h-4 text-emerald-400" />
+                <h3 className="text-sm font-bold text-slate-200">
+                  2. ملفات التوسع المتوازي وتجهيز الخوادم السحابية (Ready-to-Run HPC Files)
+                </h3>
+              </div>
+              <div className="flex flex-wrap items-center gap-2">
+                <a
+                  href="/api/cluster/compose-file"
+                  download="docker-compose.cluster.yml"
+                  className="flex items-center gap-1.5 px-2.5 py-1 rounded text-xs font-medium bg-sky-500/15 hover:bg-sky-500/25 text-sky-300 border border-sky-500/30 transition-colors"
+                >
+                  <Download className="w-3.5 h-3.5" />
+                  <span>تنزيل docker-compose.cluster.yml</span>
+                </a>
+                <a
+                  href="/api/cluster/deploy-script"
+                  download="deploy-hpc-cluster.sh"
+                  className="flex items-center gap-1.5 px-2.5 py-1 rounded text-xs font-medium bg-emerald-500/15 hover:bg-emerald-500/25 text-emerald-300 border border-emerald-500/30 transition-colors"
+                >
+                  <Download className="w-3.5 h-3.5" />
+                  <span>تنزيل سكربت السحابة deploy-hpc-cluster.sh</span>
+                </a>
+                <button
+                  type="button"
+                  onClick={copyClusterScalingBash}
+                  className="flex items-center gap-1 px-2.5 py-1 rounded text-xs bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 transition-colors"
+                >
+                  {copiedBash ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
+                  <span>{copiedBash ? 'تم النسخ!' : 'نسخ الأوامر'}</span>
+                </button>
+              </div>
+            </div>
+            <pre className="p-3 rounded-lg bg-slate-950 border border-slate-800 text-[11px] font-mono text-emerald-400 overflow-x-auto text-left dir-ltr">
+              {`# Option A — Scale ${workerReplicas} Parallel Workers x ${formData.parallelCores} MPI Cores (${workerReplicas * formData.parallelCores} Total Cores):
+NASEER_MPI_CORES_PER_WORKER=${formData.parallelCores} docker compose -f docker-compose.cluster.yml up -d --build --scale worker=${workerReplicas}
+
+# Option B — Automated One-Command Ubuntu Cloud HPC Setup:
+chmod +x deploy-hpc-cluster.sh && ./deploy-hpc-cluster.sh ${workerReplicas} ${formData.parallelCores}
+
+# Verify Live Cluster Status:
+curl -s http://127.0.0.1:8000/api/cluster/status | python3 -m json.tool`}
+            </pre>
+          </div>
+
+          {/* Section 3: CAE Solvers & Optional External Cluster Verification */}
           <div className="p-4 rounded-xl bg-slate-950/40 border border-slate-800 space-y-4">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2">
                 <Shield className="w-4 h-4 text-emerald-400" />
                 <h3 className="text-sm font-bold text-slate-200">
-                  2. بيئة المحركات الفيزيائية مفتوحة المصدر (Docker Solvers)
+                  3. فحص جاهزية المحركات الفيزيائية (OpenFOAM · CalculiX · Gmsh · ElmerFEM)
                 </h3>
               </div>
-              <span className="text-xs text-emerald-400/90 font-mono bg-emerald-500/10 px-2 py-0.5 rounded border border-emerald-500/20">
-                OpenFOAM · CalculiX · Gmsh · ElmerFEM
-              </span>
-            </div>
-
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-              <div>
-                <label className="block text-xs text-slate-400 mb-1">بيئة المحرك المشغل (Solver Runtime):</label>
-                <select
-                  value={formData.licenseType}
-                  onChange={(e) =>
-                    setFormData({ ...formData, licenseType: e.target.value as any })
-                  }
-                  className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-xs text-slate-200 focus:border-emerald-500 focus:outline-none"
-                >
-                  <option value="open_source_unlicensed">
-                    (موصى به) حزمة Docker المفتوحة المصدر (OpenFOAM + CalculiX + Gmsh + ElmerFEM)
-                  </option>
-                  <option value="academic">ربط اختياري مع عنقود أكاديمي جامعي خارجي</option>
-                  <option value="commercial">ربط اختياري مع خادم محاكاة صناعي خارجي</option>
-                </select>
-              </div>
-
-              <div>
-                <label className="block text-xs text-slate-400 mb-1">
-                  خادم الترخيص (License Server Host / IP):
-                </label>
-                <input
-                  type="text"
-                  value={formData.licenseServerHost}
-                  onChange={(e) => setFormData({ ...formData, licenseServerHost: e.target.value })}
-                  placeholder="1055@license.university.edu أو IP"
-                  className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-xs text-slate-200 font-mono focus:border-amber-500 focus:outline-none"
-                />
-              </div>
-
-              <div>
-                <label className="block text-xs text-slate-400 mb-1">منفذ FlexNet Port:</label>
-                <input
-                  type="number"
-                  value={formData.licenseFlexNetPort}
-                  onChange={(e) => setFormData({ ...formData, licenseFlexNetPort: Number(e.target.value) })}
-                  className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-xs text-slate-200 font-mono focus:border-amber-500 focus:outline-none"
-                />
-              </div>
-            </div>
-
-            {/* Test License Button & Fallback Toggle */}
-            <div className="flex flex-col sm:flex-row items-center justify-between gap-3 pt-2">
-              <label className="flex items-center gap-2 cursor-pointer text-xs text-slate-300">
-                <input
-                  type="checkbox"
-                  checked={formData.autoFallbackToOpenSource}
-                  onChange={(e) =>
-                    setFormData({ ...formData, autoFallbackToOpenSource: e.target.checked })
-                  }
-                  className="rounded border-slate-700 text-sky-500 focus:ring-0 bg-slate-900"
-                />
-                <span>
-                  التوجيه التلقائي لحاوية Docker المفتوحة المصدر (OpenFOAM / CalculiX / ElmerFEM)
-                </span>
-              </label>
-
               <button
                 type="button"
                 onClick={handleTestLicense}
                 disabled={isTestingLicense}
-                className="w-full sm:w-auto flex items-center justify-center gap-1.5 px-4 py-2 rounded-lg text-xs font-semibold bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 transition-all disabled:opacity-50"
+                className="flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 transition-all disabled:opacity-50"
               >
                 <Shield className={`w-3.5 h-3.5 ${isTestingLicense ? 'animate-spin' : ''}`} />
-                <span>
-                  {isTestingLicense
-                    ? 'جارِ فحص الجاهزية...'
-                    : formData.licenseType === 'open_source_unlicensed'
-                    ? 'فحص جاهزية محركات Docker'
-                    : 'فحص الاتصال بخادم الترخيص الخارجي'}
-                </span>
+                <span>{isTestingLicense ? 'جارِ فحص الجاهزية...' : 'فحص جاهزية محركات Docker'}</span>
               </button>
             </div>
 
-            {/* License Test Result */}
             {licenseTestResult && (
               <div
                 className={`p-3 rounded-lg border text-xs flex items-start gap-2 ${
@@ -557,39 +624,9 @@ uvicorn main:app --host 0.0.0.0 --port 8000`;
                       {licenseTestResult.error}
                     </div>
                   )}
-                  {licenseTestResult.fallbackAvailable && (
-                    <div className="text-[11px] text-emerald-400 mt-1 font-semibold">
-                      ✓ حاوية Docker على المنفذ :8000 متصلة وجاهزة لتشغيل OpenFOAM و CalculiX و Gmsh و ElmerFEM.
-                    </div>
-                  )}
                 </div>
               </div>
             )}
-          </div>
-
-          {/* Section 3: Copyable Server Setup Scripts */}
-          <div className="p-4 rounded-xl bg-slate-950/40 border border-slate-800 space-y-3">
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <Terminal className="w-4 h-4 text-emerald-400" />
-                <h3 className="text-sm font-bold text-slate-200">
-                  3. أوامر تشغيل حاويات Docker محلياً (Docker Compose :8000)
-                </h3>
-              </div>
-              <button
-                type="button"
-                onClick={copyLicenseSetupBash}
-                className="flex items-center gap-1 px-2.5 py-1 rounded text-xs bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 transition-colors"
-              >
-                {copiedBash ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
-                <span>{copiedBash ? 'تم النسخ!' : 'نسخ الأوامر'}</span>
-              </button>
-            </div>
-            <pre className="p-3 rounded-lg bg-slate-950 border border-slate-800 text-[11px] font-mono text-emerald-400 overflow-x-auto text-left dir-ltr">
-              {`docker compose up --build -d
-curl -s http://127.0.0.1:8000/api/health
-# Worker concurrency: OMP_NUM_THREADS=${formData.parallelCores}, CCX_NPROC_STIFFNESS=${formData.parallelCores}`}
-            </pre>
           </div>
         </div>
 
@@ -604,10 +641,10 @@ curl -s http://127.0.0.1:8000/api/health
           <div className="flex items-center gap-2">
             <button
               onClick={handleSave}
-              className="flex items-center gap-1.5 px-5 py-2 rounded-xl text-xs font-bold bg-gradient-to-r from-sky-500 to-indigo-600 hover:from-sky-400 hover:to-indigo-500 text-white shadow-lg shadow-sky-500/20 transition-all active:scale-95"
+              className="flex items-center gap-1.5 px-5 py-2 rounded-xl text-xs font-bold bg-sky-600 hover:bg-sky-500 text-white shadow-lg shadow-sky-500/20 transition-all active:scale-95"
             >
               <Check className="w-4 h-4" />
-              <span>حفظ وتطبيق الإعدادات السحابية</span>
+              <span>حفظ وتطبيق إعدادات العنقود</span>
             </button>
           </div>
         </div>

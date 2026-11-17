@@ -100,16 +100,20 @@ export const OverviewTab: React.FC<OverviewTabProps> = ({ project, onRunSolver, 
     Boolean(project.simulationRun?.result && project.normalizedSolverResult?.converged);
   const isActivelyRunning = isSolving || solverJobStatus === 'running' || solverJobStatus === 'queued';
 
-  // Workbench components
-  const workbenchCells = project.workbenchComponents || [
+  const hasMeshStudyData = Boolean(
+    project.meshStudyResult || (project.meshStudy?.meshLevels && project.meshStudy.meshLevels.length > 0),
+  );
+
+  // Workbench components dynamically synchronized with real solver and mesh state
+  const workbenchCells = [
     {
       id: 'wb_eng_data',
       name: 'بيانات المواد والخواص الفيزيائية',
       nameEn: 'Engineering Data (Materials)',
       type: 'Engineering Data' as const,
-      status: project.material?.name ? ('Up-to-date' as const) : ('Pending' as const),
+      status: project.material?.name && !project.material.name.includes('Awaiting') ? ('Up-to-date' as const) : ('Pending' as const),
       details: project.material?.name
-        ? `${project.material.name}${project.material.density ? ` | كثافة = ${project.material.density}` : ''}`
+        ? `${project.material.name}${project.material.density && project.material.density !== '—' ? ` | كثافة = ${project.material.density}` : ''}`
         : 'بانتظار تحديد المادة والخواص الفيزيائية',
     },
     {
@@ -118,22 +122,24 @@ export const OverviewTab: React.FC<OverviewTabProps> = ({ project, onRunSolver, 
       nameEn: 'Geometry Domain',
       type: 'Geometry' as const,
       status: 'Up-to-date' as const,
-      details: isFEA
-        ? 'نطاق إنشائي ثلاثي الأبعاد مع شروط التثبيت'
+      details: project.cadSpecs?.shell && project.cadSpecs.shell !== '—'
+        ? `النطاق الهندسي: ${project.cadSpecs.shell}`
+        : isFEA
+        ? 'نطاق إنشائي ثلاثي الأبعاد جاهز للتعريف'
         : isThermal
-        ? 'نطاق حراري ثلاثي الأبعاد مع الشروط الحرارية'
-        : 'نطاق جريان ثلاثي الأبعاد مع مناطق الدخول والخروج',
+        ? 'نطاق حراري ثلاثي الأبعاد جاهز للتعريف'
+        : 'نطاق جريان ثلاثي الأبعاد جاهز للتعريف',
     },
     {
       id: 'wb_mesh',
       name: 'شبكة الميش وتقارب روتش',
       nameEn: 'Mesh & Roache GCI',
       type: 'Mesh' as const,
-      status: project.meshStudyResult || project.meshStudy ? ('Up-to-date' as const) : ('Pending' as const),
+      status: hasMeshStudyData ? ('Up-to-date' as const) : ('Pending' as const),
       details: project.meshStudyResult
         ? `GCI (fine) = ${project.meshStudyResult.gci_fine_percent !== null ? `${project.meshStudyResult.gci_fine_percent.toFixed(2)}%` : '—'} | عناصر = ${project.meshStudyResult.levels?.[2]?.cells?.toLocaleString() ?? '—'}`
-        : project.meshStudy
-        ? `عناصر الشبكة: ${project.meshStudy.meshLevels?.[2]?.elements?.toLocaleString() ?? '—'} | جودة تعامد = ${project.meshStudy.minOrthogonalQuality ?? '—'}`
+        : hasMeshStudyData
+        ? `عناصر الشبكة: ${project.meshStudy.meshLevels?.[2]?.elements?.toLocaleString() ?? '—'} | جودة تعامد = ${project.meshStudy.minOrthogonalQuality || '—'}`
         : 'لم يتم إجراء دراسة استقلالية الشبكة بعد',
     },
     {
@@ -141,7 +147,7 @@ export const OverviewTab: React.FC<OverviewTabProps> = ({ project, onRunSolver, 
       name: 'إعدادات الفيزياء والشروط الحدية',
       nameEn: 'Physics Setup & Boundaries',
       type: 'Setup' as const,
-      status: 'Up-to-date' as const,
+      status: (project.boundaryConditions?.length ?? 0) > 0 ? ('Up-to-date' as const) : ('Ready' as const),
       details: `${project.boundaryConditions?.length ?? 0} حدود فيزيائية مطبقة | ${project.solver?.scheme || project.solver?.solverType || 'غير محدد'}`,
     },
     {
@@ -163,7 +169,7 @@ export const OverviewTab: React.FC<OverviewTabProps> = ({ project, onRunSolver, 
       type: 'Results' as const,
       status: hasCompletedRun ? ('Ready' as const) : ('Pending' as const),
       details: hasCompletedRun
-        ? `${project.contours?.length ?? 0} حقول نتائج | ${project.validation?.rSquared !== undefined ? `R² = ${project.validation.rSquared}` : 'ASME V&V 20 Ready'}`
+        ? `${project.contours?.length ?? 0} حقول نتائج | ${project.validation?.rSquared ? `R² = ${project.validation.rSquared}` : 'VTK & Integrals Ready'}`
         : 'تظهر النتائج فور انتهاء الحساب الفعلي في Docker',
     },
   ];
@@ -811,8 +817,12 @@ export const OverviewTab: React.FC<OverviewTabProps> = ({ project, onRunSolver, 
               <span className="font-bold text-slate-200">
                 مخطط تدفق المشروع الهندسي المتكامل في OpenFOAM / CalculiX Workbench
               </span>
-              <span className="text-emerald-400 font-mono">
-                ✓ جميع المنظومات الفرعية محدثة ومحلولة (All Systems Up to Date)
+              <span className={hasCompletedRun ? 'text-emerald-400 font-mono' : 'text-amber-400 font-mono'}>
+                {hasCompletedRun
+                  ? '✓ جميع المنظومات الفرعية محدثة ومحلولة (All Systems Solved & Verified)'
+                  : isActivelyRunning
+                  ? '⟳ جاري تنفيذ الحل العددي عبر حاوية Docker (:8000)...'
+                  : '⏳ بانتظار تشغيل المحاكاة العددية لحل المعادلات الحاكمة (Awaiting Solver Run)'}
               </span>
             </div>
 

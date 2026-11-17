@@ -1,9 +1,19 @@
-FROM ubuntu:24.04
+FROM ubuntu:22.04
 
-ENV DEBIAN_FRONTEND=noninteractive
+ENV DEBIAN_FRONTEND=noninteractive \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1
 
-# تثبيت أدوات الشبكة والمحركات الهندسية ومكتبات الرسوميات
-RUN apt-get update && apt-get install -y \
+# 1. Core utilities, Python 3.10 runtime, headless OpenGL/X11/Qt5 & OpenMPI libraries
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    curl \
+    gnupg \
+    lsb-release \
+    sudo \
+    apt-transport-https \
+    software-properties-common \
+    unzip \
     python3 \
     python3-pip \
     python3-venv \
@@ -17,26 +27,45 @@ RUN apt-get update && apt-get install -y \
     libxinerama1 \
     libxrandr2 \
     libxrender1 \
-    gmsh \
-    openfoam \
-    calculix-ccx \
-    elmerfem-csc \
-    unzip \
+    libxft2 \
+    libfontconfig1 \
+    libgomp1 \
+    libqt5xml5 \
+    openmpi-bin \
+    libopenmpi-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# 2. Register official OpenCFD OpenFOAM v2406 repo & official Elmer CSC PPA (both targeting Ubuntu 22.04 Jammy)
+RUN curl -fsSL https://dl.openfoam.com/add-debian-repo.sh | bash && \
+    add-apt-repository -y ppa:elmer-csc-ubuntu/elmer-csc-ppa && \
+    apt-get update && \
+    apt-get install -y --no-install-recommends \
+        openfoam2406-default \
+        elmerfem-csc \
+        calculix-ccx \
+        gmsh \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
+# 3. Isolated Python virtual environment for FastAPI/Celery/Gmsh/MeshIO/SciPy/NumPy
 RUN python3 -m venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
 
 COPY docker-requirements.txt ./requirements.txt
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --upgrade pip setuptools wheel && \
+    pip install -r requirements.txt
 
 COPY main.py physics_solver.py universal_dispatcher.py cae_repository.py ./
 COPY backend/ ./backend/
+COPY docker-entrypoint-worker.sh /usr/local/bin/docker-entrypoint-worker.sh
+RUN sed -i 's/\r$//' /usr/local/bin/docker-entrypoint-worker.sh && \
+    chmod +x /usr/local/bin/docker-entrypoint-worker.sh && \
+    echo "source /usr/lib/openfoam/openfoam2406/etc/bashrc" >> /etc/bash.bashrc
 
-# تفعيل بيئة OpenFOAM تلقائياً لأي أمر يتم تنفيذه داخل الحاوية
-RUN echo "source /usr/share/openfoam/etc/bashrc" >> /etc/bash.bashrc
-ENV WM_PROJECT_DIR=/usr/share/openfoam
+ENV WM_PROJECT_DIR=/usr/lib/openfoam/openfoam2406 \
+    WM_PROJECT_VERSION=v2406 \
+    FOAM_ETC=/usr/lib/openfoam/openfoam2406/etc
 
+ENTRYPOINT ["/usr/local/bin/docker-entrypoint-worker.sh"]
 CMD ["/opt/venv/bin/celery", "-A", "universal_dispatcher.celery_app", "worker", "--loglevel=INFO", "--concurrency=1"]

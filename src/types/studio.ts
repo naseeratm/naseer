@@ -64,6 +64,7 @@ export const THERMAL_BOUNDARY_SUBTYPES = [
 export interface SimulationInputs {
   simulationType: SimulationTypeOption;
   executionMode: ExecutionModeOption;
+  parallelCores: string;
   // Common domain & Gmsh controls
   meshSize: string;
   elementOrder: '1' | '2';
@@ -135,6 +136,7 @@ export interface ConsoleIssue {
 export const DEFAULT_SIMULATION_INPUTS: SimulationInputs = {
   simulationType: 'CFD_Incompressible',
   executionMode: 'celery',
+  parallelCores: '1',
   meshSize: '',
   elementOrder: '1',
   inflationLayers: '',
@@ -331,6 +333,7 @@ export function buildSimulationRequest(inputs: SimulationInputs): Record<string,
 
   const request: Record<string, unknown> = {
     execution_mode: inputs.executionMode,
+    parallel_cores: Math.max(1, Math.min(64, Math.round(Number(inputs.parallelCores) || 1))),
     simulation_type: inputs.simulationType,
     mesh_size: Number(inputs.meshSize),
     element_order: Number(inputs.elementOrder || 1),

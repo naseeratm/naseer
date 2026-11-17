@@ -27,12 +27,25 @@ from pathlib import Path
 from time import perf_counter
 from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple
 
-from celery import Celery
+try:
+    from celery import Celery
+except ImportError:  # Local test environment outside Docker container
+    class Celery:  # type: ignore[no-redef]
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            self.conf: Dict[str, Any] = {}
+
+        def task(self, *args: Any, **kwargs: Any) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
+            def _decorator(fn: Callable[..., Any]) -> Callable[..., Any]:
+                return fn
+            return _decorator
 
 from backend.report_generator import generate_academic_report
 from backend.result_schema import canonicalize_result
 from backend.vv_metrics import compute_openfoam_metrics, parse_internal_field
-from cae_repository import JobRepository
+try:
+    from cae_repository import JobRepository
+except ImportError:
+    JobRepository = None  # type: ignore[assignment,misc]
 
 PhysicsResult = Dict[str, Any]
 
@@ -419,15 +432,152 @@ def _write_block_mesh_boundary_summary(
 
 def _openfoam_env() -> Dict[str, str]:
     env = os.environ.copy()
-    env.update({
-        "WM_PROJECT_DIR": env.get("WM_PROJECT_DIR", "/usr/share/openfoam"),
-        "WM_PROJECT_INST_DIR": env.get("WM_PROJECT_INST_DIR", "/usr/share"),
-        "WM_PROJECT_VERSION": env.get("WM_PROJECT_VERSION", "v1912"),
-        "FOAM_ETC": env.get("FOAM_ETC", "/usr/share/openfoam/etc"),
-        "FOAM_APPBIN": env.get("FOAM_APPBIN", "/usr/bin"),
-        "FOAM_LIBBIN": env.get("FOAM_LIBBIN", "/usr/lib"),
-    })
+    wm_dir = env.get("WM_PROJECT_DIR")
+    if not wm_dir:
+        opencfd_dir = Path("/usr/lib/openfoam")
+        candidates = sorted(opencfd_dir.glob("openfoam*"), reverse=True) if opencfd_dir.is_dir() else []
+        if candidates:
+            wm_dir = str(candidates[0])
+        elif Path("/usr/share/openfoam").is_dir():
+            wm_dir = "/usr/share/openfoam"
+        else:
+            wm_dir = "/usr/lib/openfoam/openfoam2406"
+
+    wm_path = Path(wm_dir)
+    default_version = (
+        f"v{wm_path.name[len('openfoam'):]}"
+        if wm_path.name.startswith("openfoam") and len(wm_path.name) > len("openfoam")
+        else "v2406"
+    )
+    env.setdefault("WM_PROJECT_DIR", wm_dir)
+    env.setdefault("WM_PROJECT_INST_DIR", str(wm_path.parent))
+    env.setdefault("WM_PROJECT_VERSION", default_version)
+    env.setdefault("FOAM_ETC", str(wm_path / "etc"))
+
+    if "FOAM_APPBIN" not in env:
+        platform_bins = sorted((wm_path / "platforms").glob("*/bin")) if (wm_path / "platforms").is_dir() else []
+        env["FOAM_APPBIN"] = str(platform_bins[0]) if platform_bins else "/usr/bin"
+    if "FOAM_LIBBIN" not in env:
+        platform_libs = sorted((wm_path / "platforms").glob("*/lib")) if (wm_path / "platforms").is_dir() else []
+        env["FOAM_LIBBIN"] = str(platform_libs[0]) if platform_libs else "/usr/lib"
+
+    if env["FOAM_APPBIN"] and env["FOAM_APPBIN"] not in env.get("PATH", ""):
+        env["PATH"] = f"{env['FOAM_APPBIN']}:{env.get('PATH', '')}".strip(":")
+    if env["FOAM_LIBBIN"] and env["FOAM_LIBBIN"] not in env.get("LD_LIBRARY_PATH", ""):
+        env["LD_LIBRARY_PATH"] = f"{env['FOAM_LIBBIN']}:{env.get('LD_LIBRARY_PATH', '')}".strip(":")
     return env
+
+
+def _requested_parallel_cores(data: Mapping[str, Any]) -> int:
+    """Resolve user-requested parallel MPI/OpenMP core count clamped safely to [1, 64]."""
+    raw = data.get("parallel_cores", 1)
+    try:
+        cores = int(raw if raw is not None else 1)
+    except (TypeError, ValueError):
+        cores = 1
+    return max(1, min(64, cores))
+
+
+def _write_openfoam_decompose_dict(case_dir: Path, np_cores: int) -> None:
+    """Write standard OpenFOAM Scotch domain decomposition dictionary for mpirun -parallel."""
+    (case_dir / "system" / "decomposeParDict").write_text(
+        'FoamFile { version 2.0; format ascii; class dictionary; location "system"; object decomposeParDict; }\n'
+        f"numberOfSubdomains {np_cores};\n"
+        "method          scotch;\n",
+        encoding="utf-8",
+    )
+
+
+def _compute_box_surface_sample_map(
+    width: float,
+    height: float,
+    depth: float,
+    nx: int,
+    ny: int,
+    nz: int,
+) -> Tuple[List[float], List[int], List[int]]:
+    """Build deterministic box surface geometry (points, triangles) and per-vertex source cell indices."""
+    points: List[float] = []
+    triangles: List[int] = []
+    sample_cids: List[int] = []
+
+    def cell_idx(ix: int, iy: int, iz: int) -> int:
+        cix = max(0, min(nx - 1, ix))
+        ciy = max(0, min(ny - 1, iy))
+        ciz = max(0, min(nz - 1, iz))
+        return cix + nx * (ciy + ny * ciz)
+
+    def add_face_grid(u_steps: int, v_steps: int, coord_fn: Callable[[int, int], Tuple[float, float, float, int, int, int]]) -> None:
+        base_v = len(points) // 3
+        for j in range(v_steps + 1):
+            for i in range(u_steps + 1):
+                vx, vy, vz, cix, ciy, ciz = coord_fn(i, j)
+                points.extend([round(vx, 6), round(vy, 6), round(vz, 6)])
+                sample_cids.append(cell_idx(cix, ciy, ciz))
+        stride = u_steps + 1
+        for j in range(v_steps):
+            for i in range(u_steps):
+                a = base_v + j * stride + i
+                b = a + 1
+                c = a + stride + 1
+                d = a + stride
+                triangles.extend([a, b, c, a, c, d])
+
+    snx = min(nx, 48)
+    sny = min(ny, 48)
+    snz = min(max(nz, 1), 16)
+
+    def map_idx(step: int, max_step: int, target_n: int) -> int:
+        return int(round((step / max(1, max_step)) * (target_n - 1)))
+
+    add_face_grid(snx, sny, lambda i, j: (
+        width * i / snx, height * j / sny, depth,
+        map_idx(i, snx, nx), map_idx(j, sny, ny), nz - 1,
+    ))
+    add_face_grid(snx, sny, lambda i, j: (
+        width * (snx - i) / snx, height * j / sny, 0.0,
+        map_idx(snx - i, snx, nx), map_idx(j, sny, ny), 0,
+    ))
+    add_face_grid(snx, snz, lambda i, k: (
+        width * i / snx, height, depth * (snz - k) / snz,
+        map_idx(i, snx, nx), ny - 1, map_idx(snz - k, snz, nz),
+    ))
+    add_face_grid(snx, snz, lambda i, k: (
+        width * i / snx, 0.0, depth * k / snz,
+        map_idx(i, snx, nx), 0, map_idx(k, snz, nz),
+    ))
+    add_face_grid(snz, sny, lambda k, j: (
+        0.0, height * j / sny, depth * k / snz,
+        0, map_idx(j, sny, ny), map_idx(k, snz, nz),
+    ))
+    add_face_grid(snz, sny, lambda k, j: (
+        width, height * j / sny, depth * (snz - k) / snz,
+        nx - 1, map_idx(j, sny, ny), map_idx(snz - k, snz, nz),
+    ))
+    return points, triangles, sample_cids
+
+
+def _map_box_cells_to_surface(
+    sample_cids: Sequence[int],
+    scalars: Mapping[str, Sequence[float]],
+    vectors: Optional[Mapping[str, Sequence[float]]] = None,
+) -> Tuple[Dict[str, List[float]], Dict[str, List[float]]]:
+    """Map volumetric cell fields onto precomputed box surface vertices."""
+    out_scalars: Dict[str, List[float]] = {k: [] for k in scalars}
+    out_vectors: Dict[str, List[float]] = {k: [] for k in (vectors or {})}
+    for cid in sample_cids:
+        for key, arr in scalars.items():
+            if arr:
+                val = arr[cid] if cid < len(arr) else arr[-1]
+                out_scalars[key].append(float(val))
+        if vectors:
+            for key, varr in vectors.items():
+                base = cid * 3
+                if base + 2 < len(varr):
+                    out_vectors[key].extend([float(varr[base]), float(varr[base + 1]), float(varr[base + 2])])
+                else:
+                    out_vectors[key].extend([0.0, 0.0, 0.0])
+    return out_scalars, out_vectors
 
 
 def _build_structured_box_vtk(
@@ -442,89 +592,9 @@ def _build_structured_box_vtk(
     units: Optional[Dict[str, str]] = None,
 ) -> Dict[str, Any]:
     """Construct boundary surface triangles from a structured 3D cell grid + cell-mapped fields."""
-    # Map cell scalars onto box surface boundary vertices using nearest cell index so Three.js
-    # renders the real computed solver field cleanly without zeroing or distorting bounds.
-    points: List[float] = []
-    triangles: List[int] = []
-    out_scalars: Dict[str, List[float]] = {k: [] for k in scalars}
-    out_vectors: Dict[str, List[float]] = {k: [] for k in (vectors or {})}
-
     total_cells = nx * ny * nz
-
-    def cell_idx(ix: int, iy: int, iz: int) -> int:
-        cix = max(0, min(nx - 1, ix))
-        ciy = max(0, min(ny - 1, iy))
-        ciz = max(0, min(nz - 1, iz))
-        return cix + nx * (ciy + ny * ciz)
-
-    def push_vertex(vx: float, vy: float, vz: float, ix: int, iy: int, iz: int) -> int:
-        idx = len(points) // 3
-        points.extend([round(vx, 6), round(vy, 6), round(vz, 6)])
-        cid = cell_idx(ix, iy, iz)
-        for key, arr in scalars.items():
-            if arr:
-                val = arr[cid] if cid < len(arr) else arr[-1]
-                out_scalars[key].append(float(val))
-        if vectors:
-            for key, varr in vectors.items():
-                base = cid * 3
-                if base + 2 < len(varr):
-                    out_vectors[key].extend([float(varr[base]), float(varr[base + 1]), float(varr[base + 2])])
-                else:
-                    out_vectors[key].extend([0.0, 0.0, 0.0])
-        return idx
-
-    # Helper to emit a structured quad face grid (uSteps x vSteps) on any of the 6 box faces
-    def add_face_grid(u_steps: int, v_steps: int, coord_fn: Callable[[int, int], Tuple[float, float, float, int, int, int]]) -> None:
-        base_v = len(points) // 3
-        for j in range(v_steps + 1):
-            for i in range(u_steps + 1):
-                vx, vy, vz, cix, ciy, ciz = coord_fn(i, j)
-                push_vertex(vx, vy, vz, cix, ciy, ciz)
-        stride = u_steps + 1
-        for j in range(v_steps):
-            for i in range(u_steps):
-                a = base_v + j * stride + i
-                b = a + 1
-                c = a + stride + 1
-                d = a + stride
-                triangles.extend([a, b, c, a, c, d])
-
-    # Cap resolution for lightweight WebGL transfer while keeping full numerical resolution in fields
-    snx = min(nx, 48)
-    sny = min(ny, 48)
-    snz = min(max(nz, 1), 16)
-
-    def map_idx(step: int, max_step: int, target_n: int) -> int:
-        return int(round((step / max(1, max_step)) * (target_n - 1)))
-
-    # Front (z = depth) & Back (z = 0)
-    add_face_grid(snx, sny, lambda i, j: (
-        width * i / snx, height * j / sny, depth,
-        map_idx(i, snx, nx), map_idx(j, sny, ny), nz - 1,
-    ))
-    add_face_grid(snx, sny, lambda i, j: (
-        width * (snx - i) / snx, height * j / sny, 0.0,
-        map_idx(snx - i, snx, nx), map_idx(j, sny, ny), 0,
-    ))
-    # Top (y = height) & Bottom (y = 0)
-    add_face_grid(snx, snz, lambda i, k: (
-        width * i / snx, height, depth * (snz - k) / snz,
-        map_idx(i, snx, nx), ny - 1, map_idx(snz - k, snz, nz),
-    ))
-    add_face_grid(snx, snz, lambda i, k: (
-        width * i / snx, 0.0, depth * k / snz,
-        map_idx(i, snx, nx), 0, map_idx(k, snz, nz),
-    ))
-    # Left (x = 0) & Right (x = width)
-    add_face_grid(snz, sny, lambda k, j: (
-        0.0, height * j / sny, depth * k / snz,
-        0, map_idx(j, sny, ny), map_idx(k, snz, nz),
-    ))
-    add_face_grid(snz, sny, lambda k, j: (
-        width, height * j / sny, depth * (snz - k) / snz,
-        nx - 1, map_idx(j, sny, ny), map_idx(snz - k, snz, nz),
-    ))
+    points, triangles, sample_cids = _compute_box_surface_sample_map(width, height, depth, nx, ny, nz)
+    out_scalars, out_vectors = _map_box_cells_to_surface(sample_cids, scalars, vectors)
 
     active_field = next((k for k, vals in out_scalars.items() if vals), "")
     return {
@@ -698,29 +768,82 @@ def preview_cad_geometry(data: Mapping[str, Any]) -> PhysicsResult:
                     pass
 
         patches: List[Dict[str, Any]] = []
-        for dim, tag in gmsh.model.getEntities(2):
-            pname = gmsh.model.getEntityName(dim, tag) or f"Face_{tag}"
-            patches.append({"id": f"face_{tag}", "name": pname, "dim": dim, "tag": tag})
-
         node_tags, coords, _ = gmsh.model.mesh.getNodes()
         node_index_map = {int(tag): idx for idx, tag in enumerate(node_tags)}
-        elem_types, _elem_tags, elem_node_tags = gmsh.model.mesh.getElements()
         surface_triangles: List[int] = []
-        for etype, enodes in zip(elem_types, elem_node_tags):
-            if etype == 2:
-                for i in range(0, len(enodes), 3):
-                    surface_triangles.extend([
-                        node_index_map[int(enodes[i])],
-                        node_index_map[int(enodes[i + 1])],
-                        node_index_map[int(enodes[i + 2])],
-                    ])
-            elif etype == 9:
-                for i in range(0, len(enodes), 6):
-                    surface_triangles.extend([
-                        node_index_map[int(enodes[i])],
-                        node_index_map[int(enodes[i + 1])],
-                        node_index_map[int(enodes[i + 2])],
-                    ])
+        triangle_patches: List[int] = []
+
+        used_names: Dict[str, int] = {}
+        for dim, tag in gmsh.model.getEntities(2):
+            raw_name = gmsh.model.getEntityName(dim, tag) or f"Face_{tag}"
+            safe_base = re.sub(r"[^A-Za-z0-9_]+", "_", raw_name).strip("_")
+            if not safe_base or safe_base[0].isdigit():
+                safe_base = f"Face_{safe_base or tag}"
+            cnt = used_names.get(safe_base, 0) + 1
+            used_names[safe_base] = cnt
+            pname = safe_base if cnt == 1 else f"{safe_base}_{tag}"
+            xmin, ymin, zmin, xmax, ymax, zmax = gmsh.model.getBoundingBox(dim, tag)
+            center = [round((xmin + xmax) * 0.5, 6), round((ymin + ymax) * 0.5, 6), round((zmin + zmax) * 0.5, 6)]
+            p_idx = len(patches)
+            patches.append({
+                "id": f"face_{tag}",
+                "name": pname,
+                "dim": dim,
+                "tag": tag,
+                "center": center,
+                "bbox": [xmin, ymin, zmin, xmax, ymax, zmax],
+            })
+            try:
+                e_types, _e_tags, e_nodes = gmsh.model.mesh.getElements(2, tag)
+                for etype, enodes in zip(e_types, e_nodes):
+                    if etype == 2:
+                        for i in range(0, len(enodes), 3):
+                            surface_triangles.extend([
+                                node_index_map[int(enodes[i])],
+                                node_index_map[int(enodes[i + 1])],
+                                node_index_map[int(enodes[i + 2])],
+                            ])
+                            triangle_patches.append(p_idx)
+                    elif etype == 9:
+                        for i in range(0, len(enodes), 6):
+                            surface_triangles.extend([
+                                node_index_map[int(enodes[i])],
+                                node_index_map[int(enodes[i + 1])],
+                                node_index_map[int(enodes[i + 2])],
+                            ])
+                            triangle_patches.append(p_idx)
+                    elif etype == 3:
+                        for i in range(0, len(enodes), 4):
+                            a, b, c, d = (
+                                node_index_map[int(enodes[i])],
+                                node_index_map[int(enodes[i + 1])],
+                                node_index_map[int(enodes[i + 2])],
+                                node_index_map[int(enodes[i + 3])],
+                            )
+                            surface_triangles.extend([a, b, c, a, c, d])
+                            triangle_patches.extend([p_idx, p_idx])
+            except Exception:
+                pass
+
+        if not surface_triangles:
+            elem_types, _elem_tags, elem_node_tags = gmsh.model.mesh.getElements()
+            for etype, enodes in zip(elem_types, elem_node_tags):
+                if etype == 2:
+                    for i in range(0, len(enodes), 3):
+                        surface_triangles.extend([
+                            node_index_map[int(enodes[i])],
+                            node_index_map[int(enodes[i + 1])],
+                            node_index_map[int(enodes[i + 2])],
+                        ])
+                        triangle_patches.append(0)
+                elif etype == 9:
+                    for i in range(0, len(enodes), 6):
+                        surface_triangles.extend([
+                            node_index_map[int(enodes[i])],
+                            node_index_map[int(enodes[i + 1])],
+                            node_index_map[int(enodes[i + 2])],
+                        ])
+                        triangle_patches.append(0)
 
         flat_coords = [float(c) for c in coords]
         if not flat_coords or not surface_triangles:
@@ -733,15 +856,19 @@ def preview_cad_geometry(data: Mapping[str, Any]) -> PhysicsResult:
             round(max(1e-6, bmax[1] - bmin[1]), 6),
             round(max(1e-6, bmax[2] - bmin[2]), 6),
         ]
+        patch_summary = patches[:64] or [{"id": "cad_surface", "name": "CAD Surface", "dim": 2}]
+        tri_cap = 360000
         return {
             "status": "PREVIEW_READY",
             "backend": "gmsh",
             "filename": cad_filename,
             "dimensions": dims,
-            "patches": patches[:48] or [{"id": "cad_surface", "name": "CAD Surface", "dim": 2}],
+            "patches": patch_summary,
             "vtk_data": {
                 "points": flat_coords[:180000],
-                "triangles": surface_triangles[:360000],
+                "triangles": surface_triangles[:tri_cap],
+                "triangle_patches": triangle_patches[: tri_cap // 3],
+                "patches": patch_summary,
                 "scalars": {},
                 "active_field": "",
                 "bounds": {"min": bmin, "max": bmax},
@@ -901,24 +1028,63 @@ def call_gmsh_mesher(data: Mapping[str, Any]) -> PhysicsResult:
         elem_types, elem_tags, elem_node_tags = gmsh.model.mesh.getElements()
         total_elements = sum(len(et) for et in elem_tags)
         surface_triangles: List[int] = []
+        triangle_patches: List[int] = []
+        patch_nodes: Dict[str, List[int]] = {}
         vol_tags: List[int] = []
+
+        # Collect 2D surface triangles tagged by physical group for exact CAD patch picking & BC node mapping
+        try:
+            for dim_pg, pg_tag in gmsh.model.getPhysicalGroups(2):
+                pg_name = gmsh.model.getPhysicalName(dim_pg, pg_tag) or f"Patch_{pg_tag}"
+                p_idx = next((idx for idx, p in enumerate(detected_patches) if p["name"] == pg_name), -1)
+                if p_idx < 0:
+                    p_idx = len(detected_patches)
+                    detected_patches.append({"id": pg_name, "name": pg_name, "dim": 2, "tag": pg_tag})
+                try:
+                    n_tags_pg, _ = gmsh.model.mesh.getNodesForPhysicalGroup(2, pg_tag)
+                    patch_nodes[pg_name] = sorted({int(n) for n in n_tags_pg})
+                except Exception:
+                    pass
+                for ent_tag in gmsh.model.getEntitiesForPhysicalGroup(2, pg_tag):
+                    e_types, _et, e_nodes = gmsh.model.mesh.getElements(2, ent_tag)
+                    for etype, enodes in zip(e_types, e_nodes):
+                        if etype == 2:
+                            for i in range(0, len(enodes), 3):
+                                surface_triangles.extend([
+                                    node_index_map[int(enodes[i])],
+                                    node_index_map[int(enodes[i + 1])],
+                                    node_index_map[int(enodes[i + 2])],
+                                ])
+                                triangle_patches.append(p_idx)
+                        elif etype == 9:
+                            for i in range(0, len(enodes), 6):
+                                surface_triangles.extend([
+                                    node_index_map[int(enodes[i])],
+                                    node_index_map[int(enodes[i + 1])],
+                                    node_index_map[int(enodes[i + 2])],
+                                ])
+                                triangle_patches.append(p_idx)
+        except Exception:
+            pass
 
         for etype, etags, enodes in zip(elem_types, elem_tags, elem_node_tags):
             # Type 2 = 3-node triangle; Type 9 = 6-node second-order triangle; Type 4/11 = tet
-            if etype == 2:
+            if not surface_triangles and etype == 2:
                 for i in range(0, len(enodes), 3):
                     surface_triangles.extend([
                         node_index_map[int(enodes[i])],
                         node_index_map[int(enodes[i + 1])],
                         node_index_map[int(enodes[i + 2])],
                     ])
-            elif etype == 9:
+                    triangle_patches.append(0)
+            elif not surface_triangles and etype == 9:
                 for i in range(0, len(enodes), 6):
                     surface_triangles.extend([
                         node_index_map[int(enodes[i])],
                         node_index_map[int(enodes[i + 1])],
                         node_index_map[int(enodes[i + 2])],
                     ])
+                    triangle_patches.append(0)
             elif etype in {4, 11}:
                 vol_tags.extend(int(t) for t in etags)
 
@@ -944,6 +1110,7 @@ def call_gmsh_mesher(data: Mapping[str, Any]) -> PhysicsResult:
             "min": [min(xs) if xs else 0.0, min(ys) if ys else 0.0, min(zs) if zs else 0.0],
             "max": [max(xs) if xs else width, max(ys) if ys else height, max(zs) if zs else depth],
         }
+        tri_cap = 360000
 
         return {
             "status": "MESHED",
@@ -962,6 +1129,7 @@ def call_gmsh_mesher(data: Mapping[str, Any]) -> PhysicsResult:
             "max_quality": max_q,
             "max_skewness": max_skew,
             "patches": detected_patches,
+            "patch_nodes": patch_nodes,
             "quality_histogram": [
                 {"bin": "0.0-0.2", "count": bins[0]},
                 {"bin": "0.2-0.4", "count": bins[1]},
@@ -971,7 +1139,9 @@ def call_gmsh_mesher(data: Mapping[str, Any]) -> PhysicsResult:
             ],
             "vtk_data": {
                 "points": flat_coords[:180000],
-                "triangles": surface_triangles[:360000],
+                "triangles": surface_triangles[:tri_cap],
+                "triangle_patches": triangle_patches[: tri_cap // 3],
+                "patches": detected_patches,
                 "scalars": {},
                 "active_field": "",
                 "bounds": bounds,
@@ -1506,27 +1676,36 @@ def call_openfoam_solver(data: Mapping[str, Any]) -> PhysicsResult:
             else:
                 patch_roles[pname] = "wall"
 
-        # Bind spatial 3D viewport boundary pins to nearest CAD surface patches
+        # Bind explicit named patches (`patchName` on markers or `boundary_patches`) or spatial viewport pins
         candidate_patches = [p for p in poly_patches if patch_roles[p["name"]] != "empty"]
-        if isinstance(markers, list) and markers and candidate_patches:
-            for m in markers:
-                if not isinstance(m, Mapping):
-                    continue
+        candidate_names = {p["name"] for p in candidate_patches}
+        raw_patch_bcs: List[Mapping[str, Any]] = []
+        if isinstance(data.get("boundary_patches"), list):
+            raw_patch_bcs.extend(bp for bp in data["boundary_patches"] if isinstance(bp, Mapping))
+        if isinstance(markers, list):
+            raw_patch_bcs.extend(m for m in markers if isinstance(m, Mapping))
+
+        for m in raw_patch_bcs:
+            explicit_name = str(m.get("patchName") or m.get("patch_name") or "").strip()
+            target_patch: Optional[str] = explicit_name if explicit_name in candidate_names else None
+            if target_patch is None:
                 pt = m.get("point")
-                if not (isinstance(pt, (list, tuple)) and len(pt) == 3):
+                if not (isinstance(pt, (list, tuple)) and len(pt) == 3) or not candidate_patches:
                     continue
                 nearest = min(
                     candidate_patches,
                     key=lambda cp: (cp["center"][0] - float(pt[0])) ** 2 + (cp["center"][1] - float(pt[1])) ** 2 + (cp["center"][2] - float(pt[2])) ** 2,
                 )
-                mtype = str(m.get("subtype") or m.get("type") or "").lower()
-                if "inlet" in mtype or "mass flow" in mtype:
-                    patch_roles[nearest["name"]] = "inlet"
-                elif "outlet" in mtype:
-                    patch_roles[nearest["name"]] = "outlet"
-                else:
-                    patch_roles[nearest["name"]] = "wall"
-                patch_custom_bcs[nearest["name"]] = dict(m)
+                target_patch = nearest["name"]
+
+            mtype = str(m.get("subtype") or m.get("type") or "").lower()
+            if "inlet" in mtype or "mass flow" in mtype:
+                patch_roles[target_patch] = "inlet"
+            elif "outlet" in mtype:
+                patch_roles[target_patch] = "outlet"
+            else:
+                patch_roles[target_patch] = "wall"
+            patch_custom_bcs[target_patch] = dict(m)
 
         # Ensure flow path has inlet + outlet patches assigned by x-coordinate extremes if not pinned
         has_inlet = any(r == "inlet" for r in patch_roles.values())
@@ -1563,6 +1742,13 @@ def call_openfoam_solver(data: Mapping[str, Any]) -> PhysicsResult:
             "walls": "wall",
             "frontAndBack": "patch" if nz > 1 else "empty",
         }
+        if isinstance(data.get("boundary_patches"), list):
+            for bp in data["boundary_patches"]:
+                if not isinstance(bp, Mapping):
+                    continue
+                pname = str(bp.get("patchName") or bp.get("patch_name") or "").strip()
+                if pname in patch_roles:
+                    patch_custom_bcs[pname] = dict(bp)
 
     gravity_enabled = bool(data.get("gravity_enabled")) or is_vof or solver_stem in {"buoyantSimpleFoam", "buoyantBoussinesqSimpleFoam"}
     gy_val = float(data.get("gravity_y", -9.81)) if data.get("gravity_enabled", True) else 0.0
@@ -1617,13 +1803,14 @@ def call_openfoam_solver(data: Mapping[str, Any]) -> PhysicsResult:
     scheme_choice = str(data.get("discretization_scheme") or ("first_order" if compressible else "second_order")).lower()
     div_u = "Gauss linearUpwind grad(U)" if ("second" in scheme_choice and not compressible) else "Gauss upwind"
 
-    if is_vof or is_transient or solver_stem in {"icoFoam", "pimpleFoam", "rhoPimpleFoam"}:
+    is_transient_run = bool(is_vof or is_transient or solver_stem in {"icoFoam", "pimpleFoam", "rhoPimpleFoam"})
+    if is_transient_run:
         n_steps = max(1, int(round(end_t_val / dt_val)))
-        w_int = max(1, n_steps // 10)
+        w_int = max(1, n_steps // 12)
         ctrl_text = (
             'FoamFile { version 2.0; format ascii; class dictionary; object controlDict; }\n'
             f"application {solver_stem};\nstartFrom startTime;\nstartTime 0;\nstopAt endTime;\n"
-            f"endTime {end_t_val:.6g};\ndeltaT {dt_val:.6g};\nwriteControl timeStep;\nwriteInterval {w_int};\npurgeWrite 2;\nwriteFormat ascii;\n"
+            f"endTime {end_t_val:.6g};\ndeltaT {dt_val:.6g};\nwriteControl timeStep;\nwriteInterval {w_int};\npurgeWrite 0;\nwriteFormat ascii;\n"
             "writePrecision 8;\ntimeFormat general;\ntimePrecision 8;\nrunTimeModifiable true;\n"
         )
     else:
@@ -1840,6 +2027,12 @@ def call_openfoam_solver(data: Mapping[str, Any]) -> PhysicsResult:
         )
 
     env = _openfoam_env()
+    requested_cores = _requested_parallel_cores(data)
+    decompose_bin = shutil.which("decomposePar", path=env.get("PATH")) or shutil.which("decomposePar")
+    mpirun_bin = shutil.which("mpirun", path=env.get("PATH")) or shutil.which("mpirun")
+    reconstruct_bin = shutil.which("reconstructPar", path=env.get("PATH")) or shutil.which("reconstructPar")
+    use_mpi = requested_cores > 1 and bool(decompose_bin and mpirun_bin and reconstruct_bin)
+    actual_cores = requested_cores if use_mpi else 1
 
     def run(command: list[str]) -> subprocess.CompletedProcess[str]:
         proc = subprocess.run(
@@ -1861,7 +2054,13 @@ def call_openfoam_solver(data: Mapping[str, Any]) -> PhysicsResult:
             _write_block_mesh_boundary_summary(case_dir, nx, ny, nz, width, height, depth)
         if is_vof and shutil.which("setFields"):
             run([shutil.which("setFields") or "setFields"])
-        run([executable])
+        if use_mpi and decompose_bin and mpirun_bin and reconstruct_bin:
+            _write_openfoam_decompose_dict(case_dir, requested_cores)
+            run([decompose_bin, "-force"])
+            run([mpirun_bin, "--allow-run-as-root", "--oversubscribe", "-np", str(requested_cores), executable, "-parallel"])
+            run([reconstruct_bin])
+        else:
+            run([executable])
     except subprocess.CalledProcessError as exc:
         raise RuntimeError(
             f"OpenFOAM execution failed: {(exc.stderr or exc.stdout or '')[-4000:]}"
@@ -1875,62 +2074,97 @@ def call_openfoam_solver(data: Mapping[str, Any]) -> PhysicsResult:
     residuals = parse_openfoam_residuals(log)
     fields = parse_openfoam_fields(case_dir)
 
+    def _read_box_time_fields(tdir: Path) -> Tuple[Dict[str, List[float]], Dict[str, List[float]], List[float]]:
+        scalars_3d: Dict[str, List[float]] = {}
+        vectors_3d: Dict[str, List[float]] = {}
+        t_vals_out: List[float] = []
+        if (tdir / "U").exists():
+            u_parsed = parse_internal_field((tdir / "U").read_text(encoding="utf-8", errors="replace"))
+            u_vals = u_parsed.get("values", [])
+            if u_parsed.get("uniform") and len(u_vals) == 1:
+                u_vals = u_vals * (nx * ny * nz)
+            scalars_3d["U_mag"] = [math.sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]) for v in u_vals]
+            vectors_3d["U"] = [float(c) for v in u_vals for c in v]
+        p_file = "p_rgh" if (tdir / "p_rgh").exists() else "p"
+        if (tdir / p_file).exists():
+            p_parsed = parse_internal_field((tdir / p_file).read_text(encoding="utf-8", errors="replace"))
+            p_vals = p_parsed.get("values", [])
+            if p_parsed.get("uniform") and len(p_vals) == 1:
+                p_vals = p_vals * (nx * ny * nz)
+            scalars_3d["p"] = [float(x) for x in p_vals]
+        if (tdir / "T").exists():
+            t_parsed = parse_internal_field((tdir / "T").read_text(encoding="utf-8", errors="replace"))
+            t_vals = t_parsed.get("values", [])
+            if t_parsed.get("uniform") and len(t_vals) == 1:
+                t_vals = t_vals * (nx * ny * nz)
+            t_vals_out = [float(x) for x in t_vals]
+            scalars_3d["T"] = t_vals_out
+        if (tdir / "alpha.water").exists():
+            a_parsed = parse_internal_field((tdir / "alpha.water").read_text(encoding="utf-8", errors="replace"))
+            a_vals = a_parsed.get("values", [])
+            scalars_3d["alpha_water"] = [float(x) for x in a_vals]
+        return scalars_3d, vectors_3d, t_vals_out
+
     vtk_payload: Any = []
-    if used_gmsh_cad and shutil.which("foamToVTK"):
+    foam_to_vtk = shutil.which("foamToVTK", path=env.get("PATH")) or shutil.which("foamToVTK")
+    if used_gmsh_cad and foam_to_vtk:
         try:
-            run([shutil.which("foamToVTK") or "foamToVTK", "-latestTime"])
+            vtk_cmd = [foam_to_vtk] if is_transient_run else [foam_to_vtk, "-latestTime"]
+            run(vtk_cmd)
             vtu_files = sorted((case_dir / "VTK").rglob("*.vtu")) or sorted((case_dir / "VTK").rglob("*.vtk"))
             if vtu_files:
-                parsed_vtk = _extract_vtk_from_meshio_file(vtu_files[0])
+                parsed_vtk = _extract_vtk_from_meshio_file(vtu_files[-1])
                 if parsed_vtk:
                     vtk_payload = parsed_vtk
+                    if cad_mesh_res and isinstance(cad_mesh_res.get("patches"), list):
+                        vtk_payload["patches"] = cad_mesh_res["patches"]
+                    if is_transient_run and len(vtu_files) > 1:
+                        time_frames: List[Dict[str, Any]] = []
+                        step_slice = vtu_files[-15:]
+                        base_n = len(vtk_payload.get("points", [])) // 3
+                        for idx, vf in enumerate(step_slice):
+                            fparsed = _extract_vtk_from_meshio_file(vf)
+                            if fparsed and (len(fparsed.get("points", [])) // 3) == base_n:
+                                time_frames.append({
+                                    "time": round(float(idx + 1) * (end_t_val / max(1, len(step_slice))), 6),
+                                    "scalars": fparsed.get("scalars", {}),
+                                    "vectors": fparsed.get("vectors", {}),
+                                })
+                        if len(time_frames) > 1:
+                            vtk_payload["time_frames"] = time_frames
         except Exception:
             pass
 
     t_internal_vals: List[float] = []
     if not used_gmsh_cad:
         try:
-            time_dirs = sorted(
+            time_dirs_asc = sorted(
                 [p for p in case_dir.iterdir() if p.is_dir() and re.fullmatch(r"\d+(?:\.\d*)?", p.name) and float(p.name) > 0],
                 key=lambda p: float(p.name),
-                reverse=True,
             )
-            if time_dirs:
-                tdir = time_dirs[0]
-                scalars_3d: Dict[str, List[float]] = {}
-                vectors_3d: Dict[str, List[float]] = {}
-                if (tdir / "U").exists():
-                    u_parsed = parse_internal_field((tdir / "U").read_text(encoding="utf-8", errors="replace"))
-                    u_vals = u_parsed.get("values", [])
-                    if u_parsed.get("uniform") and len(u_vals) == 1:
-                        u_vals = u_vals * (nx * ny * nz)
-                    scalars_3d["U_mag"] = [math.sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]) for v in u_vals]
-                    vectors_3d["U"] = [float(c) for v in u_vals for c in v]
-                p_file = "p_rgh" if (tdir / "p_rgh").exists() else "p"
-                if (tdir / p_file).exists():
-                    p_parsed = parse_internal_field((tdir / p_file).read_text(encoding="utf-8", errors="replace"))
-                    p_vals = p_parsed.get("values", [])
-                    if p_parsed.get("uniform") and len(p_vals) == 1:
-                        p_vals = p_vals * (nx * ny * nz)
-                    scalars_3d["p"] = [float(x) for x in p_vals]
-                if (tdir / "T").exists():
-                    t_parsed = parse_internal_field((tdir / "T").read_text(encoding="utf-8", errors="replace"))
-                    t_vals = t_parsed.get("values", [])
-                    if t_parsed.get("uniform") and len(t_vals) == 1:
-                        t_vals = t_vals * (nx * ny * nz)
-                    t_internal_vals = [float(x) for x in t_vals]
-                    scalars_3d["T"] = t_internal_vals
-                if (tdir / "alpha.water").exists():
-                    a_parsed = parse_internal_field((tdir / "alpha.water").read_text(encoding="utf-8", errors="replace"))
-                    a_vals = a_parsed.get("values", [])
-                    scalars_3d["alpha_water"] = [float(x) for x in a_vals]
-
+            if time_dirs_asc:
+                latest_dir = time_dirs_asc[-1]
+                scalars_3d, vectors_3d, t_internal_vals = _read_box_time_fields(latest_dir)
                 vtk_payload = _build_structured_box_vtk(
                     width, height, depth, nx, ny, nz,
                     scalars=scalars_3d,
                     vectors=vectors_3d,
                     units={"U_mag": "m/s", "p": "Pa" if (compressible or is_vof) else "m²/s²", "T": "K", "alpha_water": "-"},
                 )
+                if is_transient_run and len(time_dirs_asc) > 1 and isinstance(vtk_payload, dict):
+                    _, _, sample_cids = _compute_box_surface_sample_map(width, height, depth, nx, ny, nz)
+                    frames: List[Dict[str, Any]] = []
+                    for td in time_dirs_asc[-15:]:
+                        sc_t, vec_t, _ = _read_box_time_fields(td)
+                        surf_sc, surf_vec = _map_box_cells_to_surface(sample_cids, sc_t, vec_t)
+                        if any(surf_sc.values()):
+                            frames.append({
+                                "time": float(td.name),
+                                "scalars": surf_sc,
+                                "vectors": surf_vec if any(surf_vec.values()) else {},
+                            })
+                    if len(frames) > 1:
+                        vtk_payload["time_frames"] = frames
         except Exception:
             pass
 
@@ -1945,6 +2179,7 @@ def call_openfoam_solver(data: Mapping[str, Any]) -> PhysicsResult:
         "solver_variant": solver_stem,
         "turbulence_model": turb_model,
         "geometry_mode": geometry_mode,
+        "parallel_cores": actual_cores,
         "effective_fluid": fluid,
         "executable": executable,
         "case_directory": str(case_dir),
@@ -2299,14 +2534,103 @@ def _extract_surface_triangles_from_elements(
     return ordered_nids, points, triangles, bounds
 
 
+def _extract_calculix_frd_time_frames(
+    frd_path: Path,
+    ordered_nids: Sequence[int],
+    max_frames: int = 15,
+) -> List[Dict[str, Any]]:
+    """Extract multi-step transient/nonlinear node frames from real CalculiX model.frd."""
+    if not frd_path.is_file() or not ordered_nids:
+        return []
+    frames_by_time: Dict[float, Dict[str, Any]] = {}
+    current_time: Optional[float] = None
+    active_block: Optional[str] = None
+    temp_map: Dict[int, float] = {}
+    disp_map: Dict[int, Tuple[float, float, float]] = {}
+
+    def _flush_block() -> None:
+        nonlocal temp_map, disp_map, active_block
+        if current_time is None or active_block is None:
+            temp_map = {}
+            disp_map = {}
+            active_block = None
+            return
+        entry = frames_by_time.setdefault(
+            round(current_time, 9),
+            {"time": float(current_time), "scalars": {}, "vectors": {}},
+        )
+        if active_block == "T" and temp_map:
+            t_default = sum(temp_map.values()) / len(temp_map)
+            entry["scalars"]["T"] = [temp_map.get(nid, t_default) for nid in ordered_nids]
+        elif active_block == "DISP" and disp_map:
+            mags: List[float] = []
+            vecs: List[float] = []
+            for nid in ordered_nids:
+                dx, dy, dz = disp_map.get(nid, (0.0, 0.0, 0.0))
+                mags.append(math.sqrt(dx * dx + dy * dy + dz * dz))
+                vecs.extend([dx, dy, dz])
+            entry["scalars"]["displacement"] = mags
+            entry["vectors"]["displacement"] = vecs
+        temp_map = {}
+        disp_map = {}
+        active_block = None
+
+    try:
+        with frd_path.open("r", encoding="utf-8", errors="replace") as fh:
+            for line in fh:
+                s = line.lstrip()
+                if s.startswith("100CL"):
+                    _flush_block()
+                    rest = s[5:].replace("D", "E").replace("d", "e")
+                    m_time = re.search(r"[-+]?\d+\.\d+(?:[eE][-+]?\d+)?", rest)
+                    if m_time:
+                        current_time = float(m_time.group(0))
+                    else:
+                        nums = re.findall(r"[-+]?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?", rest)
+                        current_time = float(nums[1]) if len(nums) >= 2 else (float(nums[0]) if nums else 0.0)
+                elif s.startswith("-4"):
+                    _flush_block()
+                    upper = s.upper()
+                    if "NDTEMP" in upper or "TOFFSET" in upper:
+                        active_block = "T"
+                    elif "DISP" in upper:
+                        active_block = "DISP"
+                elif s.startswith("-3"):
+                    _flush_block()
+                elif active_block and s.startswith("-1"):
+                    rest = s[2:].strip().replace("D", "E").replace("d", "e")
+                    m_nid = re.match(r"^(\d+)(.*)$", rest)
+                    if not m_nid:
+                        continue
+                    nid = int(m_nid.group(1))
+                    vals = [float(x) for x in re.findall(r"[-+]?\d+\.\d+(?:[eE][-+]?\d+)?", m_nid.group(2))]
+                    if active_block == "T" and vals:
+                        temp_map[nid] = vals[0]
+                    elif active_block == "DISP" and len(vals) >= 3:
+                        disp_map[nid] = (vals[0], vals[1], vals[2])
+        _flush_block()
+    except Exception:
+        return []
+
+    frames = [v for _, v in sorted(frames_by_time.items(), key=lambda kv: kv[0]) if v["scalars"]]
+    if len(frames) > max_frames:
+        step = max(1, len(frames) // max_frames)
+        sampled = frames[::step]
+        if sampled[-1] is not frames[-1]:
+            sampled[-1] = frames[-1]
+        frames = sampled[:max_frames]
+    return frames
+
+
 def _build_calculix_vtk_from_results(
     node_coords: Mapping[int, Tuple[float, float, float]],
     elem_conn: Mapping[int, Tuple[str, List[int]]],
     disps: List[Dict[str, Any]],
     stresses: List[Dict[str, Any]],
     temps: List[Dict[str, Any]],
+    frd_path: Optional[Path] = None,
 ) -> Any:
-    """Build full 3D VtkFieldPayload for any CalculiX mesh (.inp or CAD tet) from parsed .dat results."""
+    """Build full 3D VtkFieldPayload for any CalculiX mesh (.inp or CAD tet) from parsed .dat/.frd results."""
     if not node_coords or not elem_conn:
         return []
     ordered_nids, points, triangles, bounds = _extract_surface_triangles_from_elements(node_coords, elem_conn)
@@ -2358,7 +2682,7 @@ def _build_calculix_vtk_from_results(
         units["von_mises"] = "Pa"
 
     active_field = "von_mises" if "von_mises" in scalars else ("T" if "T" in scalars else ("displacement" if "displacement" in scalars else ""))
-    return {
+    payload: Dict[str, Any] = {
         "points": points[:360000],
         "triangles": triangles[:720000],
         "scalars": scalars,
@@ -2369,6 +2693,11 @@ def _build_calculix_vtk_from_results(
         "node_count": len(ordered_nids),
         "triangle_count": len(triangles) // 3,
     }
+    if frd_path is not None and len(ordered_nids) <= 120000:
+        time_frames = _extract_calculix_frd_time_frames(frd_path, ordered_nids)
+        if len(time_frames) > 1:
+            payload["time_frames"] = time_frames
+    return payload
 
 
 def _select_nodes_near_point(
@@ -2403,6 +2732,9 @@ def call_calculix_solver(data: Mapping[str, Any]) -> PhysicsResult:
     if not ccx:
         raise RuntimeError("CalculiX ccx is not installed in the worker container")
 
+    requested_cores = _requested_parallel_cores(data)
+    ccx_env = {**os.environ, "OMP_NUM_THREADS": str(requested_cores), "OMP_DYNAMIC": "FALSE"}
+
     physics_type = classify_physics(data)
     jobs_dir = Path(os.getenv("NASEER_JOB_DIR", "/app/jobs" if Path("/app/jobs").exists() else "jobs"))
     jobs_dir.mkdir(parents=True, exist_ok=True)
@@ -2415,17 +2747,18 @@ def call_calculix_solver(data: Mapping[str, Any]) -> PhysicsResult:
     if isinstance(raw_inp, str) and raw_inp.strip() and "*NODE" in raw_inp.upper():
         inp.write_text(raw_inp, encoding="utf-8")
         try:
-            proc = subprocess.run([ccx, "model"], cwd=case_dir, text=True, capture_output=True, timeout=180, check=True)
+            proc = subprocess.run([ccx, "model"], cwd=case_dir, env=ccx_env, text=True, capture_output=True, timeout=180, check=True)
         except subprocess.CalledProcessError as exc:
             raise RuntimeError(f"CalculiX direct .inp execution failed: {(exc.stderr or exc.stdout or '')[-4000:]}") from exc
         dat_path = case_dir / "model.dat"
+        frd_path = case_dir / "model.frd"
         disps = _parse_calculix_dat_displacements(dat_path)
         stresses = _parse_calculix_dat_stress(dat_path)
         temps = _parse_calculix_dat_temperatures(dat_path)
         reactions = _parse_calculix_dat_reactions(dat_path)
         modes = _parse_calculix_modal_or_buckling(dat_path)
         inp_nodes, inp_elems = _parse_calculix_inp_mesh(raw_inp)
-        vtk_payload = _build_calculix_vtk_from_results(inp_nodes, inp_elems, disps, stresses, temps)
+        vtk_payload = _build_calculix_vtk_from_results(inp_nodes, inp_elems, disps, stresses, temps, frd_path=frd_path)
         inp_integrals: Dict[str, Any] = {}
         if disps:
             inp_integrals["max_displacement_m"] = round(max(d["magnitude"] for d in disps), 8)
@@ -2443,6 +2776,7 @@ def call_calculix_solver(data: Mapping[str, Any]) -> PhysicsResult:
             "solver": "CalculiX",
             "solver_variant": "Direct .inp Deck",
             "executable": ccx,
+            "parallel_cores": requested_cores,
             "case_directory": str(case_dir),
             "model": str(inp),
             "mesh_nodes": len(inp_nodes),
@@ -2458,7 +2792,7 @@ def call_calculix_solver(data: Mapping[str, Any]) -> PhysicsResult:
             "vtk_data": vtk_payload,
             "units": {"displacement": "m", "stress": "Pa", "von_mises": "Pa", "temperature": "K"},
             "convergence": {"converged": dat_path.exists(), "status": "completed" if dat_path.exists() else "not_reported", "residuals": {}},
-        }, physics_type=physics_type, input_data={"mode": "direct_inp"}, solver="CalculiX")
+        }, physics_type=physics_type, input_data={"mode": "direct_inp", "parallel_cores": requested_cores}, solver="CalculiX")
 
     is_thermal_only = physics_type in {"Thermal_Transient", "Thermal_Steady", "Thermal_Radiation"}
     is_coupled_ts = physics_type in {"Thermal_Structural", "Multiphysics"}
@@ -2489,6 +2823,7 @@ def call_calculix_solver(data: Mapping[str, Any]) -> PhysicsResult:
 
     raw_cad, cad_filename = _extract_upload_path_content(data)
     used_gmsh_cad = False
+    cad_patch_nodes: Dict[str, List[int]] = {}
     nodes: Dict[Tuple[int, int, int], int] = {}
     node_coords: Dict[int, Tuple[float, float, float]] = {}
     elements: List[Tuple[int, ...]] = []
@@ -2515,6 +2850,13 @@ def call_calculix_solver(data: Mapping[str, Any]) -> PhysicsResult:
             raise ValueError(f"Uploaded CAD file '{cad_filename}' produced no 3D solid elements in Gmsh for CalculiX.")
         used_gmsh_cad = True
         node_coords = parsed_nodes
+        raw_pn = cad_mesh_res.get("patch_nodes") or {}
+        if isinstance(raw_pn, Mapping):
+            cad_patch_nodes = {
+                str(pname): [int(n) for n in nids if int(n) in node_coords]
+                for pname, nids in raw_pn.items()
+                if isinstance(nids, (list, tuple))
+            }
         is_second_order = any(len(nids) >= 10 for _, nids in vol_elems.values())
         if is_thermal_only:
             elem_type = "DC3D10" if is_second_order else "DC3D4"
@@ -2642,8 +2984,20 @@ def call_calculix_solver(data: Mapping[str, Any]) -> PhysicsResult:
     inp.write_text("\n".join(header_lines) + "\n", encoding="utf-8")
 
     markers = data.get("boundary_markers")
+    boundary_patches = data.get("boundary_patches")
     bbox_diag = math.sqrt(length * length + height * height + depth * depth)
     pin_radius = max(mesh_size * 1.5, bbox_diag * 0.08)
+
+    def _resolve_ccx_patch_nodes(pname: str) -> List[int]:
+        if not pname:
+            return []
+        if pname in cad_patch_nodes and cad_patch_nodes[pname]:
+            return cad_patch_nodes[pname]
+        low = pname.lower()
+        for k, nids in cad_patch_nodes.items():
+            if nids and (k.lower() == low or low in k.lower() or k.lower() in low):
+                return nids
+        return face_nodes(pname)
 
     with inp.open("a", encoding="utf-8") as f:
         f.write(f"*NSET,NSET=ALL\n{_ccx_id_lines(ordered_nids)}")
@@ -2663,27 +3017,51 @@ def call_calculix_solver(data: Mapping[str, Any]) -> PhysicsResult:
             if right_ids:
                 f.write(f"*NSET,NSET=THERM_RIGHT\n{_ccx_id_lines(right_ids)}")
                 f.write(f"*BOUNDARY\nTHERM_RIGHT,11,11,{t_right}\n")
+            if isinstance(boundary_patches, list):
+                for bp_idx, bp in enumerate(boundary_patches):
+                    if not isinstance(bp, Mapping):
+                        continue
+                    pname = str(bp.get("patchName") or bp.get("patch") or bp.get("name") or "").strip()
+                    btype = str(bp.get("type") or "").lower()
+                    bp_nids = _resolve_ccx_patch_nodes(pname)
+                    if not bp_nids or not any(tok in btype for tok in ("heat", "temp", "flux", "convection", "radiation")):
+                        continue
+                    try:
+                        bval = float(bp.get("value"))
+                    except (TypeError, ValueError):
+                        bval = None
+                    f.write(f"*NSET,NSET=BP_TH_{bp_idx}\n{_ccx_id_lines(bp_nids)}")
+                    if bval is not None and "flux" in btype:
+                        q_total = bval * (math.pi * pin_radius * pin_radius)
+                        thermal_pin_flux_cards.append(f"*CFLUX\nBP_TH_{bp_idx},11,{q_total / len(bp_nids):.15g}\n")
+                    elif bval is not None:
+                        tv_k = bval + 273.15 if bval < 150.0 else bval
+                        f.write(f"*BOUNDARY\nBP_TH_{bp_idx},11,11,{tv_k:.8g}\n")
             if isinstance(markers, list):
                 for m_idx, m in enumerate(markers):
                     if not isinstance(m, Mapping):
                         continue
                     pt = m.get("point")
+                    pname = str(m.get("patchName") or "").strip()
                     mtype = str(m.get("subtype") or m.get("type") or "").lower()
-                    if not (isinstance(pt, (list, tuple)) and len(pt) == 3):
+                    if not any(tok in mtype for tok in ("heat", "temp", "flux")):
                         continue
-                    if any(tok in mtype for tok in ("heat", "temp", "flux")):
+                    pin_nids = _resolve_ccx_patch_nodes(pname) if pname else []
+                    if not pin_nids and isinstance(pt, (list, tuple)) and len(pt) == 3:
                         pin_nids = _select_nodes_near_point(node_coords, pt, pin_radius)
-                        f.write(f"*NSET,NSET=PIN_TH_{m_idx}\n{_ccx_id_lines(pin_nids)}")
-                        try:
-                            mval = float(m.get("value"))
-                        except (TypeError, ValueError):
-                            mval = None
-                        if mval is not None and "flux" in mtype:
-                            q_total = mval * (math.pi * pin_radius * pin_radius)
-                            thermal_pin_flux_cards.append(f"*CFLUX\nPIN_TH_{m_idx},11,{q_total / len(pin_nids):.15g}\n")
-                        elif mval is not None:
-                            tv_k = mval + 273.15 if mval < 150.0 else mval
-                            f.write(f"*BOUNDARY\nPIN_TH_{m_idx},11,11,{tv_k:.8g}\n")
+                    if not pin_nids:
+                        continue
+                    f.write(f"*NSET,NSET=PIN_TH_{m_idx}\n{_ccx_id_lines(pin_nids)}")
+                    try:
+                        mval = float(m.get("value"))
+                    except (TypeError, ValueError):
+                        mval = None
+                    if mval is not None and "flux" in mtype:
+                        q_total = mval * (math.pi * pin_radius * pin_radius)
+                        thermal_pin_flux_cards.append(f"*CFLUX\nPIN_TH_{m_idx},11,{q_total / len(pin_nids):.15g}\n")
+                    elif mval is not None:
+                        tv_k = mval + 273.15 if mval < 150.0 else mval
+                        f.write(f"*BOUNDARY\nPIN_TH_{m_idx},11,11,{tv_k:.8g}\n")
 
         # Mechanical constraints & loads
         load_cards: list[str] = []
@@ -2696,7 +3074,7 @@ def call_calculix_solver(data: Mapping[str, Any]) -> PhysicsResult:
                 if not isinstance(constraint, Mapping):
                     continue
                 face = constraint.get("face") or constraint.get("surface")
-                ids = face_nodes(str(face)) if face else list(constraint.get("nodes", []))
+                ids = _resolve_ccx_patch_nodes(str(face)) if face else list(constraint.get("nodes", []))
                 if not ids:
                     continue
                 dofs = constraint.get("dof", constraint.get("dofs", [1, 2, 3]))
@@ -2712,16 +3090,51 @@ def call_calculix_solver(data: Mapping[str, Any]) -> PhysicsResult:
                     f.write(f"*BOUNDARY\nCONSTRAINT_{index},{dof},{dof},{float(value)}\n")
                 applied_any_constraint = True
 
+            # Named CAD face boundary_patches
+            if isinstance(boundary_patches, list):
+                for bp_idx, bp in enumerate(boundary_patches):
+                    if not isinstance(bp, Mapping):
+                        continue
+                    pname = str(bp.get("patchName") or bp.get("patch") or bp.get("name") or "").strip()
+                    btype = str(bp.get("type") or "").lower()
+                    bp_nids = _resolve_ccx_patch_nodes(pname)
+                    if not bp_nids:
+                        continue
+                    if any(tok in btype for tok in ("fixed", "pinned", "frictionless", "wall", "displacement", "support")):
+                        f.write(f"*NSET,NSET=BP_FIX_{bp_idx}\n{_ccx_id_lines(bp_nids)}")
+                        if "displacement" in btype and bp.get("value") is not None:
+                            try:
+                                dval = float(bp["value"])
+                                f.write(f"*BOUNDARY\nBP_FIX_{bp_idx},1,1,0\nBP_FIX_{bp_idx},3,3,0\nBP_FIX_{bp_idx},2,2,{dval}\n")
+                            except (TypeError, ValueError):
+                                f.write(f"*BOUNDARY\nBP_FIX_{bp_idx},1,3,0\n")
+                        else:
+                            f.write(f"*BOUNDARY\nBP_FIX_{bp_idx},1,3,0\n")
+                        applied_any_constraint = True
+                    elif any(tok in btype for tok in ("load", "force", "pressure")):
+                        try:
+                            bval = float(bp.get("value"))
+                        except (TypeError, ValueError):
+                            bval = 0.0
+                        if abs(bval) > 0.0:
+                            f.write(f"*NSET,NSET=BP_LOAD_{bp_idx}\n{_ccx_id_lines(bp_nids)}")
+                            total_f = (bval * 1e6 * (math.pi * pin_radius * pin_radius)) if "pressure" in btype else bval
+                            c_val = -total_f / len(bp_nids)
+                            load_cards.append(f"*CLOAD\nBP_LOAD_{bp_idx},2,{c_val:.15g}\n")
+
             # Spatial 3D viewport pin constraints & loads
             if isinstance(markers, list):
                 for m_idx, m in enumerate(markers):
                     if not isinstance(m, Mapping):
                         continue
                     pt = m.get("point")
-                    if not (isinstance(pt, (list, tuple)) and len(pt) == 3):
-                        continue
+                    pname = str(m.get("patchName") or "").strip()
                     mtype = str(m.get("subtype") or m.get("type") or "").lower()
-                    pin_nids = _select_nodes_near_point(node_coords, pt, pin_radius)
+                    pin_nids = _resolve_ccx_patch_nodes(pname) if pname else []
+                    if not pin_nids and isinstance(pt, (list, tuple)) and len(pt) == 3:
+                        pin_nids = _select_nodes_near_point(node_coords, pt, pin_radius)
+                    if not pin_nids:
+                        continue
                     if any(tok in mtype for tok in ("fixed", "pinned", "frictionless", "wall", "displacement")):
                         f.write(f"*NSET,NSET=PIN_FIX_{m_idx}\n{_ccx_id_lines(pin_nids)}")
                         if "displacement" in mtype and m.get("value") is not None:
@@ -2855,11 +3268,12 @@ def call_calculix_solver(data: Mapping[str, Any]) -> PhysicsResult:
             )
 
     try:
-        proc = subprocess.run([ccx, "model"], cwd=case_dir, text=True, capture_output=True, timeout=180, check=True)
+        proc = subprocess.run([ccx, "model"], cwd=case_dir, env=ccx_env, text=True, capture_output=True, timeout=180, check=True)
     except subprocess.CalledProcessError as exc:
         raise RuntimeError(f"CalculiX execution failed: {exc.stderr[-4000:] or exc.stdout[-4000:]}") from exc
 
     dat_path = case_dir / "model.dat"
+    frd_path = case_dir / "model.frd"
     disps = _parse_calculix_dat_displacements(dat_path)
     stresses = _parse_calculix_dat_stress(dat_path)
     reactions = _parse_calculix_dat_reactions(dat_path)
@@ -2896,7 +3310,7 @@ def call_calculix_solver(data: Mapping[str, Any]) -> PhysicsResult:
                 t_r = sum(node_temp_map.get(n, 293.15) for n in right_nids) / len(right_nids)
                 calc_heat_flux = round(k_cond * (t_l - t_r) / length, 3)
 
-    vtk_payload = _build_calculix_vtk_from_results(node_coords, elem_conn, disps, stresses, temps)
+    vtk_payload = _build_calculix_vtk_from_results(node_coords, elem_conn, disps, stresses, temps, frd_path=frd_path)
 
     ccx_integrals: Dict[str, Any] = {
         "domain_volume_m3": round(length * height * depth, 6),
@@ -2933,6 +3347,7 @@ def call_calculix_solver(data: Mapping[str, Any]) -> PhysicsResult:
         "solver": "CalculiX",
         "solver_variant": elem_type,
         "executable": ccx,
+        "parallel_cores": requested_cores,
         "case_directory": str(case_dir),
         "model": str(inp),
         "mesh_nodes": len(node_coords),
@@ -3004,8 +3419,24 @@ def _discover_elmer_boundary_centroids(case_dir: Path) -> Dict[int, List[float]]
     }
 
 
+def _read_elmer_mesh_names(case_dir: Path) -> Dict[str, int]:
+    """Parse ElmerGrid model/mesh.names ($ name = bid) into a lookup dict."""
+    names_path = case_dir / "model" / "mesh.names"
+    if not names_path.is_file():
+        return {}
+    mapping: Dict[str, int] = {}
+    for line in names_path.read_text(encoding="utf-8", errors="replace").splitlines():
+        m = re.match(r"^\$\s*(.+?)\s*=\s*(\d+)\s*$", line.strip())
+        if m:
+            label = m.group(1).strip()
+            bid = int(m.group(2))
+            mapping[label] = bid
+            mapping[label.lower()] = bid
+    return mapping
+
+
 def call_elmer_solver(data: Mapping[str, Any]) -> PhysicsResult:
-    """Real ElmerFEM (ElmerGrid + ElmerSolver) engine for Electromagnetics & Acoustics."""
+    """Real ElmerFEM (ElmerGrid + ElmerSolver / ElmerSolver_mpi) engine for Electromagnetics & Acoustics."""
     elmer_solver = shutil.which("ElmerSolver")
     elmer_grid = shutil.which("ElmerGrid")
     if not elmer_solver or not elmer_grid:
@@ -3014,6 +3445,7 @@ def call_elmer_solver(data: Mapping[str, Any]) -> PhysicsResult:
             "Rebuild the worker image from Dockerfile.worker."
         )
 
+    requested_cores = _requested_parallel_cores(data)
     physics_type = classify_physics(data)
     is_acoustics = physics_type == "Acoustics"
     width = float(data.get("width_x", 1.0) or 1.0)
@@ -3043,23 +3475,58 @@ def call_elmer_solver(data: Mapping[str, Any]) -> PhysicsResult:
     if conv.returncode != 0:
         raise RuntimeError(f"ElmerGrid failed: {(conv.stderr or conv.stdout)[-2000:]}")
 
-    # Resolve real Elmer boundary IDs against viewport pins (when placed) or spatial ordering
+    # Resolve real Elmer boundary IDs against named CAD patches, viewport pins, or spatial ordering
     bnd_centroids = _discover_elmer_boundary_centroids(case_dir)
+    name_to_bid = _read_elmer_mesh_names(case_dir)
     sorted_bids = sorted(bnd_centroids.keys()) if bnd_centroids else [1, 2]
     src_bid = sorted_bids[0]
     ref_bid = sorted_bids[1] if len(sorted_bids) > 1 else sorted_bids[0]
+
+    def _resolve_elmer_bid(pname: str) -> Optional[int]:
+        if not pname or not name_to_bid:
+            return None
+        if pname in name_to_bid:
+            return name_to_bid[pname]
+        low = pname.lower()
+        if low in name_to_bid:
+            return name_to_bid[low]
+        for k, bid in name_to_bid.items():
+            if low in k.lower() or k.lower() in low:
+                return bid
+        return None
+
+    boundary_patches = data.get("boundary_patches")
+    if isinstance(boundary_patches, list):
+        for bp in boundary_patches:
+            if not isinstance(bp, Mapping):
+                continue
+            pname = str(bp.get("patchName") or bp.get("patch") or bp.get("name") or "").strip()
+            bid = _resolve_elmer_bid(pname)
+            if bid is None:
+                continue
+            btype = str(bp.get("type") or "").lower()
+            if any(tok in btype for tok in ("inlet", "heat", "source", "flux")):
+                src_bid = bid
+            elif any(tok in btype for tok in ("outlet", "fixed", "ground", "wall")):
+                ref_bid = bid
+
     markers = data.get("boundary_markers")
-    if bnd_centroids and isinstance(markers, list):
+    if isinstance(markers, list):
         for m in markers:
             if not isinstance(m, Mapping):
                 continue
-            pt = m.get("point")
-            if not (isinstance(pt, (list, tuple)) and len(pt) == 3):
+            pname = str(m.get("patchName") or "").strip()
+            named_bid = _resolve_elmer_bid(pname)
+            nearest_bid = named_bid
+            if nearest_bid is None and bnd_centroids:
+                pt = m.get("point")
+                if isinstance(pt, (list, tuple)) and len(pt) == 3:
+                    nearest_bid = min(
+                        bnd_centroids.keys(),
+                        key=lambda bid: (bnd_centroids[bid][0] - float(pt[0])) ** 2 + (bnd_centroids[bid][1] - float(pt[1])) ** 2 + (bnd_centroids[bid][2] - float(pt[2])) ** 2,
+                    )
+            if nearest_bid is None:
                 continue
-            nearest_bid = min(
-                bnd_centroids.keys(),
-                key=lambda bid: (bnd_centroids[bid][0] - float(pt[0])) ** 2 + (bnd_centroids[bid][1] - float(pt[1])) ** 2 + (bnd_centroids[bid][2] - float(pt[2])) ** 2,
-            )
             mtype = str(m.get("subtype") or m.get("type") or "").lower()
             if any(tok in mtype for tok in ("inlet", "heat", "source")):
                 src_bid = nearest_bid
@@ -3239,12 +3706,45 @@ End
     (case_dir / "case.sif").write_text(sif_content, encoding="utf-8")
     (case_dir / "ELMERSOLVER_STARTINFO").write_text("case.sif\n1\n", encoding="utf-8")
 
-    proc = subprocess.run([elmer_solver], cwd=case_dir, text=True, capture_output=True, timeout=180, check=False)
+    elmer_mpi = shutil.which("ElmerSolver_mpi")
+    mpirun = shutil.which("mpirun")
+    actual_cores = 1
+    proc: Optional[subprocess.CompletedProcess[str]] = None
+    if requested_cores > 1 and elmer_mpi and mpirun and mesh_res.get("elements_count", 0) >= requested_cores * 4:
+        part_proc = subprocess.run(
+            [elmer_grid, "2", "2", "model", "-metis", str(requested_cores), "3"],
+            cwd=case_dir,
+            text=True,
+            capture_output=True,
+            timeout=90,
+            check=False,
+        )
+        if part_proc.returncode == 0:
+            mpi_proc = subprocess.run(
+                [mpirun, "--allow-run-as-root", "--oversubscribe", "-np", str(requested_cores), elmer_mpi],
+                cwd=case_dir,
+                text=True,
+                capture_output=True,
+                timeout=180,
+                check=False,
+            )
+            if mpi_proc.returncode == 0 and (list(case_dir.glob("*.vtu")) or list(case_dir.glob("*.pvtu"))):
+                # Verify at least one standalone single-domain VTU or gracefully fall back to serial VTU output
+                full_vtu = [p for p in case_dir.glob("*.vtu") if not re.search(r"_\d{4}\.vtu$", p.name)]
+                if full_vtu:
+                    proc = mpi_proc
+                    actual_cores = requested_cores
+
+    if proc is None:
+        proc = subprocess.run([elmer_solver], cwd=case_dir, text=True, capture_output=True, timeout=180, check=False)
+
     (case_dir / "solver.log").write_text((proc.stdout or "") + "\n" + (proc.stderr or ""), encoding="utf-8")
     if proc.returncode != 0:
         raise RuntimeError(f"ElmerSolver failed: {(proc.stderr or proc.stdout)[-3000:]}")
 
-    vtu_files = sorted(case_dir.glob("*.vtu"))
+    vtu_files = sorted(p for p in case_dir.glob("*.vtu") if not re.search(r"_\d{4}\.vtu$", p.name))
+    if not vtu_files:
+        vtu_files = sorted(case_dir.glob("*.vtu"))
     vtk_payload: Any = []
     field_summary: Dict[str, Any] = {}
     elmer_integrals: Dict[str, Any] = {
@@ -3252,9 +3752,22 @@ End
         "surface_area_m2": round(2.0 * (width * height + width * depth + height * depth), 6),
     }
     if vtu_files:
-        parsed_vtk = _extract_vtk_from_meshio_file(vtu_files[0])
+        parsed_vtk = _extract_vtk_from_meshio_file(vtu_files[-1])
         if parsed_vtk:
             vtk_payload = parsed_vtk
+            if len(vtu_files) > 1:
+                elmer_frames: List[Dict[str, Any]] = []
+                base_node_count = parsed_vtk.get("node_count", 0)
+                for idx_v, vfile in enumerate(vtu_files[:15]):
+                    frame_vtk = _extract_vtk_from_meshio_file(vfile)
+                    if frame_vtk and frame_vtk.get("node_count") == base_node_count and frame_vtk.get("scalars"):
+                        elmer_frames.append({
+                            "time": float(idx_v + 1),
+                            "scalars": frame_vtk["scalars"],
+                            "vectors": frame_vtk.get("vectors", {}),
+                        })
+                if len(elmer_frames) > 1:
+                    vtk_payload["time_frames"] = elmer_frames
             scalars = parsed_vtk.get("scalars", {})
             chosen = next((k for k in scalars if field_key in k.lower()), next(iter(scalars.keys()), None))
             if chosen and scalars[chosen]:
@@ -3269,7 +3782,8 @@ End
         "status": "SOLVED_REALTIME",
         "solver": "ElmerFEM",
         "solver_variant": solver_variant,
-        "executable": elmer_solver,
+        "executable": elmer_mpi if actual_cores > 1 and elmer_mpi else elmer_solver,
+        "parallel_cores": actual_cores,
         "case_directory": str(case_dir),
         "mesh_nodes": mesh_res["nodes_count"],
         "mesh_elements": mesh_res["elements_count"],
@@ -3281,7 +3795,7 @@ End
         "artifacts": {"case_directory": str(case_dir), "sif": str(case_dir / "case.sif"), "log": str(case_dir / "solver.log")},
         "convergence": {"converged": True, "status": "completed", "residuals": {}},
         "input": {k: v for k, v in data.items() if k not in {"cad_stl_b64", "cad_file_b64"}},
-    }, physics_type=physics_type, input_data={"physics_type": physics_type, "mesh_size": mesh_size}, solver="ElmerFEM")
+    }, physics_type=physics_type, input_data={"physics_type": physics_type, "mesh_size": mesh_size, "parallel_cores": actual_cores}, solver="ElmerFEM")
 
 
 def execute_simulation(data: Dict[str, Any]) -> PhysicsResult:

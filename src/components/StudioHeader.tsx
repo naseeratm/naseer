@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { Play, Square, Menu, Loader2, Box } from 'lucide-react';
+import { Play, Square, Menu, Loader2, Box, Server, Cpu } from 'lucide-react';
 import { JobStatus } from '../types/studio';
 
 export interface HeaderMenuItem {
@@ -28,6 +28,16 @@ interface StudioHeaderProps {
   onRun: () => void;
   onCancel: () => void;
   onHome: () => void;
+  onOpenClusterMonitor?: () => void;
+}
+
+interface ClusterQuickTelemetry {
+  connected: boolean;
+  status: string;
+  workers_online: number;
+  total_cluster_cores: number;
+  active_tasks_count: number;
+  queued_tasks_count: number;
 }
 
 const STATUS_STYLES: Record<JobStatus, { label: string; dot: string; text: string }> = {
@@ -50,11 +60,42 @@ export const StudioHeader: React.FC<StudioHeaderProps> = ({
   onRun,
   onCancel,
   onHome,
+  onOpenClusterMonitor,
 }) => {
   const [menuOpen, setMenuOpen] = useState(false);
+  const [clusterInfo, setClusterInfo] = useState<ClusterQuickTelemetry | null>(null);
   const menuRef = useRef<HTMLDivElement | null>(null);
   const isRunning = status === 'queued' || status === 'running';
   const statusStyle = STATUS_STYLES[status];
+
+  useEffect(() => {
+    let active = true;
+    const fetchCluster = async () => {
+      try {
+        const res = await fetch('/api/cluster/status');
+        if (!res.ok) return;
+        const data = await res.json();
+        if (active && data) {
+          setClusterInfo({
+            connected: Boolean(data.connected),
+            status: String(data.status || 'DEGRADED'),
+            workers_online: Number(data.workers_online || 0),
+            total_cluster_cores: Number(data.total_cluster_cores || data.host_cpu_cores || 1),
+            active_tasks_count: Number(data.active_tasks_count || 0),
+            queued_tasks_count: Number(data.queued_tasks_count || 0),
+          });
+        }
+      } catch {
+        // Keep last state silently
+      }
+    };
+    fetchCluster();
+    const timer = window.setInterval(fetchCluster, 8000);
+    return () => {
+      active = false;
+      window.clearInterval(timer);
+    };
+  }, [status]);
 
   useEffect(() => {
     if (!menuOpen) return;
@@ -71,6 +112,8 @@ export const StudioHeader: React.FC<StudioHeaderProps> = ({
       document.removeEventListener('keydown', onKey);
     };
   }, [menuOpen]);
+
+  const clusterOnline = Boolean(clusterInfo?.connected && clusterInfo.workers_online > 0);
 
   return (
     <header className="relative z-30 flex h-11 shrink-0 items-center gap-3 border-b border-slate-800 bg-slate-950 px-3 print:hidden">
@@ -126,7 +169,7 @@ export const StudioHeader: React.FC<StudioHeaderProps> = ({
                     </span>
                     {item.disabled && (
                       <span className="text-[9.5px] font-mono text-slate-500 shrink-0 bg-slate-800/80 px-1 py-0.2 rounded border border-slate-700/50">
-                        يتطلب مشروعاً
+                        Requires Project
                       </span>
                     )}
                   </button>
@@ -144,8 +187,39 @@ export const StudioHeader: React.FC<StudioHeaderProps> = ({
         </span>
       </div>
 
-      <div className="ml-auto flex shrink-0 items-center gap-3 whitespace-nowrap">
-        <span className="hidden text-[11px] text-slate-500 lg:inline">{engineLabel}</span>
+      <div className="ml-auto flex shrink-0 items-center gap-2.5 whitespace-nowrap">
+        <span className="hidden text-[11px] text-slate-500 2xl:inline">{engineLabel}</span>
+
+        {onOpenClusterMonitor && (
+          <button
+            type="button"
+            onClick={onOpenClusterMonitor}
+            title="Open HPC Cluster Telemetry, Parallel Workers & Cloud Scaling Setup"
+            className={`flex h-7 items-center gap-1.5 rounded border px-2.5 text-[11px] font-mono tabular-nums transition-colors ${
+              clusterOnline
+                ? 'border-emerald-500/40 bg-emerald-950/30 text-emerald-300 hover:bg-emerald-950/60'
+                : 'border-slate-700 bg-slate-900 text-slate-300 hover:border-sky-500/50 hover:text-sky-200'
+            }`}
+          >
+            <Server className={`h-3.5 w-3.5 ${clusterOnline ? 'text-emerald-400' : 'text-sky-400'}`} />
+            <span>
+              Workers: {clusterInfo ? clusterInfo.workers_online : 0}
+            </span>
+            <span aria-hidden="true" className="text-slate-600">·</span>
+            <Cpu className="h-3 w-3 text-sky-400" />
+            <span>
+              {clusterInfo ? clusterInfo.total_cluster_cores : 4} Cores
+            </span>
+            {clusterInfo && (clusterInfo.active_tasks_count > 0 || clusterInfo.queued_tasks_count > 0) && (
+              <>
+                <span aria-hidden="true" className="text-slate-600">·</span>
+                <span className="text-amber-300">
+                  Jobs: {clusterInfo.active_tasks_count + clusterInfo.queued_tasks_count}
+                </span>
+              </>
+            )}
+          </button>
+        )}
 
         <div className="flex items-center gap-2 rounded border border-slate-800 bg-slate-900 px-2 py-1" aria-live="polite">
           <span className={`h-2 w-2 rounded-full ${statusStyle.dot}`} />

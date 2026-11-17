@@ -9,6 +9,18 @@ const toVtkFieldPayload = (candidate: unknown): VtkFieldPayload | undefined => {
   if (!Array.isArray(obj.points) || obj.points.length < 9 || !Array.isArray(obj.triangles) || obj.triangles.length < 3) {
     return undefined;
   }
+  if (Array.isArray(obj.time_frames)) {
+    const cleanFrames = obj.time_frames.filter(
+      (f): f is Record<string, unknown> =>
+        Boolean(f) &&
+        typeof f === 'object' &&
+        typeof (f as Record<string, unknown>).time === 'number' &&
+        Number.isFinite((f as Record<string, unknown>).time) &&
+        Boolean((f as Record<string, unknown>).scalars) &&
+        typeof (f as Record<string, unknown>).scalars === 'object',
+    );
+    return { ...(obj as Record<string, unknown>), time_frames: cleanFrames } as unknown as VtkFieldPayload;
+  }
   return obj as unknown as VtkFieldPayload;
 };
 

@@ -17,6 +17,7 @@ interface ViewportCanvasProps {
   integrals?: Record<string, number | string> | null;
   cadLoading?: boolean;
   selectedMarkerId?: string | null;
+  highlightedPatchName?: string | null;
   hasSolvedResults?: boolean;
   onCadLoaded?: (stats: CadModelStats) => void;
   onCadStlUploaded?: (file: { name: string; base64: string; stats: CadModelStats }) => void;
@@ -38,6 +39,7 @@ export const ViewportCanvas: React.FC<ViewportCanvasProps> = ({
   integrals = null,
   cadLoading = false,
   selectedMarkerId = null,
+  highlightedPatchName = null,
   hasSolvedResults = false,
   onCadLoaded,
   onCadStlUploaded,
@@ -75,6 +77,7 @@ export const ViewportCanvas: React.FC<ViewportCanvasProps> = ({
             integrals={integrals}
             cadLoading={cadLoading}
             selectedMarkerId={selectedMarkerId}
+            highlightedPatchName={highlightedPatchName}
             hasSolvedResults={hasSolvedResults}
             onPresetChange={setPreset}
             onCadLoaded={onCadLoaded}

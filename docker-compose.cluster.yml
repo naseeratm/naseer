@@ -1,0 +1,81 @@
+# ==============================================================================
+# NASEER Universal CAE Studio — Multi-Worker Cloud HPC Cluster Compose
+# ==============================================================================
+# Usage (Workstation or Dedicated Ubuntu Cloud Server):
+#   1. Scale to 4 parallel Celery worker containers (e.g., 4 workers x 4 MPI cores = 16 cores):
+#      NASEER_MPI_CORES_PER_WORKER=4 docker compose -f docker-compose.cluster.yml up -d --build --scale worker=4
+#
+#   2. Check live cluster telemetry:
+#      curl -s http://127.0.0.1:8000/api/cluster/status | python3 -m json.tool
+# ==============================================================================
+
+services:
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    environment:
+      CELERY_BROKER_URL: ${CELERY_BROKER_URL:-redis://redis:6379/0}
+      CELERY_RESULT_BACKEND: ${CELERY_RESULT_BACKEND:-redis://redis:6379/0}
+      CAE_SQLITE_PATH: /app/jobs/cae.db
+      NASEER_JOB_DIR: /app/jobs
+      OPENFOAM_CASE_ROOT: /app/jobs
+      NASEER_MPI_CORES_PER_WORKER: ${NASEER_MPI_CORES_PER_WORKER:-4}
+    depends_on:
+      redis:
+        condition: service_healthy
+    ports:
+      - "${NASEER_API_PORT:-8000}:8000"
+    volumes:
+      - ${NASEER_SHARED_STORAGE:-./cae-workspace}:/app/jobs
+    restart: unless-stopped
+
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
+    command:
+      - /opt/venv/bin/celery
+      - -A
+      - universal_dispatcher.celery_app
+      - worker
+      - --loglevel=INFO
+      - --concurrency=${NASEER_CELERY_CONCURRENCY:-1}
+      - --prefetch-multiplier=1
+      - -Ofair
+    environment:
+      CELERY_BROKER_URL: ${CELERY_BROKER_URL:-redis://redis:6379/0}
+      CELERY_RESULT_BACKEND: ${CELERY_RESULT_BACKEND:-redis://redis:6379/0}
+      CAE_SQLITE_PATH: /app/jobs/cae.db
+      NASEER_JOB_DIR: /app/jobs
+      OPENFOAM_CASE_ROOT: /app/jobs
+      NASEER_MPI_CORES_PER_WORKER: ${NASEER_MPI_CORES_PER_WORKER:-4}
+      OMP_NUM_THREADS: ${NASEER_MPI_CORES_PER_WORKER:-4}
+      CCX_NPROC_STIFFNESS: ${NASEER_MPI_CORES_PER_WORKER:-4}
+      OMPI_ALLOW_RUN_AS_ROOT: "1"
+      OMPI_ALLOW_RUN_AS_ROOT_CONFIRM: "1"
+    depends_on:
+      redis:
+        condition: service_healthy
+    volumes:
+      - ${NASEER_SHARED_STORAGE:-./cae-workspace}:/app/jobs
+    deploy:
+      replicas: ${NASEER_WORKER_REPLICAS:-2}
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    command: redis-server --appendonly yes --maxmemory 1024mb --maxmemory-policy noeviction
+    ports:
+      - "${NASEER_REDIS_PORT:-6379}:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    volumes:
+      - redis-cluster-data:/data
+    restart: unless-stopped
+
+volumes:
+  redis-cluster-data:

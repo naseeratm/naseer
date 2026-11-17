@@ -23,6 +23,7 @@ import {
   Package,
 } from 'lucide-react';
 import { ThesisProject, IngestedFileItem, ApiKeyItem, EngineMode } from '../types/thesis';
+import { SimulationInputs } from '../types/studio';
 import { generateLocalEngineeringProject } from '../utils/physicsEngine';
 import { parseEngineeringFilesOrArchive } from '../utils/fileParser';
 import { normalizeSolverResponse } from '../utils/normalizedSolverResults';
@@ -33,6 +34,7 @@ interface ScriptUploaderModalProps {
   onAnalysisComplete: (project: ThesisProject) => void;
   apiKeys: ApiKeyItem[];
   engineMode: EngineMode;
+  simulationInputs?: SimulationInputs;
 }
 
 export function ScriptUploaderModal({
@@ -41,6 +43,7 @@ export function ScriptUploaderModal({
   onAnalysisComplete,
   apiKeys,
   engineMode,
+  simulationInputs,
 }: ScriptUploaderModalProps) {
   const [filesList, setFilesList] = useState<IngestedFileItem[]>([]);
   const [isParsingFiles, setIsParsingFiles] = useState(false);
@@ -242,28 +245,67 @@ export function ScriptUploaderModal({
       project.extractedSummary = `تم رفع ${uploaded.filename} إلى Docker (${uploaded.parsed_type || primaryItem.extension}).`;
 
       const simType =
-        projectField === 'FEA'
+        simulationInputs?.simulationType ||
+        (projectField === 'FEA'
           ? 'Structural_Static'
           : projectField === 'Thermal'
           ? 'Thermal_Steady'
           : projectField === 'Multiphysics'
           ? 'CHT_Coupled'
-          : 'CFD_Incompressible';
+          : 'CFD_Incompressible');
+
+      const numFromStr = (raw: string | undefined, fallback: number): number => {
+        if (!raw || raw.trim() === '') return fallback;
+        const parsed = Number(raw);
+        return Number.isFinite(parsed) ? parsed : fallback;
+      };
 
       const ext = primaryItem.extension.toLowerCase();
       const simPayload: Record<string, any> = {
         simulation_type: simType,
         execution_mode: 'celery',
-        width_x: 1.0,
-        height_y: 0.4,
-        depth_z: 0.1,
-        mesh_size: 0.08,
-        velocity: 2.5,
-        pressure: 101325.0,
-        temperature: 350.0,
-        temperature_unit: 'K',
+        width_x: numFromStr(simulationInputs?.widthX, 1.0),
+        height_y: numFromStr(simulationInputs?.heightY, 0.4),
+        depth_z: numFromStr(simulationInputs?.depthZ, 0.1),
+        mesh_size: numFromStr(simulationInputs?.meshSize, 0.08),
+        velocity: numFromStr(simulationInputs?.velocity, 1.0),
+        pressure: numFromStr(simulationInputs?.pressure, 101325.0),
+        temperature: numFromStr(simulationInputs?.temperature, 300.0),
+        temperature_unit: simulationInputs?.temperatureUnit || 'K',
+        parallel_cores: Math.max(1, Math.round(numFromStr(simulationInputs?.parallelCores, 1))),
         uploaded_file_path: uploaded.uploaded_file_path,
       };
+      const kCond = numFromStr(simulationInputs?.thermalConductivity, NaN);
+      const youngs = numFromStr(simulationInputs?.youngModulus, NaN);
+      const nu = numFromStr(simulationInputs?.poissonRatio, NaN);
+      const rho = numFromStr(simulationInputs?.fluidDensity ?? simulationInputs?.density, NaN);
+      const mu = numFromStr(simulationInputs?.dynamicViscosity, NaN);
+      const hFlux = numFromStr(simulationInputs?.heatFlux, NaN);
+      if (Number.isFinite(kCond)) simPayload.thermal_conductivity_k = kCond;
+      if (Number.isFinite(youngs)) simPayload.young_modulus = youngs;
+      if (Number.isFinite(nu)) simPayload.poisson_ratio = nu;
+      if (Number.isFinite(rho)) simPayload.density = rho;
+      if (Number.isFinite(mu)) simPayload.dynamic_viscosity = mu;
+      if (Number.isFinite(hFlux)) simPayload.heat_flux = hFlux;
+      if (simulationInputs?.turbulenceModel) simPayload.turbulence_model = simulationInputs.turbulenceModel;
+      if (simulationInputs?.timeMode) simPayload.time_mode = simulationInputs.timeMode;
+      const tStep = numFromStr(simulationInputs?.timeStep, NaN);
+      const tEnd = numFromStr(simulationInputs?.endTime, NaN);
+      if (Number.isFinite(tStep)) simPayload.time_step = tStep;
+      if (Number.isFinite(tEnd)) simPayload.end_time = tEnd;
+
+      // Apply any numeric parameters extracted from the uploaded file content
+      if (Array.isArray(primaryItem.detectedParameters)) {
+        for (const paramEntry of primaryItem.detectedParameters) {
+          const kLower = String(paramEntry.key || '').toLowerCase();
+          const numVal = Number(paramEntry.value);
+          if (!Number.isFinite(numVal)) continue;
+          if (kLower.includes('vel')) simPayload.velocity = numVal;
+          else if (kLower.includes('temp')) simPayload.temperature = numVal;
+          else if (kLower.includes('press')) simPayload.pressure = numVal;
+        }
+      }
+
       if (uploaded.cad_stl_b64) {
         simPayload.cad_stl_b64 = uploaded.cad_stl_b64;
         simPayload.cad_filename = uploaded.filename;

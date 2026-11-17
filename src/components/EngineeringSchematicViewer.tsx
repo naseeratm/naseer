@@ -24,6 +24,38 @@ export const EngineeringSchematicViewer: React.FC<EngineeringSchematicViewerProp
   const isFEA = project.field === 'FEA';
   const isThermal = project.field === 'Thermal';
 
+  const submittedReq = project.simulationRun?.submittedRequest as Record<string, unknown> | undefined;
+  const widthX = typeof submittedReq?.width_x === 'number' ? submittedReq.width_x : undefined;
+  const heightY = typeof submittedReq?.height_y === 'number' ? submittedReq.height_y : undefined;
+  const depthZ = typeof submittedReq?.depth_z === 'number' ? submittedReq.depth_z : undefined;
+  const domainDimLabel =
+    widthX !== undefined && heightY !== undefined
+      ? `Lx = ${widthX} m × Ly = ${heightY} m${depthZ !== undefined ? ` × Lz = ${depthZ} m` : ''}`
+      : project.cadSpecs?.shell && project.cadSpecs.shell !== '—'
+      ? project.cadSpecs.shell
+      : '— (أبعاد النطاق غير محددة بعد)';
+
+  const bc0Text = project.boundaryConditions[0]?.value !== undefined && String(project.boundaryConditions[0].value).trim() !== ''
+    ? `${project.boundaryConditions[0].value} ${project.boundaryConditions[0].unit || ''}`.trim()
+    : '— (غير محدد)';
+  const bc1Text = project.boundaryConditions[1]?.value !== undefined && String(project.boundaryConditions[1].value).trim() !== ''
+    ? `${project.boundaryConditions[1].value} ${project.boundaryConditions[1].unit || ''}`.trim()
+    : '— (غير محدد)';
+  const bc2Label = project.boundaryConditions[2]?.name
+    ? `${project.boundaryConditions[2].name} (${project.boundaryConditions[2].type})`
+    : isThermal
+    ? 'حدود الجدار الحراري (Wall BC)'
+    : isFEA
+    ? 'حدود السطح الإنشائي (Surface BC)'
+    : 'حدود الجدار (Wall BC)';
+
+  const solvedGciPercent =
+    typeof project.meshStudyResult?.gci_fine_percent === 'number' && Number.isFinite(project.meshStudyResult.gci_fine_percent)
+      ? `${project.meshStudyResult.gci_fine_percent.toFixed(2)}%`
+      : typeof project.meshStudy?.meshLevels?.[2]?.gciPercent === 'number' && project.meshStudy.meshLevels[2].gciPercent > 0
+      ? `${project.meshStudy.meshLevels[2].gciPercent.toFixed(2)}%`
+      : '— (لم تُنفذ دراسة الشبكة بعد)';
+
   return (
     <div className="bg-slate-900/90 rounded-2xl border border-slate-800 p-6 shadow-2xl space-y-6">
       {/* Header & Controls */}
@@ -36,11 +68,11 @@ export const EngineeringSchematicViewer: React.FC<EngineeringSchematicViewerProp
             <h3 className="text-base font-bold text-white flex items-center gap-2">
               الرسم الهندسي ومخطط المدخلات والمخرجات (CAD & Domain Schematic)
               <span className="text-[10px] px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-300 font-mono">
-                ANSYS / AutoCAD Precision View
+                SI Precision View
               </span>
             </h3>
             <p className="text-xs text-slate-400 mt-0.5">
-              مخطط تفصيلي يوضح الأبعاد، الحدود، الشروط الحدية، الثوابت، ومواقع المدخلات والمخرجات الهندسية
+              مخطط تفصيلي يعكس الأبعاد والشروط الحدية والمخرجات الفعلية المعرّفة في المشروع النشط
             </p>
           </div>
         </div>
@@ -120,31 +152,31 @@ export const EngineeringSchematicViewer: React.FC<EngineeringSchematicViewerProp
                 <path d="M 80 120 Q 180 140 280 100" fill="none" stroke={isThermal ? '#ef4444' : '#38bdf8'} strokeWidth="1.5" strokeDasharray="5 3" opacity="0.8" />
                 <path d="M 80 160 Q 180 180 280 140" fill="none" stroke={isThermal ? '#f59e0b' : '#10b981'} strokeWidth="1.5" strokeDasharray="5 3" opacity="0.8" />
 
-                {/* Input Callout Marker (Heat Influx for Thermal / Inlet for CFD) */}
+                {/* First Callout Marker */}
                 <g transform="translate(40, 160)" className="cursor-pointer" onClick={() => setActiveCallout('inlet')}>
                   <circle cx="0" cy="0" r="10" fill={isThermal ? '#ef4444' : '#38bdf8'} stroke="#fff" strokeWidth="2" />
                   <text x="-3" y="4" fill="#0f172a" fontSize="11" fontWeight="bold">1</text>
                   <line x1="-20" y1="0" x2="-60" y2="0" stroke={isThermal ? '#ef4444' : '#38bdf8'} strokeWidth="1.5" />
                   <rect x="-180" y="-18" width="115" height="36" rx="6" fill="#0f172a" stroke={isThermal ? '#ef4444' : '#38bdf8'} strokeWidth="1.5" />
                   <text x="-172" y="2" fill={isThermal ? '#ef4444' : '#38bdf8'} fontSize="10" fontWeight="bold">
-                    {isThermal ? 'مصدر الحرارة (Heat Source)' : isFEA ? 'التثبيت (Fixed Base)' : 'مدخل التدفق (Inlet)'}
+                    {project.boundaryConditions[0]?.name || (isThermal ? 'الحد الحراري 1' : isFEA ? 'التثبيت (Support)' : 'مدخل التدفق (Inlet)')}
                   </text>
                   <text x="-172" y="14" fill="#cbd5e1" fontSize="9" fontFamily="monospace">
-                    {project.boundaryConditions[0]?.value ? `${project.boundaryConditions[0].value} ${project.boundaryConditions[0].unit || ''}` : (isThermal ? '2500 W/m²' : '22 m/s')}
+                    {bc0Text}
                   </text>
                 </g>
 
-                {/* Second Callout Marker (Convective Cooling for Thermal / Outlet for CFD) */}
+                {/* Second Callout Marker */}
                 <g transform="translate(240, 160)" className="cursor-pointer" onClick={() => setActiveCallout('outlet')}>
                   <circle cx="0" cy="0" r="10" fill={isThermal ? '#38bdf8' : '#f43f5e'} stroke="#fff" strokeWidth="2" />
                   <text x="-3" y="4" fill="#0f172a" fontSize="11" fontWeight="bold">2</text>
                   <line x1="20" y1="0" x2="60" y2="0" stroke={isThermal ? '#38bdf8' : '#f43f5e'} strokeWidth="1.5" />
                   <rect x="65" y="-18" width="125" height="36" rx="6" fill="#0f172a" stroke={isThermal ? '#38bdf8' : '#f43f5e'} strokeWidth="1.5" />
                   <text x="73" y="2" fill={isThermal ? '#38bdf8' : '#f43f5e'} fontSize="10" fontWeight="bold">
-                    {isThermal ? 'تبديد الحمل (Cooling Sink)' : isFEA ? 'الحمولة (Load P)' : 'مخرج النظام (Outlet)'}
+                    {project.boundaryConditions[1]?.name || (isThermal ? 'الحد الحراري 2' : isFEA ? 'الحمولة (Load)' : 'مخرج النظام (Outlet)')}
                   </text>
                   <text x="73" y="14" fill="#cbd5e1" fontSize="9" fontFamily="monospace">
-                    {project.boundaryConditions[1]?.value ? `${project.boundaryConditions[1].value} ${project.boundaryConditions[1].unit || ''}` : (isThermal ? 'h = 25 W/m²K' : '0.0 Pa')}
+                    {bc1Text}
                   </text>
                 </g>
 
@@ -155,7 +187,7 @@ export const EngineeringSchematicViewer: React.FC<EngineeringSchematicViewerProp
                   <line x1="0" y1="20" x2="0" y2="50" stroke="#10b981" strokeWidth="1.5" />
                   <rect x="-70" y="55" width="140" height="32" rx="6" fill="#0f172a" stroke="#10b981" strokeWidth="1.5" />
                   <text x="-62" y="70" fill="#10b981" fontSize="10" fontWeight="bold">
-                    {isThermal ? 'عزل أديباتيكي (Adiabatic q"=0)' : isFEA ? 'حدود المرونة (Elastic Wall)' : 'الجدار اللزج (No-Slip Wall)'}
+                    {bc2Label}
                   </text>
                 </g>
               </g>
@@ -167,13 +199,13 @@ export const EngineeringSchematicViewer: React.FC<EngineeringSchematicViewerProp
                 {/* Left boundary line */}
                 <line x1="0" y1="0" x2="0" y2="200" stroke={isThermal ? '#ef4444' : '#38bdf8'} strokeWidth="5" />
                 <text x="-40" y="105" fill={isThermal ? '#ef4444' : '#38bdf8'} fontSize="10" fontWeight="bold" transform="rotate(-90 -40 105)">
-                  {isThermal ? 'HEAT FLUX' : isFEA ? 'FIXED BASE' : 'INLET'}
+                  {project.boundaryConditions[0]?.name || (isThermal ? 'THERMAL BC 1' : isFEA ? 'SUPPORT BC' : 'INLET BC')}
                 </text>
 
                 {/* Right boundary line */}
                 <line x1="460" y1="0" x2="460" y2="200" stroke={isThermal ? '#38bdf8' : '#f43f5e'} strokeWidth="5" />
                 <text x="490" y="105" fill={isThermal ? '#38bdf8' : '#f43f5e'} fontSize="10" fontWeight="bold" transform="rotate(-90 490 105)">
-                  {isThermal ? 'CONVECTION' : isFEA ? 'LOAD TIP' : 'OUTLET'}
+                  {project.boundaryConditions[1]?.name || (isThermal ? 'THERMAL BC 2' : isFEA ? 'LOAD BC' : 'OUTLET BC')}
                 </text>
 
                 {/* Centerline / Isotherm Axis */}
@@ -181,7 +213,9 @@ export const EngineeringSchematicViewer: React.FC<EngineeringSchematicViewerProp
 
                 {/* Dimensions */}
                 <line x1="0" y1="220" x2="460" y2="220" stroke="#94a3b8" strokeWidth="1" markerEnd="url(#arrow)" markerStart="url(#arrow)" />
-                <text x="180" y="235" fill="#94a3b8" fontSize="11" fontFamily="monospace">L = 0.50 m (Characteristic Dimension)</text>
+                <text x="230" y="235" textAnchor="middle" fill="#94a3b8" fontSize="11" fontFamily="monospace">
+                  {domainDimLabel}
+                </text>
 
                 {/* Callout markers */}
                 <circle cx="100" cy="100" r="8" fill={isThermal ? '#ef4444' : '#38bdf8'} />
@@ -195,26 +229,22 @@ export const EngineeringSchematicViewer: React.FC<EngineeringSchematicViewerProp
         </div>
 
         {/* Legend Overlay / Quick Info */}
-        <div className="absolute bottom-4 left-4 right-4 bg-slate-900/90 backdrop-blur-md p-3.5 rounded-xl border border-slate-800 flex flex-wrap items-center justify-between gap-3 text-xs">
+        <div className="absolute bottom-4 left-4 right-4 bg-slate-900/90 p-3.5 rounded-xl border border-slate-800 flex flex-wrap items-center justify-between gap-3 text-xs">
           <div className="flex items-center gap-3">
             <Info className="w-4 h-4 text-sky-400 shrink-0" />
             <div>
-              <span className="font-bold text-slate-200">المدخلات والمخرجات والثوابت الهندسية:</span>
+              <span className="font-bold text-slate-200">المدخلات والمخرجات والثوابت الهندسية الفعلية:</span>
               <p className="text-[11px] text-slate-400">
-                المادة: <strong className="text-amber-300">{project.material.name}</strong> | 
-                {isThermal ? ' مصدر الحرارة: ' : ' المدخل: '}
-                <strong className="text-sky-300">
-                  {project.boundaryConditions[0]?.value ? `${project.boundaryConditions[0].value} ${project.boundaryConditions[0].unit || ''}` : (isThermal ? '2500 W/m²' : '22 m/s')}
-                </strong> | 
-                {isThermal ? ' التبديد: ' : ' المخرج: '}
-                <strong className="text-rose-300">
-                  {project.boundaryConditions[1]?.value ? `${project.boundaryConditions[1].value} ${project.boundaryConditions[1].unit || ''}` : (isThermal ? 'h=25 W/m²K' : '0 Pa')}
-                </strong>
+                المادة: <strong className="text-amber-300">{project.material.name || '—'}</strong> | 
+                الحد 1:{' '}
+                <strong className="text-sky-300">{bc0Text}</strong> | 
+                الحد 2:{' '}
+                <strong className="text-rose-300">{bc1Text}</strong>
               </p>
             </div>
           </div>
           <span className="font-mono text-[10px] text-emerald-400 bg-emerald-500/10 px-2 py-1 rounded border border-emerald-500/20">
-            ✓ متوافق مع معايير الرسم الهندسي ANSYS / AutoCAD
+            ✓ مرتبط مباشرة بمدخلات المحلل ونتائجه (Zero Static Fallbacks)
           </span>
         </div>
       </div>
@@ -227,11 +257,15 @@ export const EngineeringSchematicViewer: React.FC<EngineeringSchematicViewerProp
             {isThermal ? 'المدخلات والشروط الحرارية (Thermal Inputs)' : isFEA ? 'المدخلات والحمولات الإنشائية' : 'المدخلات الهيدروديناميكية'}
           </span>
           <div className="text-xs text-slate-300 space-y-1 font-mono">
-            {project.boundaryConditions.slice(0, 3).map((bc, idx) => (
-              <div key={idx} className="truncate">
-                • {bc.name}: <strong className="text-white">{bc.value} {bc.unit}</strong>
-              </div>
-            ))}
+            {project.boundaryConditions.length === 0 ? (
+              <div className="text-slate-500">• لم يتم تعريف شروط حدية بعد</div>
+            ) : (
+              project.boundaryConditions.slice(0, 4).map((bc, idx) => (
+                <div key={idx} className="truncate">
+                  • {bc.name}{bc.patchName ? ` [${bc.patchName}]` : ''}: <strong className="text-white">{bc.value} {bc.unit}</strong>
+                </div>
+              ))
+            )}
           </div>
         </div>
 
@@ -241,12 +275,16 @@ export const EngineeringSchematicViewer: React.FC<EngineeringSchematicViewerProp
             المخرجات المحسوبة (Outputs)
           </span>
           <div className="text-xs text-slate-300 space-y-1 font-mono">
-            {project.contours.slice(0, 2).map((c, idx) => (
-              <div key={idx} className="truncate">
-                • {c.name}: <strong className="text-white">Max {c.maxVal} {c.unit}</strong>
-              </div>
-            ))}
-            <div>• مؤشر روتش (GCI): <strong className="text-emerald-400">{project.meshStudy?.meshLevels?.[2]?.gciPercent || '1.12'}%</strong></div>
+            {project.contours.length === 0 ? (
+              <div className="text-slate-500">• لا توجد حقول محسوبة بعد</div>
+            ) : (
+              project.contours.slice(0, 2).map((c, idx) => (
+                <div key={idx} className="truncate">
+                  • {c.name}: <strong className="text-white">Max {c.maxVal} {c.unit}</strong>
+                </div>
+              ))
+            )}
+            <div>• مؤشر روتش (GCI): <strong className="text-emerald-400">{solvedGciPercent}</strong></div>
           </div>
         </div>
 
@@ -256,8 +294,8 @@ export const EngineeringSchematicViewer: React.FC<EngineeringSchematicViewerProp
             الثوابت الفيزيائية للمادة (Constants)
           </span>
           <div className="text-xs text-slate-300 space-y-1 font-mono">
-            <div>• المادة: <strong className="text-amber-300">{project.material.name}</strong></div>
-            <div>• الكثافة (&rho;): <strong className="text-white">{project.material.density}</strong></div>
+            <div>• المادة: <strong className="text-amber-300">{project.material.name || '—'}</strong></div>
+            <div>• الكثافة (&rho;): <strong className="text-white">{project.material.density || '—'}</strong></div>
             {project.material.thermalConductivity && <div>• التوصيل الحراري (k): <strong className="text-white">{project.material.thermalConductivity}</strong></div>}
             {project.material.specificHeat && <div>• الحرارة النوعية (c_p): <strong className="text-white">{project.material.specificHeat}</strong></div>}
             {project.material.elasticModulus && <div>• معامل المرونة (E): <strong className="text-white">{project.material.elasticModulus}</strong></div>}

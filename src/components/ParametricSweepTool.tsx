@@ -9,7 +9,7 @@ import {
   AlertTriangle,
   Loader2,
 } from 'lucide-react';
-import { ThesisProject } from '../types/thesis';
+import { CaseStudyItem, ThesisProject } from '../types/thesis';
 import { SimulationInputs, SimulationType } from '../types/studio';
 import { BoundaryMarker } from './Interactive3DViewport';
 
@@ -36,6 +36,7 @@ interface ParametricSweepToolProps {
   simulationInputs?: SimulationInputs;
   uploadedCadStl?: { name: string; base64: string } | null;
   viewportBoundaryMarkers?: BoundaryMarker[];
+  onSweepComplete?: (cases: CaseStudyItem[]) => void;
 }
 
 const SWEEP_PRESETS: Record<
@@ -88,12 +89,16 @@ function inferSimulationType(project: ThesisProject | null): SimulationType {
 function extractPointOutputs(
   simType: string,
   resultWrapper: any,
-): { out1: number | null; label1: string; out2: number | null; label2: string; solver: string } {
+): { out1: number | null; label1: string; out2: number | null; label2: string; solver: string; nodes: number; cells: number } {
   const res = resultWrapper?.data ?? resultWrapper ?? {};
   const solver = String(res.solver ?? resultWrapper?.solver ?? 'Docker CAE Engine');
   const summary = res.field_summary ?? {};
   const metrics = res.metrics ?? {};
   const integrals = res.integrals ?? {};
+  const meshInfo = res.mesh ?? {};
+  const vtkData = res.vtk_data ?? {};
+  const nodes = Number(meshInfo.nodes ?? vtkData.points?.length ?? 0) || 0;
+  const cells = Number(meshInfo.cells ?? meshInfo.elements ?? vtkData.triangles?.length ?? 0) || 0;
 
   const num = (v: unknown): number | null =>
     typeof v === 'number' && Number.isFinite(v) ? Number(v.toFixed(4)) : null;
@@ -115,6 +120,8 @@ function extractPointOutputs(
       out2: dispMax,
       label2: 'أقصى إزاحة / تشوه (mm)',
       solver,
+      nodes,
+      cells,
     };
   }
 
@@ -133,6 +140,8 @@ function extractPointOutputs(
       out2: qFlux,
       label2: nu !== null ? 'رقم نسلت المحسوب (Nu)' : 'التدفق الحراري المحسوب (W)',
       solver,
+      nodes,
+      cells,
     };
   }
 
@@ -144,6 +153,8 @@ function extractPointOutputs(
     out2: pDrop,
     label2: 'هبوط الضغط / أدنى قيمة (Pa)',
     solver,
+    nodes,
+    cells,
   };
 }
 
@@ -154,6 +165,7 @@ export const ParametricSweepTool: React.FC<ParametricSweepToolProps> = ({
   simulationInputs,
   uploadedCadStl,
   viewportBoundaryMarkers,
+  onSweepComplete,
 }) => {
   const defaultParam: BackendSweepParam =
     currentProject?.field === 'FEA'
@@ -253,6 +265,18 @@ export const ParametricSweepTool: React.FC<ParametricSweepToolProps> = ({
       const density = numOrUndef(simulationInputs?.fluidDensity ?? simulationInputs?.density);
       const visc = numOrUndef(simulationInputs?.dynamicViscosity);
       const hFlux = numOrUndef(simulationInputs?.heatFlux);
+      const pCores = numOrUndef(simulationInputs?.parallelCores);
+      const infLayers = numOrUndef(simulationInputs?.inflationLayers);
+      const firstLayerH = numOrUndef(simulationInputs?.firstLayerHeight);
+      const growthR = numOrUndef(simulationInputs?.growthRate);
+      const tStep = numOrUndef(simulationInputs?.timeStep);
+      const tEnd = numOrUndef(simulationInputs?.endTime);
+      const gravY = numOrUndef(simulationInputs?.gravityY);
+      const currDens = numOrUndef(simulationInputs?.currentDensity);
+      const relPerm = numOrUndef(simulationInputs?.relativePermeability);
+      const relEps = numOrUndef(simulationInputs?.relativePermittivity);
+      const elecCond = numOrUndef(simulationInputs?.electricalConductivity);
+      const thermExp = numOrUndef(simulationInputs?.thermalExpansion);
 
       if (wx !== undefined) basePayload.width_x = wx;
       if (hy !== undefined) basePayload.height_y = hy;
@@ -271,6 +295,23 @@ export const ParametricSweepTool: React.FC<ParametricSweepToolProps> = ({
       if (visc !== undefined) basePayload.dynamic_viscosity = visc;
       if (hFlux !== undefined) basePayload.heat_flux = hFlux;
       if (simulationInputs?.turbulenceModel) basePayload.turbulence_model = simulationInputs.turbulenceModel;
+      if (pCores !== undefined && pCores >= 1) basePayload.parallel_cores = Math.round(pCores);
+      if (simulationInputs?.elementOrder !== undefined) basePayload.element_order = Number(simulationInputs.elementOrder);
+      if (infLayers !== undefined) basePayload.inflation_layers = Math.round(infLayers);
+      if (firstLayerH !== undefined) basePayload.first_layer_height = firstLayerH;
+      if (growthR !== undefined) basePayload.growth_rate = growthR;
+      if (simulationInputs?.timeMode) basePayload.time_mode = simulationInputs.timeMode;
+      if (tStep !== undefined) basePayload.time_step = tStep;
+      if (tEnd !== undefined) basePayload.end_time = tEnd;
+      if (simulationInputs?.gravityEnabled !== undefined) basePayload.gravity_enabled = simulationInputs.gravityEnabled;
+      if (gravY !== undefined) basePayload.gravity_y = gravY;
+      if (simulationInputs?.emSubmode) basePayload.em_submode = simulationInputs.emSubmode;
+      if (currDens !== undefined) basePayload.current_density = currDens;
+      if (relPerm !== undefined) basePayload.relative_permeability = relPerm;
+      if (relEps !== undefined) basePayload.relative_permittivity = relEps;
+      if (elecCond !== undefined) basePayload.electric_conductivity = elecCond;
+      if (thermExp !== undefined) basePayload.thermal_expansion_coeff = thermExp;
+
       if (uploadedCadStl) {
         basePayload.cad_file_b64 = uploadedCadStl.base64;
         basePayload.cad_stl_b64 = uploadedCadStl.base64;
@@ -278,6 +319,16 @@ export const ParametricSweepTool: React.FC<ParametricSweepToolProps> = ({
       }
       if (viewportBoundaryMarkers && viewportBoundaryMarkers.length > 0) {
         basePayload.boundary_markers = viewportBoundaryMarkers;
+      }
+      if (currentProject?.boundaryConditions && currentProject.boundaryConditions.length > 0) {
+        basePayload.boundary_patches = currentProject.boundaryConditions.map((bc) => ({
+          name: bc.name,
+          type: bc.type,
+          value: bc.value,
+          unit: bc.unit,
+          patchName: bc.patchName,
+          markerId: bc.markerId,
+        }));
       }
 
       const response = await fetch('/api/parametric-sweep', {
@@ -308,6 +359,14 @@ export const ParametricSweepTool: React.FC<ParametricSweepToolProps> = ({
       const pending = new Set(runs.map((r) => r.task_id));
       const startedAt = Date.now();
       const timeoutMs = 180_000;
+      const completedRecords = new Map<
+        string,
+        {
+          paramVal: number;
+          extracted: ReturnType<typeof extractPointOutputs>;
+          durationSec: number;
+        }
+      >();
 
       while (pending.size > 0 && Date.now() - startedAt < timeoutMs) {
         await new Promise((resolve) => setTimeout(resolve, 1200));
@@ -327,6 +386,12 @@ export const ParametricSweepTool: React.FC<ParametricSweepToolProps> = ({
               } else if (jobStatus === 'COMPLETED') {
                 pending.delete(taskId);
                 const extracted = extractPointOutputs(simulationType, job.result);
+                const runEntry = runs.find((r) => r.task_id === taskId);
+                completedRecords.set(taskId, {
+                  paramVal: runEntry?.value ?? 0,
+                  extracted,
+                  durationSec: Number(((Date.now() - startedAt) / 1000).toFixed(1)),
+                });
                 setDesignPoints((prev) =>
                   prev.map((dp) =>
                     dp.taskId === taskId
@@ -361,6 +426,37 @@ export const ParametricSweepTool: React.FC<ParametricSweepToolProps> = ({
             }
           }),
         );
+      }
+
+      if (completedRecords.size > 0 && onSweepComplete) {
+        const orderedRuns = runs
+          .map((r, idx) => ({ taskId: r.task_id, idx, record: completedRecords.get(r.task_id) }))
+          .filter((item): item is { taskId: string; idx: number; record: NonNullable<typeof item.record> } => Boolean(item.record));
+        const baselineVal = orderedRuns[0]?.record.extracted.out1 ?? 0;
+        const casesMatrix: CaseStudyItem[] = orderedRuns.map(({ idx, record }) => {
+          const outVal = record.extracted.out1 ?? 0;
+          const diffPct =
+            idx === 0 || Math.abs(baselineVal) < 1e-12
+              ? 0
+              : Number((((outVal - baselineVal) / Math.abs(baselineVal)) * 100).toFixed(2));
+          return {
+            caseId: `DP-${idx + 1}`,
+            name: `${preset.labelAr}: ${record.paramVal} ${preset.unit}`,
+            nameAr: `${preset.labelAr}: ${record.paramVal} ${preset.unit}`,
+            studyVariable: `${sweepParam} = ${record.paramVal} ${preset.unit}`,
+            purpose: idx === 0 ? 'نقطة التصميم المرجعية (Baseline DP)' : 'دراسة حساسية المسح البارامتري',
+            meshElements: record.extracted.cells,
+            meshNodes: record.extracted.nodes,
+            solverEngine: record.extracted.solver,
+            keyOutputName: record.extracted.label1,
+            keyOutputValue: outVal,
+            keyOutputUnit: '',
+            discrepancyPercent: diffPct,
+            runDurationSec: record.durationSec,
+            status: idx === 0 ? 'Baseline' : 'Converged',
+          };
+        });
+        onSweepComplete(casesMatrix);
       }
 
       if (pending.size > 0) {

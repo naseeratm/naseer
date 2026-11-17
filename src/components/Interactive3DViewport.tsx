@@ -23,6 +23,9 @@ import {
   SlidersHorizontal,
   Sigma,
   Loader2,
+  Play,
+  Pause,
+  RotateCcw,
 } from 'lucide-react';
 import { VtkFieldPayload } from '../types/thesis';
 import { ColormapType, getColorFromColormap } from '../utils/physicsEngine';
@@ -38,6 +41,7 @@ export interface BoundaryMarker {
   id: string;
   type: BoundaryType;
   label?: string;
+  patchName?: string;
   value?: number;
   unit?: string;
   secondaryValue?: number;
@@ -74,6 +78,7 @@ export interface Interactive3DViewportProps {
   integrals?: Record<string, number | string> | null;
   cadLoading?: boolean;
   selectedMarkerId?: string | null;
+  highlightedPatchName?: string | null;
   fieldMin?: number;
   fieldMax?: number;
   fieldUnit?: string;
@@ -131,6 +136,7 @@ export const Interactive3DViewport: React.FC<Interactive3DViewportProps> = ({
   integrals = null,
   cadLoading = false,
   selectedMarkerId = null,
+  highlightedPatchName = null,
   fieldMin,
   fieldMax,
   fieldUnit = '',
@@ -153,6 +159,7 @@ export const Interactive3DViewport: React.FC<Interactive3DViewportProps> = ({
   const targetCamPos = useRef<THREE.Vector3 | null>(null);
   const customMeshRef = useRef<THREE.Mesh | null>(null);
   const vtkMeshRef = useRef<THREE.Mesh | null>(null);
+  const highlightMeshRef = useRef<THREE.Mesh | null>(null);
   const vectorGroupRef = useRef<THREE.Group | null>(null);
   const markersGroupRef = useRef<THREE.Group | null>(null);
   const markerObjectsMap = useRef<Map<string, THREE.Object3D>>(new Map());
@@ -202,6 +209,8 @@ export const Interactive3DViewport: React.FC<Interactive3DViewportProps> = ({
   const [isoMaxPct, setIsoMaxPct] = useState<number>(100);
   const [showPostControls, setShowPostControls] = useState<boolean>(false);
   const [showIntegralsHud, setShowIntegralsHud] = useState<boolean>(false);
+  const [frameIndex, setFrameIndex] = useState<number>(0);
+  const [isPlaying, setIsPlaying] = useState<boolean>(false);
 
   const [regionBox, setRegionBox] = useState<RegionBoxState>({
     enabled: false,
@@ -236,6 +245,25 @@ export const Interactive3DViewport: React.FC<Interactive3DViewportProps> = ({
 
   const effectiveVtkData = vtkData || meshPreviewVtk || null;
   const isShowingSolvedVtk = Boolean(vtkData);
+  const timeFrames = useMemo(
+    () => (Array.isArray(effectiveVtkData?.time_frames) ? effectiveVtkData.time_frames : []),
+    [effectiveVtkData],
+  );
+  const effectiveVtkDataRef = useRef<VtkFieldPayload | null>(effectiveVtkData);
+  effectiveVtkDataRef.current = effectiveVtkData;
+
+  useEffect(() => {
+    setIsPlaying(false);
+    setFrameIndex(timeFrames.length > 0 ? timeFrames.length - 1 : 0);
+  }, [effectiveVtkData, timeFrames.length]);
+
+  useEffect(() => {
+    if (!isPlaying || timeFrames.length <= 1) return;
+    const timer = window.setInterval(() => {
+      setFrameIndex((prev) => (prev + 1) % timeFrames.length);
+    }, 350);
+    return () => window.clearInterval(timer);
+  }, [isPlaying, timeFrames.length]);
 
   const isFEA = field === 'FEA' || field?.toLowerCase().includes('structural');
   const isThermal = field === 'Thermal' || field?.toLowerCase().includes('thermal');
@@ -584,10 +612,26 @@ export const Interactive3DViewport: React.FC<Interactive3DViewportProps> = ({
         const physY = scale !== 0 ? pt.y / scale + center.y : pt.y;
         const physZ = scale !== 0 ? pt.z / scale + center.z : pt.z;
 
+        let detectedPatchName: string | undefined;
+        const curVtk = effectiveVtkDataRef.current;
+        if (
+          hit.object === vtkMeshRef.current &&
+          typeof hit.faceIndex === 'number' &&
+          curVtk?.triangle_patches &&
+          curVtk.patches
+        ) {
+          const patchIdx = curVtk.triangle_patches[hit.faceIndex];
+          const patchMeta = typeof patchIdx === 'number' ? curVtk.patches[patchIdx] : undefined;
+          if (patchMeta?.name) {
+            detectedPatchName = patchMeta.name;
+          }
+        }
+
         const newMarker: BoundaryMarker = {
           id: newId,
           type: markerType,
-          label,
+          label: detectedPatchName ? `${label} (${detectedPatchName})` : label,
+          patchName: detectedPatchName,
           value: defaultVal,
           unit: defaultUnit,
           secondaryValue: secVal,
@@ -897,6 +941,135 @@ export const Interactive3DViewport: React.FC<Interactive3DViewportProps> = ({
       geom.setIndex(base.triangles);
     }
   }, [deformationScale, isoMinPct, isoMaxPct, scalarRange.min, scalarRange.max, effectiveVtkData]);
+
+  // Apply Transient Time-Step Playback Frame in-place without recreating geometry
+  useEffect(() => {
+    const mesh = vtkMeshRef.current;
+    const base = baseVtkRef.current;
+    if (!mesh || !base.normalizedPositions || timeFrames.length <= 1) return;
+    const frame = timeFrames[Math.min(frameIndex, timeFrames.length - 1)];
+    if (!frame || !frame.scalars) return;
+
+    const activeKey =
+      selectedScalarKey && frame.scalars[selectedScalarKey]
+        ? selectedScalarKey
+        : Object.keys(frame.scalars)[0] || '';
+    const frameScalars = activeKey ? frame.scalars[activeKey] : undefined;
+    const geom = mesh.geometry;
+    const vertexCount = base.normalizedPositions.length / 3;
+
+    if (frameScalars && frameScalars.length >= vertexCount) {
+      base.scalars = frameScalars;
+      vtkTransformRef.current.scalars = frameScalars;
+      let minV = Infinity;
+      let maxV = -Infinity;
+      for (let i = 0; i < frameScalars.length; i++) {
+        const v = frameScalars[i];
+        if (Number.isFinite(v)) {
+          if (v < minV) minV = v;
+          if (v > maxV) maxV = v;
+        }
+      }
+      if (!Number.isFinite(minV)) minV = scalarRange.min ?? 0;
+      if (!Number.isFinite(maxV)) maxV = scalarRange.max ?? 1;
+      const span = maxV - minV;
+
+      let colorAttr = geom.attributes.color as THREE.BufferAttribute | undefined;
+      if (!colorAttr || colorAttr.count < vertexCount) {
+        colorAttr = new THREE.BufferAttribute(new Float32Array(vertexCount * 3), 3);
+        geom.setAttribute('color', colorAttr);
+        const mat = mesh.material as THREE.MeshStandardMaterial;
+        mat.vertexColors = true;
+        mat.color.setHex(0xffffff);
+        mat.needsUpdate = true;
+      }
+      const colors = colorAttr.array as Float32Array;
+      for (let i = 0; i < vertexCount; i++) {
+        const val = frameScalars[i];
+        const t = span > 1e-12 && Number.isFinite(val) ? (val - minV) / span : 0.5;
+        const [r, g, b] = getColorFromColormap(t, colormap);
+        colors[i * 3] = r / 255;
+        colors[i * 3 + 1] = g / 255;
+        colors[i * 3 + 2] = b / 255;
+      }
+      colorAttr.needsUpdate = true;
+    }
+
+    const frameDisp = frame.vectors?.displacement;
+    if (frameDisp && frameDisp.length === base.normalizedPositions.length) {
+      base.displacement = frameDisp;
+      const posAttr = geom.attributes.position as THREE.BufferAttribute;
+      const out = posAttr.array as Float32Array;
+      const src = base.normalizedPositions;
+      const factor = base.scale * deformationScale;
+      for (let i = 0; i < src.length; i++) {
+        out[i] = src[i] + frameDisp[i] * factor;
+      }
+      posAttr.needsUpdate = true;
+      geom.computeVertexNormals();
+    }
+  }, [frameIndex, timeFrames, selectedScalarKey, colormap, deformationScale, scalarRange.min, scalarRange.max]);
+
+  // Render CAD Named Face Highlight Overlay when a patch or marker with patchName is selected
+  useEffect(() => {
+    const scene = sceneRef.current;
+    const base = baseVtkRef.current;
+    if (!scene) return;
+
+    if (highlightMeshRef.current) {
+      scene.remove(highlightMeshRef.current);
+      highlightMeshRef.current.geometry.dispose();
+      (highlightMeshRef.current.material as THREE.Material).dispose();
+      highlightMeshRef.current = null;
+    }
+
+    const activeMarkerPatch = editingMarkerId
+      ? boundaryMarkers.find((m) => m.id === editingMarkerId)?.patchName
+      : undefined;
+    const targetPatchName = highlightedPatchName || activeMarkerPatch || null;
+    if (
+      !targetPatchName ||
+      !base.normalizedPositions ||
+      !effectiveVtkData?.triangle_patches ||
+      !effectiveVtkData.patches
+    ) {
+      return;
+    }
+
+    const patchIdx = effectiveVtkData.patches.findIndex(
+      (p) => p.name.toLowerCase() === targetPatchName.toLowerCase() || p.id.toLowerCase() === targetPatchName.toLowerCase(),
+    );
+    if (patchIdx < 0) return;
+
+    const patchTris: number[] = [];
+    const triPatches = effectiveVtkData.triangle_patches;
+    const allTris = effectiveVtkData.triangles;
+    for (let t = 0; t < triPatches.length; t++) {
+      if (triPatches[t] === patchIdx && t * 3 + 2 < allTris.length) {
+        patchTris.push(allTris[t * 3], allTris[t * 3 + 1], allTris[t * 3 + 2]);
+      }
+    }
+    if (patchTris.length === 0) return;
+
+    const hGeo = new THREE.BufferGeometry();
+    hGeo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(base.normalizedPositions), 3));
+    hGeo.setIndex(patchTris);
+    hGeo.computeVertexNormals();
+
+    const hMat = new THREE.MeshBasicMaterial({
+      color: 0x22d3ee,
+      transparent: true,
+      opacity: 0.42,
+      side: THREE.DoubleSide,
+      depthTest: true,
+      polygonOffset: true,
+      polygonOffsetFactor: -1,
+      polygonOffsetUnits: -1,
+    });
+    const hMesh = new THREE.Mesh(hGeo, hMat);
+    highlightMeshRef.current = hMesh;
+    scene.add(hMesh);
+  }, [highlightedPatchName, editingMarkerId, boundaryMarkers, effectiveVtkData]);
 
   // Apply X / Y / Z Interactive Section Slice Clipping Plane
   useEffect(() => {
@@ -1535,15 +1708,66 @@ export const Interactive3DViewport: React.FC<Interactive3DViewportProps> = ({
                       )}
                     </div>
                   ) : (
-                    <div className="text-slate-400 mt-0.5">
-                      {m.value} {m.unit}
-                      {m.secondaryUnit ? ` · ${m.secondaryValue} ${m.secondaryUnit}` : ''}
+                    <div className="text-slate-400 mt-0.5 flex items-center justify-between gap-1.5">
+                      <span>
+                        {m.value} {m.unit}
+                        {m.secondaryUnit ? ` · ${m.secondaryValue} ${m.secondaryUnit}` : ''}
+                      </span>
+                      {m.patchName && (
+                        <span className="rounded bg-cyan-950/90 border border-cyan-500/40 px-1 py-0.2 text-[9px] text-cyan-300">
+                          {m.patchName}
+                        </span>
+                      )}
                     </div>
                   )}
                 </div>
               ))}
             </div>
           )}
+        </div>
+      )}
+
+      {/* Transient Time-Step Playback Scrubber HUD */}
+      {timeFrames.length > 1 && (
+        <div className="absolute bottom-8 left-1/2 z-20 flex -translate-x-1/2 items-center gap-2.5 rounded-xl border border-sky-500/40 bg-slate-950/95 px-3 py-1.5 shadow-2xl text-xs">
+          <button
+            type="button"
+            title={isPlaying ? 'Pause Transient Playback' : 'Play Transient Time Steps'}
+            onClick={() => setIsPlaying((p) => !p)}
+            className="flex h-6 w-6 items-center justify-center rounded-lg bg-sky-500/20 text-sky-300 hover:bg-sky-500/30"
+          >
+            {isPlaying ? <Pause className="h-3.5 w-3.5" /> : <Play className="h-3.5 w-3.5 fill-current" />}
+          </button>
+          <button
+            type="button"
+            title="Reset to Initial Time Step"
+            onClick={() => {
+              setIsPlaying(false);
+              setFrameIndex(0);
+            }}
+            className="flex h-6 w-6 items-center justify-center rounded-lg text-slate-400 hover:bg-slate-800 hover:text-white"
+          >
+            <RotateCcw className="h-3.5 w-3.5" />
+          </button>
+          <input
+            aria-label="Transient Time Step Scrubber"
+            type="range"
+            min={0}
+            max={timeFrames.length - 1}
+            step={1}
+            value={Math.min(frameIndex, timeFrames.length - 1)}
+            onChange={(e) => {
+              setIsPlaying(false);
+              setFrameIndex(Number(e.target.value));
+            }}
+            className="w-36 accent-sky-400 cursor-pointer"
+          />
+          <div className="font-mono text-[10.5px] text-slate-200 tabular-nums whitespace-nowrap">
+            t = <strong className="text-sky-300">{Number(timeFrames[Math.min(frameIndex, timeFrames.length - 1)]?.time ?? 0).toPrecision(4)}</strong> s
+            <span className="ml-1.5 text-slate-500">
+              ({Math.min(frameIndex + 1, timeFrames.length)}/{timeFrames.length})
+            </span>
+          </div>
         </div>
       )}
 

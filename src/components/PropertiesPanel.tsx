@@ -18,6 +18,7 @@ import {
   Trash2,
   Loader2,
   Play,
+  Download,
 } from 'lucide-react';
 import { BoundaryCondition, ThesisProject } from '../types/thesis';
 import {
@@ -45,6 +46,7 @@ export interface PanelResults {
   classified_type?: string;
   recommended_solver?: string;
   solver_engine?: string;
+  parallel_cores?: number;
   process_time?: number;
   process_time_ms?: number;
   max_temperature?: number;
@@ -94,6 +96,8 @@ interface PropertiesPanelProps {
   meshGenerating?: boolean;
   onGenerateMeshPreview?: () => void;
   cadPatches?: Array<{ id: string; name: string }>;
+  lastTaskId?: string | null;
+  onDownloadCaseArchive?: (taskId: string) => void;
 }
 
 const STEP_TITLES: Record<WorkflowStep, string> = {
@@ -243,6 +247,8 @@ export const PropertiesPanel: React.FC<PropertiesPanelProps> = ({
   meshGenerating = false,
   onGenerateMeshPreview,
   cadPatches = [],
+  lastTaskId = null,
+  onDownloadCaseArchive,
 }) => {
   const fineMesh = project?.meshStudy?.meshLevels?.[2];
   const geometryComponent = project?.workbenchComponents?.find((component) => component.type === 'Geometry');
@@ -601,8 +607,64 @@ export const PropertiesPanel: React.FC<PropertiesPanelProps> = ({
   } else if (step === 'boundaries') {
     const bcs = project.boundaryConditions || [];
     const activeBc = selectedBoundaryIndex !== null && bcs[selectedBoundaryIndex] ? bcs[selectedBoundaryIndex] : null;
+    const availablePatches =
+      cadPatches.length > 0
+        ? cadPatches
+        : meshPreviewStats?.patches && meshPreviewStats.patches.length > 0
+          ? meshPreviewStats.patches
+          : project.normalizedSolverResult?.vtkData?.patches || [];
     contextual = (
       <>
+        {availablePatches.length > 0 && (
+          <Section title={`Detected CAD Faces (${availablePatches.length})`}>
+            <p className="text-[10.5px] text-slate-400">
+              Click a CAD face to bind it to the selected boundary or create a new patch condition:
+            </p>
+            <div className="flex flex-wrap gap-1 pt-0.5 max-h-28 overflow-y-auto">
+              {availablePatches.map((p) => {
+                const isBoundToActive = activeBc?.patchName === p.name;
+                return (
+                  <button
+                    key={p.id}
+                    type="button"
+                    disabled={inputsLocked}
+                    onClick={() => {
+                      if (selectedBoundaryIndex !== null && activeBc) {
+                        onUpdateBoundaryCondition(selectedBoundaryIndex, {
+                          patchName: p.name,
+                          name: `${activeBc.type} (${p.name})`,
+                          location: `CAD Patch: ${p.name}`,
+                        });
+                      } else {
+                        const nextIdx = bcs.length;
+                        onAddBoundaryCondition({
+                          id: `bc_${Date.now()}`,
+                          patchName: p.name,
+                          name: `${boundarySubtypes[0]} (${p.name})`,
+                          type: boundarySubtypes[0],
+                          value: isStructural ? '0' : '1.0',
+                          unit: isStructural ? 'N' : 'm/s',
+                          description: `Bound to CAD surface patch ${p.name}`,
+                          location: `CAD Patch: ${p.name}`,
+                          status: 'Defined',
+                        });
+                        onSelectBoundary(nextIdx);
+                      }
+                    }}
+                    className={`rounded border px-2 py-0.5 font-mono text-[10px] transition-colors ${
+                      isBoundToActive
+                        ? 'border-cyan-400 bg-cyan-500/20 text-cyan-200'
+                        : 'border-slate-700 bg-slate-950 text-slate-300 hover:border-sky-500/60 hover:text-white'
+                    }`}
+                  >
+                    {p.name}
+                  </button>
+                );
+              })}
+            </div>
+          </Section>
+        )}
+
         <Section title={`Assigned Boundaries (${bcs.length})`}>
           {bcs.length === 0 ? (
             <p className="text-[11px] text-slate-500">
@@ -621,7 +683,14 @@ export const PropertiesPanel: React.FC<PropertiesPanelProps> = ({
                   }`}
                 >
                   <div className="min-w-0">
-                    <div className="truncate font-medium">{bc.name}</div>
+                    <div className="truncate font-medium flex items-center gap-1.5">
+                      <span className="truncate">{bc.name}</span>
+                      {bc.patchName && (
+                        <span className="shrink-0 rounded bg-cyan-950 border border-cyan-500/40 px-1 py-0.2 font-mono text-[9px] text-cyan-300">
+                          {bc.patchName}
+                        </span>
+                      )}
+                    </div>
                     <div className="truncate font-mono text-[9.5px] text-slate-400">
                       {bc.type} · {bc.value || '—'} {bc.unit}
                     </div>
@@ -673,6 +742,43 @@ export const PropertiesPanel: React.FC<PropertiesPanelProps> = ({
                 onChange={(e) => onUpdateBoundaryCondition(selectedBoundaryIndex, { name: e.target.value })}
                 className={inputClass}
               />
+            </Field>
+            <Field label="Target CAD Patch" htmlFor="bc-cad-patch">
+              {availablePatches.length > 0 ? (
+                <select
+                  id="bc-cad-patch"
+                  value={activeBc.patchName || ''}
+                  disabled={inputsLocked}
+                  onChange={(e) =>
+                    onUpdateBoundaryCondition(selectedBoundaryIndex, {
+                      patchName: e.target.value || undefined,
+                      location: e.target.value ? `CAD Patch: ${e.target.value}` : activeBc.location,
+                    })
+                  }
+                  className={inputClass}
+                >
+                  <option value="">Spatial / Auto-Nearest</option>
+                  {availablePatches.map((p) => (
+                    <option key={p.id} value={p.name}>
+                      {p.name}
+                    </option>
+                  ))}
+                </select>
+              ) : (
+                <input
+                  id="bc-cad-patch"
+                  type="text"
+                  placeholder="e.g. Face_1, inlet, left"
+                  value={activeBc.patchName || ''}
+                  disabled={inputsLocked}
+                  onChange={(e) =>
+                    onUpdateBoundaryCondition(selectedBoundaryIndex, {
+                      patchName: e.target.value.trim() || undefined,
+                    })
+                  }
+                  className={inputClass}
+                />
+              )}
             </Field>
             <Field label="BC Subtype" htmlFor="bc-subtype">
               <select
@@ -779,6 +885,21 @@ export const PropertiesPanel: React.FC<PropertiesPanelProps> = ({
               <option value="direct">Direct · Sync Engine</option>
             </select>
           </Field>
+          <Field label="Parallel Cores (MPI/OMP)" htmlFor="ctrl-parallel-cores">
+            <select
+              id="ctrl-parallel-cores"
+              value={inputs.parallelCores || '1'}
+              disabled={inputsLocked}
+              onChange={(e) => onInputsChange({ parallelCores: e.target.value })}
+              className={inputClass}
+            >
+              <option value="1">1 Core (Serial)</option>
+              <option value="2">2 Cores (MPI / OpenMP)</option>
+              <option value="4">4 Cores (MPI / OpenMP)</option>
+              <option value="8">8 Cores (MPI / OpenMP)</option>
+              <option value="16">16 Cores (MPI / OpenMP)</option>
+            </select>
+          </Field>
           <Field label="Time Mode" htmlFor="time-mode">
             <select
               id="time-mode"
@@ -872,6 +993,16 @@ export const PropertiesPanel: React.FC<PropertiesPanelProps> = ({
             <>
               <ReadRow label="Physics" value={physicsType} />
               <ReadRow label="Solver" value={results?.recommended_solver || results?.solver_engine || norm?.solver} />
+              <ReadRow
+                label="Parallel Cores"
+                value={
+                  typeof results?.parallel_cores === 'number'
+                    ? `${results.parallel_cores} ${results.parallel_cores === 1 ? 'Core' : 'Cores'}`
+                    : typeof norm?.values?.parallel_cores === 'number'
+                      ? `${norm.values.parallel_cores} ${norm.values.parallel_cores === 1 ? 'Core' : 'Cores'}`
+                      : undefined
+                }
+              />
               <ReadRow label="Process time" value={processTime} />
               {activeField && (
                 <ReadRow label="Primary Field" value={activeUnit ? `${activeField} (${activeUnit})` : activeField} />
@@ -914,6 +1045,17 @@ export const PropertiesPanel: React.FC<PropertiesPanelProps> = ({
           </Section>
         )}
         <Section title="Result Views">
+          {onDownloadCaseArchive && (
+            <ActionButton
+              accent
+              disabled={!lastTaskId}
+              icon={<Download className="h-3.5 w-3.5" />}
+              label={lastTaskId ? 'Download Solver Deck & VTK (.zip)' : 'Solver Deck (.zip requires Celery job)'}
+              onClick={() => {
+                if (lastTaskId) onDownloadCaseArchive(lastTaskId);
+              }}
+            />
+          )}
           <ActionButton icon={<Palette className="h-3.5 w-3.5" />} label="Contours & Vectors" onClick={() => actions.openDocument('contours')} />
           <ActionButton icon={<ShieldCheck className="h-3.5 w-3.5" />} label="Validation (ASME V&V 20)" onClick={() => actions.openDocument('validation')} />
           <ActionButton icon={<TableIcon className="h-3.5 w-3.5" />} label="Data Tables" onClick={() => actions.openDocument('tables')} />

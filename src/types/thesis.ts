@@ -1,6 +1,7 @@
 export interface BoundaryCondition {
   id?: string;
   markerId?: string;
+  patchName?: string;
   name: string;
   type: string; // e.g. Velocity Inlet, Mass Flow Inlet, Pressure Outlet, Slip Wall, Fixed Support, Force Load
   value: string;
@@ -192,6 +193,21 @@ export interface SimulationJobManifest {
   resultsSummary?: string;
 }
 
+export interface VtkTimeFrame {
+  time: number;
+  scalars: Record<string, number[]>;
+  vectors?: Record<string, number[]>;
+}
+
+export interface VtkPatchMeta {
+  id: string;
+  name: string;
+  tag?: number;
+  dim?: number;
+  center?: number[];
+  bbox?: number[];
+}
+
 export interface VtkFieldPayload {
   points: number[];
   triangles: number[];
@@ -202,6 +218,9 @@ export interface VtkFieldPayload {
   bounds?: { min: [number, number, number]; max: [number, number, number] };
   node_count?: number;
   triangle_count?: number;
+  triangle_patches?: number[];
+  patches?: VtkPatchMeta[];
+  time_frames?: VtkTimeFrame[];
 }
 
 export interface NormalizedSolverResult {

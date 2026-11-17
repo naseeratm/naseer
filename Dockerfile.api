@@ -1,10 +1,19 @@
-FROM ubuntu:24.04
+FROM ubuntu:22.04
 
-# تثبيت بايثون فقط لواجهة الـ API
-RUN apt-get update && apt-get install -y \
+ENV DEBIAN_FRONTEND=noninteractive \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1
+
+# Python 3.10 + headless runtime libraries matching worker container
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
     python3 \
     python3-pip \
     python3-venv \
+    libgl1 \
+    libglu1-mesa \
+    libglib2.0-0 \
+    libgomp1 \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
@@ -13,7 +22,8 @@ RUN python3 -m venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
 
 COPY docker-requirements.txt ./requirements.txt
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --upgrade pip setuptools wheel && \
+    pip install -r requirements.txt
 
 COPY main.py physics_solver.py universal_dispatcher.py cae_repository.py ./
 COPY backend/ ./backend/

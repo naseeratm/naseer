@@ -76,7 +76,7 @@ async function proxyToFastApi(req: Request, res: Response) {
     }
 
     const targetUrl = `${activeCloudUrl}${req.originalUrl}`;
-    const timeoutMs = req.originalUrl.includes('mesh-study') || req.originalUrl.includes('parametric-sweep') ? 180000 : 45000;
+    const timeoutMs = req.originalUrl.includes('mesh-study') || req.originalUrl.includes('parametric-sweep') || req.originalUrl.includes('export-case') ? 180000 : 45000;
     const upstream = await fetch(targetUrl, {
       method: req.method,
       headers,
@@ -111,6 +111,16 @@ app.use('/api/upload-model', (req, res, next) => {
 
 app.use(express.json({ limit: '100mb' }));
 app.use(express.urlencoded({ extended: true, limit: '100mb' }));
+
+app.get('/api/implementation-checklist', (_req: Request, res: Response) => {
+  const checklistPath = path.resolve(process.cwd(), 'IMPLEMENTATION_PLAN_AND_VERIFICATION_CHECKLIST.md');
+  if (!fs.existsSync(checklistPath)) {
+    return res.status(404).json({ error: 'Checklist file not found' });
+  }
+  res.setHeader('Content-Type', 'text/markdown; charset=utf-8');
+  res.setHeader('Content-Disposition', 'attachment; filename="NASEER_IMPLEMENTATION_PLAN_AND_VERIFICATION_CHECKLIST.md"');
+  return res.send(fs.readFileSync(checklistPath, 'utf-8'));
+});
 
 // Helper to get Gemini client either from client-provided key or server environment
 function getGeminiClient(req: Request): GoogleGenAI | null {
@@ -262,6 +272,79 @@ app.get('/api/cloud/status', async (_req: Request, res: Response) => {
     },
     licenseConfig: activeLicenseConfig,
   });
+});
+
+// Live HPC Cluster Telemetry (Workers, MPI Cores, Active & Queued Jobs)
+app.get('/api/cluster/status', async (_req: Request, res: Response) => {
+  const totalMem = os.totalmem();
+  const freeMem = os.freemem();
+  const cpus = os.cpus();
+
+  try {
+    const pyRes = await fetch(`${activeCloudUrl}/api/cluster/status`, { signal: AbortSignal.timeout(3000) });
+    if (pyRes.ok) {
+      const clusterData = await pyRes.json();
+      return res.json({
+        connected: true,
+        backendUrl: activeCloudUrl,
+        ...clusterData,
+        hostSystem: {
+          cpuCount: cpus.length,
+          cpuModel: cpus[0]?.model || 'Multi-Core Processor',
+          totalMemoryGb: +(totalMem / (1024 ** 3)).toFixed(2),
+          freeMemoryGb: +(freeMem / (1024 ** 3)).toFixed(2),
+        },
+        configuredParallelCores: activeLicenseConfig.parallelCores,
+      });
+    }
+  } catch (_err) {
+    // Fallback when Docker FastAPI (:8000) is not yet running
+  }
+
+  return res.json({
+    connected: false,
+    status: 'DEGRADED',
+    backendUrl: activeCloudUrl,
+    redis: false,
+    workers_online: 0,
+    worker_names: [],
+    workers: [],
+    total_cluster_cores: cpus.length,
+    host_cpu_cores: cpus.length,
+    mpi_cores_per_worker: activeLicenseConfig.parallelCores,
+    active_tasks_count: 0,
+    queued_tasks_count: 0,
+    solvers: {},
+    hostSystem: {
+      cpuCount: cpus.length,
+      cpuModel: cpus[0]?.model || 'Multi-Core Processor',
+      totalMemoryGb: +(totalMem / (1024 ** 3)).toFixed(2),
+      freeMemoryGb: +(freeMem / (1024 ** 3)).toFixed(2),
+    },
+    configuredParallelCores: activeLicenseConfig.parallelCores,
+  });
+});
+
+// Downloadable Multi-Worker Docker Compose File
+app.get('/api/cluster/compose-file', (_req: Request, res: Response) => {
+  const filePath = path.resolve(process.cwd(), 'docker-compose.cluster.yml');
+  if (!fs.existsSync(filePath)) {
+    return res.status(404).json({ error: 'docker-compose.cluster.yml not found' });
+  }
+  res.setHeader('Content-Type', 'text/yaml; charset=utf-8');
+  res.setHeader('Content-Disposition', 'attachment; filename="docker-compose.cluster.yml"');
+  return res.send(fs.readFileSync(filePath, 'utf-8'));
+});
+
+// Downloadable Ubuntu HPC Cloud Provisioning Script
+app.get('/api/cluster/deploy-script', (_req: Request, res: Response) => {
+  const filePath = path.resolve(process.cwd(), 'deploy-hpc-cluster.sh');
+  if (!fs.existsSync(filePath)) {
+    return res.status(404).json({ error: 'deploy-hpc-cluster.sh not found' });
+  }
+  res.setHeader('Content-Type', 'text/x-shellscript; charset=utf-8');
+  res.setHeader('Content-Disposition', 'attachment; filename="deploy-hpc-cluster.sh"');
+  return res.send(fs.readFileSync(filePath, 'utf-8'));
 });
 
 // Test Connection to a specified Cloud Backend URL

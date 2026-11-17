@@ -1,7 +1,9 @@
+import io
 import math
 import os
 import shutil
 import uuid
+import zipfile
 from enum import Enum
 from json import JSONDecodeError
 from pathlib import Path
@@ -11,7 +13,7 @@ import uvicorn
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator, model_validator
 
 from backend.file_parser import parse_engineering_file
@@ -123,11 +125,13 @@ class SimulationRequest(BaseModel):
     modes_count: Optional[int] = None
     contact_type: Optional[str] = Field(default="Bonded")
     solver_iterations: Optional[int] = None
+    parallel_cores: Optional[int] = Field(default=1, ge=1, le=64)
     element_order: Optional[int] = Field(default=1)
     inflation_layers: Optional[int] = None
     first_layer_height: Optional[float] = None
     growth_rate: Optional[float] = None
     boundary_markers: Optional[List[Dict[str, Any]]] = None
+    boundary_patches: Optional[List[Dict[str, Any]]] = None
     region_box: Optional[Dict[str, Any]] = None
     cad_stl_b64: Optional[str] = None
     cad_file_b64: Optional[str] = None
@@ -305,34 +309,68 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
 # ---------------------------------------------------------
 # 3. API Routes (Unified Port 8000 Authority)
 # ---------------------------------------------------------
-@app.get("/api/health")
-async def health_check():
-    """Live probe of container solvers (from worker container if online), Redis broker, and active Celery workers."""
+def _inspect_celery_cluster() -> Dict[str, Any]:
+    """Query live Redis broker and Celery control plane for worker nodes, cores, and active/queued tasks."""
     local_solvers = probe_worker_capabilities()
+    host_cores = os.cpu_count() or 1
+    mpi_cores_per_worker = max(1, int(os.getenv("NASEER_MPI_CORES_PER_WORKER", str(min(host_cores, 4)))))
     redis_ok = False
     workers_online = 0
     worker_names: List[str] = []
+    workers_detail: List[Dict[str, Any]] = []
+    active_tasks_count = 0
+    queued_tasks_count = 0
+    total_cluster_cores = 0
     worker_solvers = local_solvers
+
     try:
         conn = celery_app.connection_for_read()
         conn.ensure_connection(max_retries=1)
         conn.close()
         redis_ok = True
-        inspector = celery_app.control.inspect(timeout=1.2)
+        inspector = celery_app.control.inspect(timeout=1.5)
         ping_res = inspector.ping() or {}
-        if isinstance(ping_res, dict):
-            worker_names = list(ping_res.keys())
+        if isinstance(ping_res, dict) and ping_res:
+            worker_names = sorted(ping_res.keys())
             workers_online = len(worker_names)
-        if workers_online > 0:
+            stats_res = inspector.stats() or {}
+            active_res = inspector.active() or {}
+            reserved_res = inspector.reserved() or {}
+
+            for w_name in worker_names:
+                w_stats = stats_res.get(w_name, {}) if isinstance(stats_res, dict) else {}
+                pool_info = w_stats.get("pool", {}) if isinstance(w_stats, dict) else {}
+                concurrency = int(pool_info.get("max-concurrency") or 1)
+                w_active = active_res.get(w_name, []) if isinstance(active_res, dict) else []
+                w_reserved = reserved_res.get(w_name, []) if isinstance(reserved_res, dict) else []
+                n_active = len(w_active) if isinstance(w_active, list) else 0
+                n_queued = len(w_reserved) if isinstance(w_reserved, list) else 0
+                active_tasks_count += n_active
+                queued_tasks_count += n_queued
+                node_cores = max(concurrency, mpi_cores_per_worker)
+                total_cluster_cores += node_cores
+                workers_detail.append({
+                    "name": w_name,
+                    "status": "ONLINE",
+                    "pid": w_stats.get("pid"),
+                    "concurrency": concurrency,
+                    "mpi_cores": node_cores,
+                    "active_tasks": n_active,
+                    "queued_tasks": n_queued,
+                })
+
             try:
                 async_probe = celery_app.send_task("universal_dispatcher.probe_capabilities")
-                probed = async_probe.get(timeout=5.0)
+                probed = async_probe.get(timeout=4.0)
                 if isinstance(probed, dict):
                     worker_solvers = probed
             except Exception:
                 worker_solvers = local_solvers
     except Exception:
         redis_ok = False
+
+    if total_cluster_cores == 0:
+        total_cluster_cores = host_cores
 
     return {
         "status": "ONLINE" if redis_ok and workers_online > 0 else ("API_ONLY_NO_WORKER" if redis_ok else "DEGRADED"),
@@ -341,8 +379,26 @@ async def health_check():
         "redis": redis_ok,
         "workers_online": workers_online,
         "worker_names": worker_names,
+        "workers": workers_detail,
+        "total_cluster_cores": total_cluster_cores,
+        "host_cpu_cores": host_cores,
+        "mpi_cores_per_worker": mpi_cores_per_worker,
+        "active_tasks_count": active_tasks_count,
+        "queued_tasks_count": queued_tasks_count,
         "solvers": worker_solvers,
     }
+
+
+@app.get("/api/health")
+async def health_check():
+    """Live probe of container solvers (from worker container if online), Redis broker, and active Celery workers."""
+    return _inspect_celery_cluster()
+
+
+@app.get("/api/cluster/status")
+async def cluster_status():
+    """Detailed HPC cluster telemetry for multi-worker scaling and live node monitoring."""
+    return _inspect_celery_cluster()
 
 
 @app.post("/api/upload-model")
@@ -433,6 +489,69 @@ async def cancel_job(task_id: str):
         error="Cancelled by engineer",
     )
     return {"success": True, "task_id": task_id, "status": "CANCELLED", "job": updated}
+
+
+@app.get("/api/jobs/{task_id}/export-case")
+async def export_job_case_archive(task_id: str):
+    """Stream a ZIP archive of the real solver case directory (OpenFOAM/CalculiX/Elmer files, VTK, logs)."""
+    job = job_repository.get(task_id)
+    if not job:
+        raise HTTPException(status_code=404, detail={"success": False, "code": "JOB_NOT_FOUND", "error": f"Job {task_id} not found."})
+
+    res = job.get("result") or {}
+    nested = res.get("data") if isinstance(res.get("data"), dict) else {}
+    artifacts = res.get("artifacts") if isinstance(res.get("artifacts"), dict) else {}
+    case_dir_raw = (
+        res.get("case_directory")
+        or artifacts.get("case_directory")
+        or nested.get("case_directory")
+    )
+    if not case_dir_raw or not isinstance(case_dir_raw, str):
+        raise HTTPException(
+            status_code=404,
+            detail={"success": False, "code": "CASE_ARTIFACTS_UNAVAILABLE", "error": "No solver case directory recorded for this job."},
+        )
+
+    case_path = Path(case_dir_raw).resolve()
+    allowed_roots = [
+        Path(p).resolve()
+        for p in (
+            os.getenv("NASEER_JOB_DIR", ""),
+            os.getenv("OPENFOAM_CASE_ROOT", ""),
+            "/app/jobs",
+            str(Path.cwd() / "jobs"),
+        )
+        if p
+    ]
+    if not any(case_path == root or root in case_path.parents for root in allowed_roots):
+        raise HTTPException(
+            status_code=403,
+            detail={"success": False, "code": "INVALID_CASE_PATH", "error": "Case directory lies outside allowed job storage."},
+        )
+    if not case_path.is_dir():
+        raise HTTPException(
+            status_code=404,
+            detail={"success": False, "code": "CASE_DIR_MISSING", "error": "Solver case directory no longer exists on disk."},
+        )
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        for file_path in sorted(case_path.rglob("*")):
+            if not file_path.is_file() or file_path.is_symlink():
+                continue
+            try:
+                if file_path.stat().st_size > 100 * 1024 * 1024:
+                    continue
+                zf.write(file_path, arcname=str(file_path.relative_to(case_path)))
+            except OSError:
+                continue
+
+    short_id = "".join(ch for ch in task_id[:12] if ch.isalnum() or ch in "-_") or "case"
+    return Response(
+        content=buf.getvalue(),
+        media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="naseer-case-{short_id}.zip"'},
+    )
 
 
 @app.get("/api/verify-job/{task_id}")

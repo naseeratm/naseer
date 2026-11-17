@@ -25,6 +25,7 @@ import {
   FileCode,
   Globe,
   FlaskConical,
+  Download,
 } from 'lucide-react';
 import {
   ThesisProject,
@@ -86,6 +87,7 @@ interface SimulationResults {
   classified_type?: string;
   recommended_solver?: string;
   solver_engine?: string;
+  parallel_cores?: number;
   process_time?: number;
   process_time_ms?: number;
   temperature_min?: number;
@@ -188,10 +190,20 @@ export default function App() {
     };
 
    const baseRequest = buildSimulationRequest(simulationInputs);
+   const boundaryPatchesPayload = (currentProject.boundaryConditions || [])
+     .filter((bc) => Boolean(bc.patchName && bc.patchName.trim()))
+     .map((bc) => ({
+       patchName: bc.patchName!.trim(),
+       name: bc.name,
+       type: bc.type,
+       value: bc.value,
+       unit: bc.unit,
+     }));
   const requestBody: Record<string, unknown> = {
     ...baseRequest,
     ...(appliedPhysicsOverrides || {}),
     ...(viewportBoundaryMarkers.length > 0 ? { boundary_markers: viewportBoundaryMarkers } : {}),
+    ...(boundaryPatchesPayload.length > 0 ? { boundary_patches: boundaryPatchesPayload } : {}),
     ...(viewportRegionBox ? { region_box: viewportRegionBox } : {}),
     ...(uploadedCadStl ? { cad_file_b64: uploadedCadStl.base64, cad_stl_b64: uploadedCadStl.base64, cad_filename: uploadedCadStl.name } : {}),
   };
@@ -222,6 +234,7 @@ export default function App() {
     (!submitPayload?.task_id && Boolean(submitPayload?.result || submitPayload?.data));
 
   let job: any;
+  let completedTaskId: string | undefined;
   if (isDirect) {
     const directResult = submitPayload?.result ?? submitPayload?.data ?? submitPayload;
     job = { status: 'COMPLETED', result: directResult, logs: [] };
@@ -230,6 +243,7 @@ export default function App() {
   } else {
       const taskId = submitPayload?.task_id as string | undefined;
       if (!taskId) throw new Error('Simulation backend did not return a task_id');
+      completedTaskId = taskId;
       activeTaskIdRef.current = taskId;
 
       for (;;) {
@@ -284,7 +298,7 @@ export default function App() {
     setSolverResidualSeries(normalized.residualSeries ?? []);
     const optionalText = (value: unknown) => (typeof value === 'string' && value ? value : undefined);
     const simulationRun: SimulationRunRecord = {
-      taskId: optionalText(job?.task_id),
+      taskId: completedTaskId || optionalText(job?.task_id),
       executionMode: isDirect ? 'direct' : 'celery',
       submittedRequest: requestBody,
       backendPayload: job?.payload && typeof job.payload === 'object' ? job.payload : undefined,
@@ -541,10 +555,21 @@ export default function App() {
     setConsoleTab('logs');
     setSolverLogs(previous => [...previous, `[${new Date().toISOString()}] Starting mesh independence study (${keyResultId}, 3 grid levels)`]);
     try {
+      const boundaryPatchesPayload = (currentProject.boundaryConditions || [])
+        .filter((bc) => Boolean(bc.patchName && bc.patchName.trim()))
+        .map((bc) => ({
+          patchName: bc.patchName!.trim(),
+          name: bc.name,
+          type: bc.type,
+          value: bc.value,
+          unit: bc.unit,
+        }));
       const requestBody = {
         ...buildSimulationRequest(simulationInputs),
         ...(viewportBoundaryMarkers.length > 0 ? { boundary_markers: viewportBoundaryMarkers } : {}),
+        ...(boundaryPatchesPayload.length > 0 ? { boundary_patches: boundaryPatchesPayload } : {}),
         ...(viewportRegionBox ? { region_box: viewportRegionBox } : {}),
+        ...(uploadedCadStl ? { cad_file_b64: uploadedCadStl.base64, cad_stl_b64: uploadedCadStl.base64, cad_filename: uploadedCadStl.name } : {}),
         key_result: keyResultId,
       };
       const response = await fetch('/api/mesh-study', {
@@ -1052,11 +1077,17 @@ export default function App() {
     const newBc: BoundaryCondition = {
       id: `bc_${Date.now()}`,
       markerId: marker.id,
-      name: `${marker.type} [${marker.point.map((p) => p.toFixed(1)).join(', ')}]`,
+      patchName: marker.patchName,
+      name: marker.patchName
+        ? `${marker.type} (${marker.patchName})`
+        : `${marker.type} [${marker.point.map((p) => p.toFixed(1)).join(', ')}]`,
       type: bcType,
       value: bcValue,
       unit: bcUnit,
-      description: `Normal n=(${marker.normal.map((n) => n.toFixed(2)).join(', ')})`,
+      description: marker.patchName
+        ? `CAD Patch ${marker.patchName} · Normal n=(${marker.normal.map((n) => n.toFixed(2)).join(', ')})`
+        : `Normal n=(${marker.normal.map((n) => n.toFixed(2)).join(', ')})`,
+      location: marker.patchName ? `CAD Patch: ${marker.patchName}` : undefined,
       status: 'Defined',
     };
     const nextBcs = [...(currentProject.boundaryConditions || []), newBc];
@@ -1132,6 +1163,55 @@ export default function App() {
 
   const hasProject = currentProject !== null;
   const hasCompletedRun = hasRealSimulationRun(currentProject);
+  const activeSolverTaskId = currentProject?.simulationRun?.taskId ?? null;
+
+  const handleDownloadSolverCase = async (taskId: string) => {
+    try {
+      setSaveToast(`Packaging solver deck & VTK archive (${taskId.slice(0, 8)})…`);
+      const res = await fetch(`/api/jobs/${encodeURIComponent(taskId)}/export-case`);
+      if (!res.ok) {
+        const errBody = await readJson(res);
+        throw new Error(extractApiError(errBody, `Case export failed (${res.status})`));
+      }
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `naseer-case-${taskId.slice(0, 12)}.zip`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      setSaveToast(`Downloaded solver case archive (naseer-case-${taskId.slice(0, 8)}.zip)`);
+      setTimeout(() => setSaveToast(null), 3500);
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : 'Failed to export solver case archive';
+      recordIssue(msg, 'warning');
+      setConsoleTab('errors');
+      setSolverLogs((prev) => [...prev, `[${new Date().toISOString()}] ERROR: ${msg}`]);
+    }
+  };
+
+  const handleDownloadImplementationChecklist = async () => {
+    try {
+      const res = await fetch('/api/implementation-checklist');
+      if (!res.ok) throw new Error(`Failed to fetch checklist (${res.status})`);
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'NASEER_IMPLEMENTATION_PLAN_AND_VERIFICATION_CHECKLIST.md';
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      setSaveToast('تم تنزيل ملف خطة التطوير المنفذة وقائمة التشييك (.md)');
+      setTimeout(() => setSaveToast(null), 3500);
+    } catch (error) {
+      recordIssue(error instanceof Error ? error.message : 'Checklist download failed', 'warning');
+      setConsoleTab('errors');
+    }
+  };
 
   const runExport = async (action: () => unknown) => {
     try {
@@ -1208,6 +1288,8 @@ export default function App() {
       id: 'export',
       label: 'Export',
       items: [
+        { id: 'plan-md', label: 'Implementation Plan & Checklist (.md)', icon: <ShieldCheck className="h-3.5 w-3.5 text-emerald-400" />, onClick: handleDownloadImplementationChecklist, disabled: false, title: 'تنزيل ملف خطة التطوير المنفذة وقائمة التشييك الشاملة (IMPLEMENTATION_PLAN_AND_VERIFICATION_CHECKLIST.md)' },
+        { id: 'solver-zip', label: 'Solver Deck & VTK (.zip)', icon: <Download className="h-3.5 w-3.5 text-sky-400" />, onClick: () => activeSolverTaskId && handleDownloadSolverCase(activeSolverTaskId), disabled: !activeSolverTaskId, title: activeSolverTaskId ? 'تصدير حزمة ملفات المحلل الحقيقية (OpenFOAM / CalculiX / Elmer / VTK / solver.log) بصيغة ZIP' : 'يتطلب تنفيذ محاكاة عبر Celery لتصدير مجلد الحالة الفعلي' },
         { id: 'word', label: 'Word Document', icon: <FileText className="h-3.5 w-3.5" />, onClick: () => runExport(() => currentProject && exportToWordDocument(currentProject)), disabled: !hasCompletedRun, title: hasCompletedRun ? 'تصدير أطروحة Word كاملة بالرسوم والكونتورات' : 'يتطلب تنفيذ المحاكاة أو اختيار دراسة مكتملة الحل من المكتبة لتوليد التقرير' },
         { id: 'html', label: 'Report HTML', icon: <Globe className="h-3.5 w-3.5" />, onClick: () => runExport(() => currentProject && exportToJournalHTML(currentProject)), disabled: !hasCompletedRun, title: hasCompletedRun ? 'تصدير ورقة بحثية لمجلة عالمية (Journal HTML)' : 'يتطلب تنفيذ المحاكاة أو اختيار دراسة مكتملة الحل' },
         { id: 'latex', label: 'LaTeX', icon: <FileCode className="h-3.5 w-3.5" />, onClick: () => runExport(() => currentProject && exportToLatex(currentProject)), disabled: !hasCompletedRun, title: hasCompletedRun ? 'تصدير شفرة LaTeX للأطروحة' : 'يتطلب تنفيذ المحاكاة أو اختيار دراسة مكتملة الحل' },
@@ -1270,6 +1352,7 @@ export default function App() {
         onRun={() => { runSimulation().catch(() => {}); }}
         onCancel={cancelSimulation}
         onHome={() => setCurrentProject(null)}
+        onOpenClusterMonitor={() => setIsCloudModalOpen(true)}
       />
 
       <div className="print-reset flex min-h-0 flex-1">
@@ -1325,6 +1408,11 @@ export default function App() {
               selectedMarkerId={
                 selectedBoundaryIndex !== null
                   ? currentProject.boundaryConditions?.[selectedBoundaryIndex]?.markerId ?? null
+                  : null
+              }
+              highlightedPatchName={
+                selectedBoundaryIndex !== null
+                  ? currentProject.boundaryConditions?.[selectedBoundaryIndex]?.patchName ?? null
                   : null
               }
               hasSolvedResults={hasCompletedRun}
@@ -1469,6 +1557,8 @@ export default function App() {
           meshGenerating={meshGenerating}
           onGenerateMeshPreview={handleGenerateMeshPreview}
           cadPatches={cadPatches}
+          lastTaskId={activeSolverTaskId}
+          onDownloadCaseArchive={handleDownloadSolverCase}
           actions={{
             importModel: () => setIsUploadModalOpen(true),
             openMeshGenerator: () => setIsMeshGeneratorOpen(true),
@@ -1487,6 +1577,7 @@ export default function App() {
         onAnalysisComplete={handleStartProject}
         apiKeys={apiKeys}
         engineMode={engineMode}
+        simulationInputs={simulationInputs}
       />
 
       {currentProject && (
@@ -1565,6 +1656,11 @@ export default function App() {
         simulationInputs={simulationInputs}
         uploadedCadStl={uploadedCadStl}
         viewportBoundaryMarkers={viewportBoundaryMarkers}
+        onSweepComplete={(cases) => {
+          setCurrentProject((prev) => (prev ? { ...prev, casesMatrix: cases } : prev));
+          setSaveToast(`تم ترحيل ${cases.length} نقاط تصميم مكتملة إلى مصفوفة الحالات والتقرير`);
+          setTimeout(() => setSaveToast(null), 3500);
+        }}
       />
 
       <AuditReportModal
