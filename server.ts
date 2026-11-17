@@ -76,7 +76,7 @@ async function proxyToFastApi(req: Request, res: Response) {
     }
 
     const targetUrl = `${activeCloudUrl}${req.originalUrl}`;
-    const timeoutMs = req.originalUrl.includes('mesh-study') || req.originalUrl.includes('parametric-sweep') || req.originalUrl.includes('export-case') ? 180000 : 45000;
+    const timeoutMs = req.originalUrl.includes('mesh-study') || req.originalUrl.includes('parametric-sweep') || req.originalUrl.includes('export-case') ? 180000 : 420000;
     const upstream = await fetch(targetUrl, {
       method: req.method,
       headers,
@@ -356,7 +356,7 @@ app.post('/api/cloud/test-connection', async (req: Request, res: Response) => {
 
   const startTime = Date.now();
   try {
-    const response = await fetch(`${testUrl}/api/health`, { signal: AbortSignal.timeout(6000) });
+    const response = await fetch(`${testUrl}/api/health`, { signal: AbortSignal.timeout(20000) });
     const latencyMs = Date.now() - startTime;
 
     if (response.ok) {
@@ -577,7 +577,7 @@ app.post('/api/upload-model', async (req: Request, res: Response) => {
       const pyRes = await fetch(`${activeCloudUrl}/api/upload-model`, {
         method: 'POST',
         body: formData,
-        signal: AbortSignal.timeout(45000),
+        signal: AbortSignal.timeout(420000),
       });
       const data = await pyRes.json();
       return res.status(pyRes.status).json(data);
