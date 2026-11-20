@@ -711,3 +711,15 @@ def mesh_independence_study(request: MeshStudyRequest):
 
 if __name__ == "__main__":
     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
+# NASEER_CACHE
+import time as _nt, threading as _nth
+_CC=[0.0,None]
+_CL=_nth.Lock()
+_orig_icc=_inspect_celery_cluster
+def _inspect_celery_cluster(*a,**k):
+    d=_CC[1]; ttl=30.0 if (isinstance(d,dict) and d.get('workers_online',0)>0) else 3.0
+    if d is not None and _nt.time()-_CC[0]<ttl: return d
+    with _CL:
+        d=_CC[1]; ttl=30.0 if (isinstance(d,dict) and d.get('workers_online',0)>0) else 3.0
+        if d is not None and _nt.time()-_CC[0]<ttl: return d
+        r=_orig_icc(*a,**k); _CC[1]=r; _CC[0]=_nt.time(); return r
