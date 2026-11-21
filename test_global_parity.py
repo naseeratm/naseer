@@ -112,6 +112,196 @@ class GlobalParityAuditTest(unittest.TestCase):
                 self.assertIn("system/controlDict", names)
                 self.assertIn("solver.log", names)
 
+    def test_openfoam_function_objects_and_postprocessing_parser(self) -> None:
+        from universal_dispatcher import _build_openfoam_function_objects, _parse_openfoam_postprocessing
+
+        fn_block = _build_openfoam_function_objects(
+            "simpleFoam",
+            {"inlet": "inlet", "outlet": "outlet", "walls": "wall"},
+            rho=1.225,
+            velocity=12.0,
+            width=1.0,
+            height=0.2,
+            depth=0.2,
+            compressible=False,
+        )
+        self.assertIn("type yPlus;", fn_block)
+        self.assertIn("type wallShearStress;", fn_block)
+        self.assertIn("type forceCoeffs;", fn_block)
+        self.assertIn("patches (walls);", fn_block)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            case_dir = Path(tmp)
+            (case_dir / "postProcessing" / "yPlus" / "0").mkdir(parents=True, exist_ok=True)
+            (case_dir / "postProcessing" / "yPlus" / "0" / "yPlus.dat").write_text(
+                "# Time patch min max average\n100 walls 0.82 28.4 12.15\n",
+                encoding="utf-8",
+            )
+            (case_dir / "postProcessing" / "wallShearStress" / "0").mkdir(parents=True, exist_ok=True)
+            (case_dir / "postProcessing" / "wallShearStress" / "0" / "wallShearStress.dat").write_text(
+                "# Time patch min max\n100 walls (-0.5 0 0) (-3.0 4.0 0)\n",
+                encoding="utf-8",
+            )
+            (case_dir / "postProcessing" / "forceCoeffs" / "0").mkdir(parents=True, exist_ok=True)
+            (case_dir / "postProcessing" / "forceCoeffs" / "0" / "coefficient.dat").write_text(
+                "# Time Cd Cs Cl CmRoll\n100 0.342 0.001 0.118 0.0\n",
+                encoding="utf-8",
+            )
+            parsed = _parse_openfoam_postprocessing(case_dir)
+            self.assertAlmostEqual(parsed["y_plus_min"], 0.82)
+            self.assertAlmostEqual(parsed["y_plus_max"], 28.4)
+            self.assertAlmostEqual(parsed["y_plus_avg"], 12.15)
+            self.assertAlmostEqual(parsed["wall_shear_stress_max_pa"], 5.0)
+            self.assertAlmostEqual(parsed["drag_coefficient_cd"], 0.342)
+            self.assertAlmostEqual(parsed["lift_coefficient_cl"], 0.118)
+
+    def test_streaming_command_emits_live_openfoam_residuals(self) -> None:
+        import sys
+        from universal_dispatcher import _STREAM_STATE, _run_streaming_command
+
+        emitted: list[dict] = []
+        _STREAM_STATE.callback = lambda payload: emitted.append(payload)
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                case_dir = Path(tmp)
+                script = (
+                    "import time, sys\n"
+                    "for i in range(1, 4):\n"
+                    "    print(f'Time = {i}', flush=True)\n"
+                    "    print(f'smoothSolver:  Solving for Ux, Initial residual = {0.5 / i:.6f}, Final residual = 1e-6, No Iterations 2', flush=True)\n"
+                    "    print(f'GAMG:  Solving for p, Initial residual = {0.8 / i:.6f}, Final residual = 1e-6, No Iterations 3', flush=True)\n"
+                    "    time.sleep(0.35)\n"
+                )
+                proc = _run_streaming_command(
+                    [sys.executable, "-c", script],
+                    cwd=case_dir,
+                    timeout=15,
+                    log_path=case_dir / "solver.log",
+                    append_log=False,
+                    solver_kind="openfoam",
+                    max_iters=3,
+                )
+                self.assertEqual(proc.returncode, 0)
+                self.assertTrue((case_dir / "solver.log").exists())
+                self.assertGreaterEqual(len(emitted), 1)
+                self.assertIn("Ux", emitted[-1]["residuals"])
+                self.assertIn("p", emitted[-1]["residuals"])
+        finally:
+            _STREAM_STATE.callback = None
+
+    def test_stl_bounds_parser_binary_and_ascii(self) -> None:
+        import struct
+        from universal_dispatcher import _compute_stl_bounds
+
+        with tempfile.TemporaryDirectory() as tmp:
+            # ASCII STL test
+            ascii_path = Path(tmp) / "wing_ascii.stl"
+            ascii_path.write_text(
+                "solid wing\n"
+                "  facet normal 0 0 1\n"
+                "    outer loop\n"
+                "      vertex 0.0 -0.1 0.0\n"
+                "      vertex 1.2 0.2 0.0\n"
+                "      vertex 0.5 0.15 0.4\n"
+                "    endloop\n"
+                "  endfacet\n"
+                "endsolid wing\n",
+                encoding="utf-8",
+            )
+            bmin, bmax = _compute_stl_bounds(ascii_path)
+            self.assertAlmostEqual(bmin[0], 0.0)
+            self.assertAlmostEqual(bmin[1], -0.1)
+            self.assertAlmostEqual(bmax[0], 1.2)
+            self.assertAlmostEqual(bmax[2], 0.4)
+
+            # Binary STL test (1 triangle)
+            bin_path = Path(tmp) / "body_bin.stl"
+            header = b"NASEER_BIN_STL".ljust(80, b"\x00")
+            tri_hdr = struct.pack("<I", 1)
+            tri_body = struct.pack("<12fH", 0.0, 0.0, 1.0, -0.5, 0.0, -0.2, 0.5, 0.3, 0.2, 0.0, 0.1, 0.0, 0)
+            bin_path.write_bytes(header + tri_hdr + tri_body)
+            bb_min, bb_max = _compute_stl_bounds(bin_path)
+            self.assertAlmostEqual(bb_min[0], -0.5, places=5)
+            self.assertAlmostEqual(bb_max[0], 0.5, places=5)
+            self.assertAlmostEqual(bb_max[1], 0.3, places=5)
+
+    def test_external_aero_snappy_wind_tunnel_and_obstacle_force_coeffs(self) -> None:
+        from universal_dispatcher import (
+            _build_external_wind_tunnel_spec,
+            _build_openfoam_function_objects,
+            _write_external_aero_dicts,
+        )
+
+        spec = _build_external_wind_tunnel_spec(
+            [0.0, -0.1, -0.2],
+            [1.0, 0.1, 0.2],
+            upstream_mult=3.0,
+            downstream_mult=6.0,
+            pad_mult=2.5,
+            base_cell_size=0.25,
+        )
+        lx, ly, lz = spec["location_in_mesh"]
+        tx0, ty0, tz0 = spec["tunnel_min"]
+        tx1, ty1, tz1 = spec["tunnel_max"]
+        # locationInMesh must be strictly inside tunnel and outside obstacle
+        self.assertTrue(tx0 < lx < tx1 and ty0 < ly < ty1 and tz0 < lz < tz1)
+        self.assertLess(lx, 0.0)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            case_dir = Path(tmp)
+            (case_dir / "system").mkdir(parents=True, exist_ok=True)
+            _write_external_aero_dicts(
+                case_dir,
+                spec,
+                surface_level=2,
+                wake_level=1,
+                inflation_layers=4,
+                growth_rate=1.2,
+                use_feature_extract=True,
+            )
+            bm = (case_dir / "system" / "blockMeshDict").read_text(encoding="utf-8")
+            sfe = (case_dir / "system" / "surfaceFeatureExtractDict").read_text(encoding="utf-8")
+            shm = (case_dir / "system" / "snappyHexMeshDict").read_text(encoding="utf-8")
+            self.assertIn("farfield { type patch;", bm)
+            self.assertIn("obstacle.stl", sfe)
+            self.assertIn("addLayers       true;", shm)
+            self.assertIn("wakeBox", shm)
+            self.assertIn("nSurfaceLayers 4;", shm)
+            self.assertIn("level (2 3);", shm)
+
+        fn_block = _build_openfoam_function_objects(
+            "simpleFoam",
+            {"inlet": "inlet", "outlet": "outlet", "farfield": "slip", "obstacle": "wall"},
+            rho=1.225,
+            velocity=25.0,
+            width=1.0,
+            height=0.2,
+            depth=0.4,
+            compressible=False,
+        )
+        self.assertIn("patches (obstacle);", fn_block)
+        self.assertNotIn("farfield", fn_block)
+
+    def test_sample_node_telemetry_and_wall_clock_computation(self) -> None:
+        import os
+        from universal_dispatcher import compute_wall_clock_sec, sample_node_telemetry
+
+        tel = sample_node_telemetry(pid=os.getpid())
+        self.assertGreaterEqual(tel["cpu_cores"], 1)
+        if tel["cpu_percent"] is not None:
+            self.assertGreaterEqual(tel["cpu_percent"], 0.0)
+            self.assertLessEqual(tel["cpu_percent"], 100.0)
+        if tel["memory_total_mb"] is not None:
+            self.assertGreater(tel["memory_total_mb"], 0.0)
+            self.assertGreaterEqual(tel["memory_percent"], 0.0)
+            self.assertLessEqual(tel["memory_percent"], 100.0)
+        if Path(f"/proc/{os.getpid()}/status").exists():
+            self.assertIsNotNone(tel["solver_rss_mb"])
+            self.assertGreater(tel["solver_rss_mb"], 0.0)
+
+        elapsed = compute_wall_clock_sec("2026-11-20T10:00:00Z", "2026-11-20T10:02:15Z")
+        self.assertAlmostEqual(elapsed, 135.0, places=2)
+
 
 if __name__ == "__main__":
     unittest.main()

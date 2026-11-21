@@ -5,7 +5,6 @@ export type WorkflowStep =
   | 'boundaries'
   | 'contacts'
   | 'solution'
-  | 'copilot'
   | 'post';
 
 export type JobStatus = 'idle' | 'queued' | 'running' | 'completed' | 'failed' | 'cancelled';
@@ -74,6 +73,12 @@ export interface SimulationInputs {
   widthX: string;
   heightY: string;
   depthZ: string;
+  // External Aerodynamics (OpenFOAM snappyHexMesh)
+  externalAero: boolean;
+  aeroSurfaceLevel: string;
+  aeroWakeLevel: string;
+  tunnelUpstreamMult: string;
+  tunnelDownstreamMult: string;
   // CFD, CHT, VOF & Fluid Properties
   velocity: string;
   turbulenceModel: string;
@@ -82,6 +87,11 @@ export interface SimulationInputs {
   temperature: string;
   temperatureUnit: TemperatureUnit;
   pressure: string;
+  // Rotating Zones (OpenFOAM MRFProperties + topoSet)
+  mrfEnabled: boolean;
+  mrfOmegaRpm: string;
+  mrfRadius: string;
+  mrfAxis: 'x' | 'y' | 'z';
   // Time Stepping, Gravity & Solution Controls (Ansys / SimScale parity)
   timeMode: 'steady' | 'transient';
   timeStep: string;
@@ -94,7 +104,7 @@ export interface SimulationInputs {
   relaxationP: string;
   relaxationU: string;
   relaxationT: string;
-  // Structural, Modal, Buckling & Contact (CalculiX)
+  // Structural, Nonlinear Material, Modal, Buckling & Multi-Body Contact (CalculiX)
   supportType: 'cantilever' | 'simply_supported' | 'fixed_both';
   displacement: string;
   pressureLoadMpa: string;
@@ -104,8 +114,14 @@ export interface SimulationInputs {
   density: string;
   thermalExpansion: string;
   nonlinear: boolean;
+  materialModel: 'linear_elastic' | 'plastic' | 'hyperelastic';
+  yieldStressMpa: string;
+  tangentModulusMpa: string;
+  hyperC10Mpa: string;
+  hyperD1: string;
   modesCount: string;
-  contactType: 'Bonded' | 'Sliding';
+  contactType: 'Bonded' | 'Sliding' | 'Tie' | 'Frictional' | 'Contact_Frictionless';
+  frictionCoeff: string;
   // Thermal, Radiation & Coupled Thermal
   thermalConductivity: string;
   specificHeat: string;
@@ -145,6 +161,11 @@ export const DEFAULT_SIMULATION_INPUTS: SimulationInputs = {
   widthX: '',
   heightY: '',
   depthZ: '',
+  externalAero: false,
+  aeroSurfaceLevel: '2',
+  aeroWakeLevel: '1',
+  tunnelUpstreamMult: '3',
+  tunnelDownstreamMult: '6',
   velocity: '',
   turbulenceModel: 'laminar',
   fluidDensity: '',
@@ -152,6 +173,10 @@ export const DEFAULT_SIMULATION_INPUTS: SimulationInputs = {
   temperature: '',
   temperatureUnit: 'K',
   pressure: '',
+  mrfEnabled: false,
+  mrfOmegaRpm: '',
+  mrfRadius: '',
+  mrfAxis: 'z',
   timeMode: 'steady',
   timeStep: '',
   endTime: '',
@@ -172,8 +197,14 @@ export const DEFAULT_SIMULATION_INPUTS: SimulationInputs = {
   density: '',
   thermalExpansion: '',
   nonlinear: false,
+  materialModel: 'linear_elastic',
+  yieldStressMpa: '',
+  tangentModulusMpa: '',
+  hyperC10Mpa: '',
+  hyperD1: '',
   modesCount: '',
   contactType: 'Bonded',
+  frictionCoeff: '',
   thermalConductivity: '',
   specificHeat: '',
   heatFlux: '',
@@ -258,8 +289,9 @@ export function convertTemperature(value: string, from: TemperatureUnit, to: Tem
 export function getMissingSimulationInputs(inputs: SimulationInputs): string[] {
   const missing: string[] = [];
 
-  if (!isFiniteNumberString(inputs.widthX) || Number(inputs.widthX) <= 0) missing.push('Domain width');
-  if (!isFiniteNumberString(inputs.heightY) || Number(inputs.heightY) <= 0) missing.push('Domain height');
+  const isAutoExternalAero = isCfdFamily(inputs.simulationType) && Boolean(inputs.externalAero);
+  if (!isAutoExternalAero && (!isFiniteNumberString(inputs.widthX) || Number(inputs.widthX) <= 0)) missing.push('Domain width');
+  if (!isAutoExternalAero && (!isFiniteNumberString(inputs.heightY) || Number(inputs.heightY) <= 0)) missing.push('Domain height');
   if (!isFiniteNumberString(inputs.meshSize) || Number(inputs.meshSize) <= 0) missing.push('Mesh size');
 
   if (isCfdFamily(inputs.simulationType)) {
@@ -270,6 +302,9 @@ export function getMissingSimulationInputs(inputs: SimulationInputs): string[] {
       (inputs.simulationType === 'CFD_Compressible' && Number(inputs.pressure) <= 0)
     ) {
       missing.push('Pressure');
+    }
+    if (inputs.mrfEnabled && (!isFiniteNumberString(inputs.mrfOmegaRpm) || Number(inputs.mrfOmegaRpm) === 0)) {
+      missing.push('MRF Rotation Speed (RPM)');
     }
   }
 
@@ -288,6 +323,12 @@ export function getMissingSimulationInputs(inputs: SimulationInputs): string[] {
       missing.push("Poisson's Ratio");
     }
     if (!isFiniteNumberString(inputs.density) || Number(inputs.density) <= 0) missing.push('Density');
+    if (inputs.materialModel === 'plastic' && (!isFiniteNumberString(inputs.yieldStressMpa) || Number(inputs.yieldStressMpa) <= 0)) {
+      missing.push('Yield Stress (MPa)');
+    }
+    if (inputs.contactType === 'Frictional' && (!isFiniteNumberString(inputs.frictionCoeff) || Number(inputs.frictionCoeff) < 0)) {
+      missing.push('Friction Coefficient μ');
+    }
   }
 
   if (
@@ -337,8 +378,8 @@ export function buildSimulationRequest(inputs: SimulationInputs): Record<string,
     simulation_type: inputs.simulationType,
     mesh_size: Number(inputs.meshSize),
     element_order: Number(inputs.elementOrder || 1),
-    width_x: Number(inputs.widthX),
-    height_y: Number(inputs.heightY),
+    width_x: isFiniteNumberString(inputs.widthX) && Number(inputs.widthX) > 0 ? Number(inputs.widthX) : 1.0,
+    height_y: isFiniteNumberString(inputs.heightY) && Number(inputs.heightY) > 0 ? Number(inputs.heightY) : 1.0,
     time_mode: inputs.timeMode,
     gravity_enabled: Boolean(inputs.gravityEnabled),
     discretization_scheme: inputs.discretizationScheme,
@@ -408,6 +449,30 @@ export function buildSimulationRequest(inputs: SimulationInputs): Record<string,
     if (Object.keys(fluidProps).length > 0) {
       request.fluid_properties = fluidProps;
     }
+    if (inputs.externalAero) {
+      request.external_aero = true;
+      if (isFiniteNumberString(inputs.aeroSurfaceLevel)) {
+        request.aero_surface_level = Math.max(1, Math.min(4, Math.round(Number(inputs.aeroSurfaceLevel))));
+      }
+      if (isFiniteNumberString(inputs.aeroWakeLevel)) {
+        request.wake_refinement_level = Math.max(1, Math.min(3, Math.round(Number(inputs.aeroWakeLevel))));
+        request.aero_wake_level = request.wake_refinement_level;
+      }
+      if (isFiniteNumberString(inputs.tunnelUpstreamMult) && Number(inputs.tunnelUpstreamMult) > 0) {
+        request.tunnel_upstream_mult = Number(inputs.tunnelUpstreamMult);
+      }
+      if (isFiniteNumberString(inputs.tunnelDownstreamMult) && Number(inputs.tunnelDownstreamMult) > 0) {
+        request.tunnel_downstream_mult = Number(inputs.tunnelDownstreamMult);
+      }
+    }
+    if (inputs.mrfEnabled) {
+      request.mrf_enabled = true;
+      request.mrf_omega_rad_s = Number(inputs.mrfOmegaRpm) * ((2 * Math.PI) / 60);
+      request.mrf_axis = inputs.mrfAxis || 'z';
+      if (isFiniteNumberString(inputs.mrfRadius) && Number(inputs.mrfRadius) > 0) {
+        request.mrf_radius = Number(inputs.mrfRadius);
+      }
+    }
   }
 
   if (isStructuralFamily(inputs.simulationType)) {
@@ -416,6 +481,7 @@ export function buildSimulationRequest(inputs: SimulationInputs): Record<string,
       young_modulus: Number(inputs.youngModulus),
       poisson_ratio: Number(inputs.poissonRatio),
       density: Number(inputs.density),
+      material_model: inputs.materialModel || 'linear_elastic',
     });
     if (isFiniteNumberString(inputs.pressureLoadMpa)) {
       request.pressure_load_mpa = Number(inputs.pressureLoadMpa);
@@ -428,6 +494,24 @@ export function buildSimulationRequest(inputs: SimulationInputs): Record<string,
     }
     if (isFiniteNumberString(inputs.thermalExpansion)) {
       request.thermal_expansion = Number(inputs.thermalExpansion);
+    }
+    if (inputs.materialModel === 'plastic') {
+      if (isFiniteNumberString(inputs.yieldStressMpa) && Number(inputs.yieldStressMpa) > 0) {
+        request.yield_stress_pa = Number(inputs.yieldStressMpa) * 1e6;
+      }
+      if (isFiniteNumberString(inputs.tangentModulusMpa) && Number(inputs.tangentModulusMpa) > 0) {
+        request.tangent_modulus_pa = Number(inputs.tangentModulusMpa) * 1e6;
+      }
+    } else if (inputs.materialModel === 'hyperelastic') {
+      if (isFiniteNumberString(inputs.hyperC10Mpa) && Number(inputs.hyperC10Mpa) > 0) {
+        request.hyper_c10_pa = Number(inputs.hyperC10Mpa) * 1e6;
+      }
+      if (isFiniteNumberString(inputs.hyperD1) && Number(inputs.hyperD1) >= 0) {
+        request.hyper_d1_inv_pa = Number(inputs.hyperD1);
+      }
+    }
+    if (inputs.contactType === 'Frictional' && isFiniteNumberString(inputs.frictionCoeff)) {
+      request.friction_coeff = Number(inputs.frictionCoeff);
     }
   }
 

@@ -6,7 +6,6 @@ import {
   Target,
   Link2,
   Sliders,
-  Sparkles,
   Activity,
   ChevronRight,
   ChevronDown,
@@ -45,8 +44,7 @@ const STEPS: { id: WorkflowStep; label: string; icon: React.ReactNode }[] = [
   { id: 'boundaries', label: '4. Boundary Conditions', icon: <Target className="h-4 w-4" /> },
   { id: 'contacts', label: '5. Contacts & Interfaces', icon: <Link2 className="h-4 w-4" /> },
   { id: 'solution', label: '6. Solution Controls', icon: <Sliders className="h-4 w-4" /> },
-  { id: 'copilot', label: '7. OmniSolve AI (Copilot)', icon: <Sparkles className="h-4 w-4" /> },
-  { id: 'post', label: '8. Results & Post', icon: <Activity className="h-4 w-4" /> },
+  { id: 'post', label: '7. Results & Post', icon: <Activity className="h-4 w-4" /> },
 ];
 
 export const SimulationTree: React.FC<SimulationTreeProps> = ({

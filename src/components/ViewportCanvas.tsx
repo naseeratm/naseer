@@ -6,6 +6,8 @@ import {
   BoundaryMarker,
 } from './Interactive3DViewport';
 import { VtkFieldPayload } from '../types/thesis';
+import { JobStatus } from '../types/studio';
+import { ViewportHealthDashboard, LiveJobTelemetry } from './ViewportHealthDashboard';
 
 interface ViewportCanvasProps {
   title: string;
@@ -27,6 +29,14 @@ interface ViewportCanvasProps {
   onRegionChange?: (bounds: { min: [number, number, number]; max: [number, number, number] } | null) => void;
   children?: React.ReactNode;
   overlay?: React.ReactNode;
+  jobStatus?: JobStatus;
+  activeTaskId?: string | null;
+  solverProgress?: number | null;
+  currentIteration?: number | null;
+  liveJobTelemetry?: LiveJobTelemetry | null;
+  jobWallClockSec?: number | null;
+  lastCompletedDurationSec?: number | null;
+  solverLabel?: string;
 }
 
 export const ViewportCanvas: React.FC<ViewportCanvasProps> = ({
@@ -49,6 +59,14 @@ export const ViewportCanvas: React.FC<ViewportCanvasProps> = ({
   onRegionChange,
   children,
   overlay,
+  jobStatus = 'idle',
+  activeTaskId = null,
+  solverProgress = null,
+  currentIteration = null,
+  liveJobTelemetry = null,
+  jobWallClockSec = null,
+  lastCompletedDurationSec = null,
+  solverLabel,
 }) => {
   const [preset, setPreset] = useState<ViewPreset>('iso');
   const detectedField =
@@ -102,6 +120,18 @@ export const ViewportCanvas: React.FC<ViewportCanvasProps> = ({
           </div>
         )}
       </div>
+
+      {/* Floating Real-Time HPC Simulation Health & Performance Dashboard (Zero-Mock) */}
+      <ViewportHealthDashboard
+        jobStatus={jobStatus}
+        activeTaskId={activeTaskId}
+        solverProgress={solverProgress}
+        currentIteration={currentIteration}
+        liveJobTelemetry={liveJobTelemetry}
+        jobWallClockSec={jobWallClockSec}
+        lastCompletedDurationSec={lastCompletedDurationSec}
+        solverLabel={solverLabel}
+      />
 
       {/* Optional Fullscreen Document / Overlay */}
       {overlay}

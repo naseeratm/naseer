@@ -6,7 +6,6 @@ import {
   Grid3X3,
   Database,
   Sliders,
-  Sparkles,
   Palette,
   ShieldCheck,
   Table as TableIcon,
@@ -74,7 +73,6 @@ export interface PropertiesPanelActions {
   openMeshGenerator: () => void;
   openMaterials: () => void;
   openParametricSweep: () => void;
-  openAssistant: () => void;
   openDocument: (doc: PanelDocument) => void;
   print: () => void;
 }
@@ -107,7 +105,6 @@ const STEP_TITLES: Record<WorkflowStep, string> = {
   boundaries: 'Boundary Conditions',
   contacts: 'Contacts & Interfaces',
   solution: 'Solution Controls',
-  copilot: 'OmniSolve AI',
   post: 'Results & Post',
 };
 
@@ -115,6 +112,14 @@ const INTEGRAL_LABELS: Record<string, { label: string; unit: string }> = {
   mass_flow_kg_s: { label: 'Mass Flow Rate', unit: 'kg/s' },
   pressure_drop_pa: { label: 'Pressure Drop (ΔP)', unit: 'Pa' },
   max_velocity_mps: { label: 'Max Velocity', unit: 'm/s' },
+  y_plus_min: { label: 'Wall y+ (Min)', unit: '-' },
+  y_plus_avg: { label: 'Wall y+ (Avg)', unit: '-' },
+  y_plus_max: { label: 'Wall y+ (Max)', unit: '-' },
+  drag_coefficient_cd: { label: 'Drag Coeff (Cd)', unit: '-' },
+  lift_coefficient_cl: { label: 'Lift Coeff (Cl)', unit: '-' },
+  wall_shear_stress_max_pa: { label: 'Max Wall Shear (τw)', unit: 'Pa' },
+  heat_transfer_coeff_h: { label: 'Convection Coeff (h)', unit: 'W/m²·K' },
+  nusselt_number: { label: 'Nusselt Number (Nu)', unit: '-' },
   total_heat_transfer_w: { label: 'Total Heat Transfer', unit: 'W' },
   heat_flux_w_m2: { label: 'Boundary Heat Flux', unit: 'W/m²' },
   max_von_mises_pa: { label: 'Max Von Mises Stress', unit: 'Pa' },
@@ -324,6 +329,10 @@ export const PropertiesPanel: React.FC<PropertiesPanelProps> = ({
               <option value="kOmegaSST">RAS · Menter SST k-ω</option>
               <option value="kEpsilon">RAS · Standard k-ε</option>
               <option value="SpalartAllmaras">RAS · Spalart-Allmaras</option>
+              <option value="WALE">LES · WALE (Transient 3D)</option>
+              <option value="Smagorinsky">LES · Smagorinsky (Transient 3D)</option>
+              <option value="kEqn">LES · One-Eqn kEqn (Transient 3D)</option>
+              <option value="SpalartAllmarasDDES">DDES · Spalart-Allmaras DDES</option>
             </select>
           </Field>
           <NumberField id="in-fluid-rho" label="Fluid Density" unit="kg/m³" value={inputs.fluidDensity} placeholder="998.2" disabled={inputsLocked} onChange={(fluidDensity) => onInputsChange({ fluidDensity })} />
@@ -357,6 +366,35 @@ export const PropertiesPanel: React.FC<PropertiesPanelProps> = ({
               </select>
             </div>
           </Field>
+          <label className="flex items-center justify-between pt-1.5 text-[11px] text-slate-300 cursor-pointer border-t border-slate-800/80">
+            <span>Rotating Zone (OpenFOAM MRF)</span>
+            <input
+              type="checkbox"
+              checked={inputs.mrfEnabled}
+              disabled={inputsLocked}
+              onChange={(e) => onInputsChange({ mrfEnabled: e.target.checked })}
+              className="accent-sky-500"
+            />
+          </label>
+          {inputs.mrfEnabled && (
+            <>
+              <NumberField id="in-mrf-rpm" label="Rotor Speed ω" unit="RPM" value={inputs.mrfOmegaRpm} placeholder="Required (e.g. 1500)" disabled={inputsLocked} onChange={(mrfOmegaRpm) => onInputsChange({ mrfOmegaRpm })} />
+              <NumberField id="in-mrf-radius" label="Zone Radius" unit="m" value={inputs.mrfRadius} placeholder="Auto (0.3·min)" disabled={inputsLocked} onChange={(mrfRadius) => onInputsChange({ mrfRadius })} />
+              <Field label="Rotation Axis" htmlFor="in-mrf-axis">
+                <select
+                  id="in-mrf-axis"
+                  value={inputs.mrfAxis || 'z'}
+                  disabled={inputsLocked}
+                  onChange={(e) => onInputsChange({ mrfAxis: e.target.value as 'x' | 'y' | 'z' })}
+                  className={inputClass}
+                >
+                  <option value="z">Z-Axis (0 0 1)</option>
+                  <option value="y">Y-Axis (0 1 0)</option>
+                  <option value="x">X-Axis (1 0 0)</option>
+                </select>
+              </Field>
+            </>
+          )}
         </Section>
       )}
 
@@ -375,12 +413,42 @@ export const PropertiesPanel: React.FC<PropertiesPanelProps> = ({
               <option value="fixed_both">Clamped Both Ends</option>
             </select>
           </Field>
+          <Field label="Material Law" htmlFor="in-material-model">
+            <select
+              id="in-material-model"
+              value={inputs.materialModel || 'linear_elastic'}
+              disabled={inputsLocked}
+              onChange={(event) =>
+                onInputsChange({
+                  materialModel: event.target.value as SimulationInputs['materialModel'],
+                  nonlinear: event.target.value !== 'linear_elastic' ? true : inputs.nonlinear,
+                })
+              }
+              className={inputClass}
+            >
+              <option value="linear_elastic">Linear Elastic (*ELASTIC)</option>
+              <option value="plastic">Elastoplastic (*PLASTIC · Mises)</option>
+              <option value="hyperelastic">Hyperelastic (*HYPERELASTIC · Neo-Hooke)</option>
+            </select>
+          </Field>
           <NumberField id="in-displacement" label="Prescribed Disp." unit="m" value={inputs.displacement} placeholder="0 or load" disabled={inputsLocked} onChange={(displacement) => onInputsChange({ displacement })} />
           <NumberField id="in-force-n" label="Force Load" unit="N" value={inputs.forceN} placeholder="Optional" disabled={inputsLocked} onChange={(forceN) => onInputsChange({ forceN })} />
           <NumberField id="in-press-mpa" label="Pressure Load" unit="MPa" value={inputs.pressureLoadMpa} placeholder="Optional" disabled={inputsLocked} onChange={(pressureLoadMpa) => onInputsChange({ pressureLoadMpa })} />
           <NumberField id="in-young" label="Young's Mod." unit="Pa" value={inputs.youngModulus} disabled={inputsLocked} onChange={(youngModulus) => onInputsChange({ youngModulus })} />
           <NumberField id="in-poisson" label="Poisson Ratio" unit="-" value={inputs.poissonRatio} disabled={inputsLocked} onChange={(poissonRatio) => onInputsChange({ poissonRatio })} />
           <NumberField id="in-density" label="Density" unit="kg/m³" value={inputs.density} disabled={inputsLocked} onChange={(density) => onInputsChange({ density })} />
+          {inputs.materialModel === 'plastic' && (
+            <>
+              <NumberField id="in-yield-mpa" label="Yield Stress σy" unit="MPa" value={inputs.yieldStressMpa} placeholder="Required (e.g. 250)" disabled={inputsLocked} onChange={(yieldStressMpa) => onInputsChange({ yieldStressMpa })} />
+              <NumberField id="in-tangent-mpa" label="Tangent Mod. Et" unit="MPa" value={inputs.tangentModulusMpa} placeholder="Optional (5% E)" disabled={inputsLocked} onChange={(tangentModulusMpa) => onInputsChange({ tangentModulusMpa })} />
+            </>
+          )}
+          {inputs.materialModel === 'hyperelastic' && (
+            <>
+              <NumberField id="in-hyper-c10" label="Neo-Hooke C10" unit="MPa" value={inputs.hyperC10Mpa} placeholder="Auto from E, ν" disabled={inputsLocked} onChange={(hyperC10Mpa) => onInputsChange({ hyperC10Mpa })} />
+              <NumberField id="in-hyper-d1" label="Compress. D1" unit="1/Pa" value={inputs.hyperD1} placeholder="Auto from E, ν" disabled={inputsLocked} onChange={(hyperD1) => onInputsChange({ hyperD1 })} />
+            </>
+          )}
           <NumberField id="in-thermal-exp" label="Therm. Exp." unit="1/K" value={inputs.thermalExpansion} placeholder="Optional" disabled={inputsLocked} onChange={(thermalExpansion) => onInputsChange({ thermalExpansion })} />
           {(inputs.simulationType === 'Structural_Dynamic' || inputs.simulationType === 'Structural_Buckling') && (
             <NumberField id="in-modes-count" label="Eigenmodes" unit="#" value={inputs.modesCount} placeholder="5" disabled={inputsLocked} onChange={(modesCount) => onInputsChange({ modesCount })} />
@@ -575,6 +643,67 @@ export const PropertiesPanel: React.FC<PropertiesPanelProps> = ({
             />
           )}
         </Section>
+        {isCFD && (
+          <Section title="External Aero (OpenFOAM snappyHexMesh)">
+            <label className="flex items-center justify-between gap-2 text-[11px] text-slate-200 cursor-pointer">
+              <span>Auto Wind Tunnel + snappyHexMesh</span>
+              <input
+                type="checkbox"
+                checked={Boolean(inputs.externalAero)}
+                disabled={inputsLocked}
+                onChange={(e) => onInputsChange({ externalAero: e.target.checked })}
+                className="accent-sky-500"
+              />
+            </label>
+            {inputs.externalAero ? (
+              <>
+                <p className="text-[10.5px] leading-snug text-sky-300/90">
+                  Wraps your uploaded .STL/.STEP body in a slip-wall 3D wind tunnel, extracts edges, refines the wake box, adds prism layers, and computes Cd / Cl on the obstacle patch.
+                </p>
+                <NumberField
+                  id="aero-surf-lvl"
+                  label="Surface Level"
+                  unit="1–4"
+                  value={inputs.aeroSurfaceLevel}
+                  placeholder="2"
+                  disabled={inputsLocked}
+                  onChange={(aeroSurfaceLevel) => onInputsChange({ aeroSurfaceLevel })}
+                />
+                <NumberField
+                  id="aero-wake-lvl"
+                  label="Wake Level"
+                  unit="1–3"
+                  value={inputs.aeroWakeLevel}
+                  placeholder="1"
+                  disabled={inputsLocked}
+                  onChange={(aeroWakeLevel) => onInputsChange({ aeroWakeLevel })}
+                />
+                <NumberField
+                  id="aero-up-mult"
+                  label="Upstream Pad"
+                  unit="×L"
+                  value={inputs.tunnelUpstreamMult}
+                  placeholder="3"
+                  disabled={inputsLocked}
+                  onChange={(tunnelUpstreamMult) => onInputsChange({ tunnelUpstreamMult })}
+                />
+                <NumberField
+                  id="aero-down-mult"
+                  label="Wake Length"
+                  unit="×L"
+                  value={inputs.tunnelDownstreamMult}
+                  placeholder="6"
+                  disabled={inputsLocked}
+                  onChange={(tunnelDownstreamMult) => onInputsChange({ tunnelDownstreamMult })}
+                />
+              </>
+            ) : (
+              <p className="text-[10.5px] leading-snug text-slate-500">
+                Enable for external aerodynamics around an uploaded 3D airfoil, vehicle, or bluff body (.STL / .STEP).
+              </p>
+            )}
+          </Section>
+        )}
         <Section title="Mesh Statistics">
           <ReadRow label="Elements" value={elCount !== undefined ? elCount.toLocaleString() : undefined} />
           <ReadRow label="Nodes" value={nodeCount !== undefined ? nodeCount.toLocaleString() : undefined} />
@@ -842,23 +971,51 @@ export const PropertiesPanel: React.FC<PropertiesPanelProps> = ({
   } else if (step === 'contacts') {
     contextual = (
       <>
-        <Section title="Contacts & Interfaces">
+        <Section title="Contacts & Multi-Body Interfaces (CalculiX)">
           <Field label="Interface Type" htmlFor="contact-type">
             <select
               id="contact-type"
               value={inputs.contactType}
               disabled={inputsLocked}
-              onChange={(e) => onInputsChange({ contactType: e.target.value as 'Bonded' | 'Sliding' })}
+              onChange={(e) =>
+                onInputsChange({
+                  contactType: e.target.value as SimulationInputs['contactType'],
+                  nonlinear:
+                    e.target.value === 'Frictional' || e.target.value === 'Contact_Frictionless'
+                      ? true
+                      : inputs.nonlinear,
+                })
+              }
               className={inputClass}
             >
-              <option value="Bonded">Bonded (*TIE / Coupled)</option>
-              <option value="Sliding">Frictionless Sliding</option>
+              <option value="Bonded">Bonded (Single-Body Support)</option>
+              <option value="Sliding">Frictionless Sliding Support</option>
+              <option value="Tie">2-Body Tied Assembly (*TIE)</option>
+              <option value="Frictional">2-Body Frictional Contact (*CONTACT PAIR + *FRICTION)</option>
+              <option value="Contact_Frictionless">2-Body Frictionless Contact (*CONTACT PAIR)</option>
             </select>
           </Field>
+          {inputs.contactType === 'Frictional' && (
+            <NumberField
+              id="in-friction-mu"
+              label="Friction Coeff. μ"
+              unit="-"
+              value={inputs.frictionCoeff}
+              placeholder="Required (e.g. 0.25)"
+              disabled={inputsLocked}
+              onChange={(frictionCoeff) => onInputsChange({ frictionCoeff })}
+            />
+          )}
           <ReadRow
             label="Domain Coupling"
             value={
-              inputs.simulationType === 'CHT_Coupled'
+              inputs.contactType === 'Frictional'
+                ? '2-Body Surface-to-Surface (*CONTACT PAIR + *FRICTION)'
+                : inputs.contactType === 'Contact_Frictionless'
+                ? '2-Body Surface-to-Surface (*CONTACT PAIR)'
+                : inputs.contactType === 'Tie'
+                ? '2-Body Tied Assembly (*TIE)'
+                : inputs.simulationType === 'CHT_Coupled'
                 ? 'Fluid–Solid Thermal Interface'
                 : inputs.simulationType === 'Thermal_Structural'
                 ? 'Thermal–Structural One-Way C3D8T'
@@ -952,15 +1109,6 @@ export const PropertiesPanel: React.FC<PropertiesPanelProps> = ({
           <NumberField id="ctrl-urt" label="Relaxation (T)" unit="-" value={inputs.relaxationT} placeholder="0.8" disabled={inputsLocked} onChange={(relaxationT) => onInputsChange({ relaxationT })} />
         </Section>
       </>
-    );
-  } else if (step === 'copilot') {
-    contextual = (
-      <Section title="OmniSolve AI (Copilot)">
-        <p className="text-[11px] leading-relaxed text-slate-400">
-          Ask the engineering AI consultant to review boundary setup, thermophysical properties, or convergence behavior.
-        </p>
-        <ActionButton accent icon={<Sparkles className="h-3.5 w-3.5" />} label="Open OmniSolve AI" onClick={actions.openAssistant} />
-      </Section>
     );
   } else {
     const norm = project.normalizedSolverResult;

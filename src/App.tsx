@@ -7,9 +7,7 @@ import {
   ShieldCheck,
   Table as TableIcon,
   FileText,
-  Sparkles,
   Cpu,
-  Key,
   Upload,
   RotateCcw,
   FolderOpen,
@@ -30,8 +28,6 @@ import {
 import {
   ThesisProject,
   BoundaryCondition,
-  ApiKeyItem,
-  EngineMode,
   CloudServerConfig,
   SimulationRunRecord,
   MeshStudyResult,
@@ -43,6 +39,7 @@ import {
 import { StudioHeader, HeaderMenuGroup } from './components/StudioHeader';
 import { SimulationTree, TreeAction } from './components/SimulationTree';
 import { ViewportCanvas } from './components/ViewportCanvas';
+import { LiveJobTelemetry } from './components/ViewportHealthDashboard';
 import { CadModelStats, BoundaryMarker } from './components/Interactive3DViewport';
 import { PropertiesPanel, PanelDocument, MeshPreviewSummary } from './components/PropertiesPanel';
 import { SolverConsole, ResidualSeries } from './components/SolverConsole';
@@ -62,14 +59,14 @@ import { CleanWorkspaceHome } from './components/CleanWorkspaceHome';
 import { OverviewTab } from './components/OverviewTab';
 import { MeshStudyTab } from './components/MeshStudyTab';
 import { ContoursTab } from './components/ContoursTab';
+import { VVBenchmarkTemplate } from './data/vvBenchmarks';
 import { ValidationTab } from './components/ValidationTab';
 import { TablesTab } from './components/TablesTab';
 import { ThesisReportTab } from './components/ThesisReportTab';
 import { ScriptUploaderModal } from './components/ScriptUploaderModal';
-import { SupervisorAssistantDrawer } from './components/SupervisorAssistantDrawer';
-import { KeyPoolModal } from './components/KeyPoolModal';
 import { ProjectsLibraryModal } from './components/ProjectsLibraryModal';
 import { CloudServerSettingsModal } from './components/CloudServerSettingsModal';
+import { EnterpriseAdminModal } from './components/EnterpriseAdminModal';
 import { AuditReportModal } from './components/AuditReportModal';
 import { MeshGenerativeTool } from './components/MeshGenerativeTool';
 import { NewProjectModal } from './components/NewProjectModal';
@@ -121,8 +118,6 @@ export default function App() {
   const [isMaterialsModalOpen, setIsMaterialsModalOpen] = useState<boolean>(false);
   const [isParametricSweepOpen, setIsParametricSweepOpen] = useState<boolean>(false);
   const [isUploadModalOpen, setIsUploadModalOpen] = useState<boolean>(false);
-  const [isAssistantOpen, setIsAssistantOpen] = useState<boolean>(false);
-  const [isKeyPoolModalOpen, setIsKeyPoolModalOpen] = useState<boolean>(false);
   const [isProjectsLibraryOpen, setIsProjectsLibraryOpen] = useState<boolean>(false);
   const [isCloudModalOpen, setIsCloudModalOpen] = useState<boolean>(false);
   const [isAuditModalOpen, setIsAuditModalOpen] = useState<boolean>(false);
@@ -132,6 +127,11 @@ export default function App() {
   const [solverJobStatus, setSolverJobStatus] = useState<JobStatus>('idle');
   const [solverLogs, setSolverLogs] = useState<string[]>([]);
   const [solverProgress, setSolverProgress] = useState<number | null>(null);
+  const [solverCurrentIteration, setSolverCurrentIteration] = useState<number | null>(null);
+  const [activeTaskId, setActiveTaskId] = useState<string | null>(null);
+  const [liveJobTelemetry, setLiveJobTelemetry] = useState<LiveJobTelemetry | null>(null);
+  const [jobWallClockSec, setJobWallClockSec] = useState<number | null>(null);
+  const [lastCompletedDurationSec, setLastCompletedDurationSec] = useState<number | null>(null);
   const [meshStudyRunning, setMeshStudyRunning] = useState<boolean>(false);
   const [meshStudyError, setMeshStudyError] = useState<string | null>(null);
   const [solverResidualSeries, setSolverResidualSeries] = useState<ResidualSeries[]>([]);
@@ -150,6 +150,9 @@ export default function App() {
   const [documentOpen, setDocumentOpen] = useState<boolean>(false);
   const [consoleTab, setConsoleTab] = useState<ConsoleTab>('logs');
   const [consoleIssues, setConsoleIssues] = useState<ConsoleIssue[]>([]);
+  const [isEnterpriseModalOpen, setIsEnterpriseModalOpen] = useState<boolean>(false);
+  // Session auth token held strictly in React memory (never persisted to localStorage/sessionStorage)
+  const [enterpriseAuthToken, setEnterpriseAuthToken] = useState<string | null>(null);
 
   const runIdRef = useRef(0);
   const issueIdRef = useRef(0);
@@ -211,6 +214,7 @@ export default function App() {
 
   setSolverJobStatus('queued');
   setSolverProgress(null);
+  setSolverCurrentIteration(null);
   setResults(null);
   setSolverResidualSeries([]);
   activeTaskIdRef.current = null;
@@ -220,7 +224,10 @@ export default function App() {
 
   const submitResponse = await fetch('/api/run-simulation', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: {
+      'Content-Type': 'application/json',
+      ...(enterpriseAuthToken ? { Authorization: `Bearer ${enterpriseAuthToken}` } : {}),
+    },
     body: JSON.stringify(requestBody),
   });
   const submitPayload = await readJson(submitResponse);
@@ -245,6 +252,9 @@ export default function App() {
       if (!taskId) throw new Error('Simulation backend did not return a task_id');
       completedTaskId = taskId;
       activeTaskIdRef.current = taskId;
+      setActiveTaskId(taskId);
+      setLiveJobTelemetry(null);
+      setJobWallClockSec(0);
 
       for (;;) {
         const statusResponse = await fetch(`/api/jobs/${encodeURIComponent(taskId)}`);
@@ -263,16 +273,49 @@ export default function App() {
           'queued'
         );
         if (typeof job?.progress === 'number') setSolverProgress(job.progress);
+        if (typeof job?.current_iteration === 'number' && job.current_iteration > 0) {
+          setSolverCurrentIteration(job.current_iteration);
+        }
+        if (typeof job?.wall_clock_sec === 'number' && Number.isFinite(job.wall_clock_sec)) {
+          setJobWallClockSec(job.wall_clock_sec);
+        }
+        if (job?.telemetry && typeof job.telemetry === 'object') {
+          setLiveJobTelemetry(job.telemetry as LiveJobTelemetry);
+        }
         if (Array.isArray(job?.logs)) {
           latestLogs = job.logs.map(String);
           setSolverLogs(latestLogs);
         }
+        if (job?.live_residuals && typeof job.live_residuals === 'object') {
+          const liveSeries: ResidualSeries[] = Object.entries(job.live_residuals)
+            .map(([name, raw]: [string, any]) => {
+              const iters: number[] = Array.isArray(raw?.iterations) ? raw.iterations : [];
+              const vals: number[] = Array.isArray(raw?.values) ? raw.values : [];
+              const points = vals
+                .map((value, idx) => ({ iteration: Number(iters[idx] ?? idx + 1), value: Number(value) }))
+                .filter((pt) => Number.isFinite(pt.iteration) && Number.isFinite(pt.value) && pt.value > 0);
+              return { name, points };
+            })
+            .filter((s) => s.points.length >= 2);
+          if (liveSeries.length > 0) {
+            setSolverResidualSeries(liveSeries);
+          }
+        }
         if (jobStatus === 'COMPLETED') {
           activeTaskIdRef.current = null;
+          setActiveTaskId(null);
+          const finalDur =
+            typeof job?.wall_clock_sec === 'number'
+              ? job.wall_clock_sec
+              : typeof job?.result?.process_time === 'number'
+                ? job.result.process_time
+                : null;
+          if (finalDur !== null) setLastCompletedDurationSec(finalDur);
           break;
         }
         if (jobStatus === 'FAILED' || jobStatus === 'CANCELLED') {
           activeTaskIdRef.current = null;
+          setActiveTaskId(null);
           const backendError = typeof job?.error === 'string' && job.error.trim() !== '' ? job.error : undefined;
           if (backendError && !latestLogs.includes(backendError)) {
             latestLogs = [...latestLogs, backendError];
@@ -280,7 +323,7 @@ export default function App() {
           }
           throw new Error(extractApiError(job, `Solver job ${jobStatus.toLowerCase()}`));
         }
-        await new Promise(resolve => setTimeout(resolve, 1500));
+        await new Promise(resolve => setTimeout(resolve, 1000));
         assertActive();
       }
     }
@@ -449,7 +492,10 @@ export default function App() {
 
         const response = await fetch('/api/run-simulation', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: {
+            'Content-Type': 'application/json',
+            ...(enterpriseAuthToken ? { Authorization: `Bearer ${enterpriseAuthToken}` } : {}),
+          },
           body: JSON.stringify(payload),
         });
         const data = await readJson(response);
@@ -689,32 +735,6 @@ export default function App() {
     ...customProjects,
   ];
 
-  const [apiKeys, setApiKeys] = useState<ApiKeyItem[]>(() => {
-    try {
-      const saved = localStorage.getItem('workbench_api_keys');
-      return saved ? JSON.parse(saved) : [];
-    } catch {
-      return [];
-    }
-  });
-
-  const [engineMode, setEngineMode] = useState<EngineMode>(() => {
-    try {
-      const saved = localStorage.getItem('workbench_engine_mode');
-      return (saved as EngineMode) || 'hybrid';
-    } catch {
-      return 'hybrid';
-    }
-  });
-
-  useEffect(() => {
-    try {
-      localStorage.setItem('workbench_api_keys', JSON.stringify(apiKeys));
-    } catch (e) {
-      console.error('Error saving keys:', e);
-    }
-  }, [apiKeys]);
-
   useEffect(() => {
     try {
       localStorage.setItem('workbench_cloud_config', JSON.stringify(cloudConfig));
@@ -756,8 +776,6 @@ export default function App() {
     }
     setCustomProjects([]);
     setCurrentProject(null);
-    setApiKeys([]);
-    setEngineMode('hybrid');
     window.location.reload();
   };
 
@@ -811,6 +829,16 @@ export default function App() {
     }, 3500);
   };
 
+  const parseNumericProperty = (raw: unknown): number | null => {
+    if (typeof raw === 'number' && Number.isFinite(raw)) return raw;
+    if (typeof raw !== 'string') return null;
+    const cleaned = raw.replace(/,/g, '');
+    const match = cleaned.match(/-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?/);
+    if (!match) return null;
+    const val = Number(match[0]);
+    return Number.isFinite(val) ? val : null;
+  };
+
   const handleSelectMaterialFromDatabase = (mat: any) => {
     if (!currentProject) return;
     const updatedProj: ThesisProject = {
@@ -823,7 +851,34 @@ export default function App() {
       ),
     };
     setCurrentProject(updatedProj);
-    setSaveToast(`تم تطبيق مادة (${mat.name}) على المشروع النشط بنجاح!`);
+
+    // Sync physical material properties directly into simulationInputs sent to OpenFOAM / CalculiX / Elmer
+    const densityVal = parseNumericProperty(mat.density);
+    const kVal = parseNumericProperty(mat.thermalConductivity);
+    const cpVal = parseNumericProperty(mat.specificHeat);
+    const poissonVal = parseNumericProperty(mat.poissonRatio);
+    const viscVal = parseNumericProperty(mat.viscosity);
+    const rawModulus = typeof mat.elasticModulus === 'string' ? mat.elasticModulus : '';
+    const modulusBase = parseNumericProperty(rawModulus);
+    let youngPa: number | null = null;
+    if (modulusBase !== null) {
+      if (/gpa/i.test(rawModulus)) youngPa = modulusBase * 1e9;
+      else if (/mpa/i.test(rawModulus)) youngPa = modulusBase * 1e6;
+      else youngPa = modulusBase;
+    }
+
+    const isFluidMat = String(mat.phaseOrType || '').toLowerCase() === 'fluid';
+    setSimulationInputs((prev) => ({
+      ...prev,
+      ...(densityVal !== null ? (isFluidMat ? { fluidDensity: String(densityVal) } : { density: String(densityVal) }) : {}),
+      ...(viscVal !== null ? { dynamicViscosity: String(viscVal) } : {}),
+      ...(youngPa !== null ? { youngModulus: String(youngPa) } : {}),
+      ...(poissonVal !== null ? { poissonRatio: String(poissonVal) } : {}),
+      ...(kVal !== null ? { thermalConductivity: String(kVal) } : {}),
+      ...(cpVal !== null ? { specificHeat: String(cpVal) } : {}),
+    }));
+
+    setSaveToast(`تم تطبيق مادة (${mat.name}) ومزامنة خصائصها الفيزيائية مع المحلل بنجاح!`);
     setTimeout(() => setSaveToast(null), 3500);
   };
 
@@ -849,6 +904,16 @@ export default function App() {
     maxSkewness: number;
     description: string;
     vtkData?: VtkFieldPayload;
+    meshSize: number;
+    elementOrder: 1 | 2;
+    inflationLayers: number;
+    firstLayerHeight: number;
+    growthRate: number;
+    widthX: number;
+    heightY: number;
+    depthZ: number;
+    patches?: Array<{ id: string; name: string }>;
+    cadFile?: { name: string; base64: string } | null;
   }) => {
     if (!currentProject) return;
     if (applied.vtkData) {
@@ -856,10 +921,33 @@ export default function App() {
       setMeshPreviewStats({
         elements_count: applied.elementCount,
         nodes_count: applied.nodeCount,
+        element_order: applied.elementOrder,
         min_quality: applied.minOrthogonalQuality,
         max_skewness: applied.maxSkewness,
+        patches: applied.patches,
       });
     }
+    if (Array.isArray(applied.patches) && applied.patches.length > 0) {
+      setCadPatches(applied.patches);
+    }
+    if (applied.cadFile) {
+      setUploadedCadStl(applied.cadFile);
+    }
+    setSimulationInputs((prev) => ({
+      ...prev,
+      meshSize: String(applied.meshSize),
+      elementOrder: String(applied.elementOrder) as '1' | '2',
+      inflationLayers: String(applied.inflationLayers),
+      firstLayerHeight: String(applied.firstLayerHeight),
+      growthRate: String(applied.growthRate),
+      ...(!applied.cadFile && !uploadedCadStl
+        ? {
+            widthX: String(applied.widthX),
+            heightY: String(applied.heightY),
+            depthZ: String(applied.depthZ),
+          }
+        : {}),
+    }));
     const updatedLevels = [...currentProject.meshStudy.meshLevels];
     if (updatedLevels.length > 2) {
       updatedLevels[2] = {
@@ -874,12 +962,12 @@ export default function App() {
         ...currentProject.meshStudy,
         minOrthogonalQuality: applied.minOrthogonalQuality,
         maxSkewness: applied.maxSkewness,
-        recommendation: `${applied.description} - تم التحقق من استقرار معادلات Navier-Stokes وجودة التعامد وفق معايير تقارب روتش (Roache GCI).`,
+        recommendation: `${applied.description} - تم التحقق من جودة العناصر وفق معايير تقارب روتش (Roache GCI).`,
         meshLevels: updatedLevels,
       },
     };
     setCurrentProject(updatedProj);
-    setSaveToast(`تم اعتماد الشبكة الحسابية الجديدة (${applied.elementCount} عنصر) وتحديث مشروع المحاكاة بنجاح`);
+    setSaveToast(`تم اعتماد الشبكة (${applied.elementCount.toLocaleString()} عنصر، h=${applied.meshSize}m، Order ${applied.elementOrder}) ومزامنتها مع الاستوديو`);
     setTimeout(() => setSaveToast(null), 3500);
   };
 
@@ -1155,9 +1243,6 @@ export default function App() {
 
   const selectStep = (step: WorkflowStep) => {
     setActiveStep(step);
-    if (step === 'copilot') {
-      setIsAssistantOpen(true);
-    }
     setDocumentOpen(false);
   };
 
@@ -1243,9 +1328,6 @@ export default function App() {
     solution: [
       { id: 'setup', label: 'Solver Setup', icon: <Cpu className="h-3.5 w-3.5" />, onClick: () => openDocument('overview') },
     ],
-    copilot: [
-      { id: 'consultant', label: 'Open OmniSolve AI', icon: <Sparkles className="h-3.5 w-3.5" />, onClick: () => setIsAssistantOpen(true) },
-    ],
     post: [
       { id: 'contours', label: 'Contours & Vectors', icon: <Palette className="h-3.5 w-3.5" />, onClick: () => openDocument('contours') },
       { id: 'validation', label: 'Validation', icon: <ShieldCheck className="h-3.5 w-3.5" />, onClick: () => openDocument('validation') },
@@ -1281,7 +1363,6 @@ export default function App() {
         { id: 'mesh', label: 'Mesh Generator', icon: <Grid3X3 className="h-3.5 w-3.5" />, onClick: () => setIsMeshGeneratorOpen(true), title: 'مولد الشبيكات وتدقيق جودة التعامد' },
         { id: 'materials', label: 'Materials Database', icon: <Database className="h-3.5 w-3.5" />, onClick: () => setIsMaterialsModalOpen(true), disabled: !hasProject, title: hasProject ? 'فتح مكتبة المواد المعيارية' : 'يتطلب فتح أو اختيار مشروع لتخصيص خواص المواد' },
         { id: 'sweep', label: 'Parametric Sweep', icon: <Sliders className="h-3.5 w-3.5" />, onClick: () => setIsParametricSweepOpen(true), disabled: !hasProject, title: hasProject ? 'مسح المتغيرات وحساب سطوح الاستجابة' : 'يتطلب فتح مشروع لتحديد متغيرات المسح' },
-        { id: 'assistant', label: 'OmniSolve AI (Copilot)', icon: <Sparkles className="h-3.5 w-3.5" />, onClick: () => setIsAssistantOpen(true), disabled: !hasProject, title: hasProject ? 'فتح مستشار المحاكاة والتحليل الفيزيائي' : 'يتطلب فتح مشروع لمناقشة الحالة' },
       ],
     },
     {
@@ -1299,10 +1380,10 @@ export default function App() {
     },
     {
       id: 'settings',
-      label: 'Settings',
+      label: 'Infrastructure',
       items: [
-        { id: 'keys', label: 'API Keys & Engine Mode', icon: <Key className="h-3.5 w-3.5" />, onClick: () => setIsKeyPoolModalOpen(true), title: 'إدارة مفاتيح وأنماط المحرك' },
-        { id: 'cloud', label: 'Cloud Server & Licensing', icon: <Cloud className="h-3.5 w-3.5" />, onClick: () => setIsCloudModalOpen(true), title: 'إعدادات خوادم الحوسبة السحابية وعناقيد المعالجة' },
+        { id: 'cloud', label: 'HPC Cluster & Multi-Worker Gateway', icon: <Cloud className="h-3.5 w-3.5" />, onClick: () => setIsCloudModalOpen(true), title: 'إدارة عنقود الحوسبة المتوازية وخوادم Docker / HPC' },
+        { id: 'enterprise', label: 'Enterprise Security, S3 & K8s', icon: <ShieldCheck className="h-3.5 w-3.5 text-sky-400" />, onClick: () => setIsEnterpriseModalOpen(true), title: 'مصادقة فرق العمل (RBAC) وتخزين S3/MinIO وحزم Kubernetes وSlurm وسجل التدقيق' },
       ],
     },
   ];
@@ -1324,7 +1405,6 @@ export default function App() {
     boundaries: 'Boundary Conditions',
     contacts: 'Contacts & Interfaces',
     solution: 'Solution Controls',
-    copilot: 'OmniSolve AI (Copilot)',
     post: 'Results & Post-Processing',
   };
 
@@ -1347,7 +1427,7 @@ export default function App() {
             ? `Missing required inputs: ${getMissingSimulationInputs(simulationInputs).join(', ')}`
             : undefined
         }
-        engineLabel={`Engine: ${engineMode === 'pure_local' ? 'Local' : engineMode === 'turbo_offline' ? 'Turbo offline' : 'Hybrid'} · ${apiKeys.filter((key) => key.status === 'active').length} keys`}
+        engineLabel="Solvers: OpenFOAM · CalculiX · Gmsh · ElmerFEM"
         menuGroups={menuGroups}
         onRun={() => { runSimulation().catch(() => {}); }}
         onCancel={cancelSimulation}
@@ -1376,9 +1456,6 @@ export default function App() {
           <div dir="rtl" className="min-h-0 flex-1 overflow-y-auto bg-slate-950 px-6 py-6">
           <CleanWorkspaceHome
             onStartProject={handleStartProject}
-            apiKeys={apiKeys}
-            engineMode={engineMode}
-            onOpenKeyPool={() => setIsKeyPoolModalOpen(true)}
             onOpenNewProjectWizard={() => setIsNewProjectModalOpen(true)}
             onOpenProjectsLibrary={() => setIsProjectsLibraryOpen(true)}
             onOpenCloudSettings={() => setIsCloudModalOpen(true)}
@@ -1416,6 +1493,14 @@ export default function App() {
                   : null
               }
               hasSolvedResults={hasCompletedRun}
+              jobStatus={solverJobStatus}
+              activeTaskId={activeTaskId}
+              solverProgress={solverProgress}
+              currentIteration={solverCurrentIteration}
+              liveJobTelemetry={liveJobTelemetry}
+              jobWallClockSec={jobWallClockSec}
+              lastCompletedDurationSec={lastCompletedDurationSec}
+              solverLabel={simulationInputs.simulationType}
               onCadLoaded={handleCadLoaded}
               onCadStlUploaded={({ name, base64 }) => setUploadedCadStl({ name, base64 })}
               onCadFileUploaded={handleCadFileUploaded}
@@ -1533,6 +1618,7 @@ export default function App() {
               logs={solverLogs}
               status={solverJobStatus}
               progress={solverProgress}
+              currentIteration={solverCurrentIteration}
               issues={consoleIssues}
               residualSeries={solverResidualSeries}
               onClearIssues={() => setConsoleIssues([])}
@@ -1564,7 +1650,6 @@ export default function App() {
             openMeshGenerator: () => setIsMeshGeneratorOpen(true),
             openMaterials: () => setIsMaterialsModalOpen(true),
             openParametricSweep: () => setIsParametricSweepOpen(true),
-            openAssistant: () => setIsAssistantOpen(true),
             openDocument,
             print: handlePrint,
           }}
@@ -1575,28 +1660,7 @@ export default function App() {
         isOpen={isUploadModalOpen}
         onClose={() => setIsUploadModalOpen(false)}
         onAnalysisComplete={handleStartProject}
-        apiKeys={apiKeys}
-        engineMode={engineMode}
         simulationInputs={simulationInputs}
-      />
-
-      {currentProject && (
-        <SupervisorAssistantDrawer
-          isOpen={isAssistantOpen}
-          onClose={() => setIsAssistantOpen(false)}
-          project={currentProject}
-          apiKeys={apiKeys}
-          engineMode={engineMode}
-        />
-      )}
-
-      <KeyPoolModal
-        isOpen={isKeyPoolModalOpen}
-        onClose={() => setIsKeyPoolModalOpen(false)}
-        apiKeys={apiKeys}
-        onUpdateKeys={setApiKeys}
-        engineMode={engineMode}
-        onUpdateEngineMode={setEngineMode}
       />
 
       <CloudServerSettingsModal
@@ -1605,7 +1669,10 @@ export default function App() {
         config={cloudConfig}
         onSaveConfig={(newConfig) => {
           setCloudConfig(newConfig);
-          setSaveToast('تم حفظ إعدادات الخادم السحابي والترخيص بنجاح');
+          if (newConfig.parallelCores && Number.isFinite(newConfig.parallelCores)) {
+            setSimulationInputs((prev) => ({ ...prev, parallelCores: String(newConfig.parallelCores) }));
+          }
+          setSaveToast(`تم حفظ إعدادات العنقود ومزامنة الأنوية المتوازية (${newConfig.parallelCores} Cores) بنجاح`);
           setTimeout(() => setSaveToast(null), 3000);
         }}
       />
@@ -1619,11 +1686,44 @@ export default function App() {
           setCurrentProject(proj);
           setActiveTab('overview');
         }}
+        onSelectBenchmarkTemplate={(tpl: VVBenchmarkTemplate) => {
+          const freshProject: ThesisProject = {
+            ...tpl.project,
+            id: `${tpl.id}-${Date.now()}`,
+            referenceData: tpl.project.referenceData
+              ? {
+                  ...tpl.project.referenceData,
+                  points: tpl.project.referenceData.points.map((pt) => ({ ...pt })),
+                  recordedAt: new Date().toISOString(),
+                }
+              : undefined,
+            validationProfile: tpl.project.validationProfile ? { ...tpl.project.validationProfile } : undefined,
+            lastModified: new Date().toISOString(),
+          };
+          setCustomProjects((prev) => [freshProject, ...prev]);
+          setCurrentProject(freshProject);
+          setSimulationInputs({
+            ...DEFAULT_SIMULATION_INPUTS,
+            parallelCores: String(cloudConfig.parallelCores || 1),
+            ...tpl.recommendedInputs,
+          });
+          setUploadedCadStl(null);
+          setViewportBoundaryMarkers([]);
+          setCadPatches([]);
+          setMeshPreviewStats(null);
+          setActiveStep('physics');
+          setActiveTab('validation');
+          setSaveToast(
+            `تم تحميل قالب التحقق القياسي (${tpl.code}) وتعبئة المدخلات الفيزيائية — اضغط Run Simulation لتشغيل المحرك الحقيقي وحساب نسبة الخطأ`,
+          );
+          setTimeout(() => setSaveToast(null), 5000);
+        }}
         onStartBlankProject={() => setCurrentProject(null)}
         onOpenNewProjectWizard={() => setIsNewProjectModalOpen(true)}
         onDeleteProject={handleDeleteCustomProject}
         onClearCustomProjects={handleFactoryReset}
         onImportProject={handleImportProject}
+        onOpenVVCertification={() => setIsAuditModalOpen(true)}
       />
 
       <NewProjectModal
@@ -1666,6 +1766,14 @@ export default function App() {
       <AuditReportModal
         isOpen={isAuditModalOpen}
         onClose={() => setIsAuditModalOpen(false)}
+      />
+
+      <EnterpriseAdminModal
+        isOpen={isEnterpriseModalOpen}
+        onClose={() => setIsEnterpriseModalOpen(false)}
+        authToken={enterpriseAuthToken}
+        onAuthTokenChange={setEnterpriseAuthToken}
+        lastTaskId={activeSolverTaskId}
       />
 
       {saveToast && (

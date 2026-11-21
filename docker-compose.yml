@@ -29,6 +29,8 @@ services:
       CAE_SQLITE_PATH: /app/jobs/cae.db
       NASEER_JOB_DIR: /app/jobs
       OPENFOAM_CASE_ROOT: /app/jobs
+      OMPI_ALLOW_RUN_AS_ROOT: "1"
+      OMPI_ALLOW_RUN_AS_ROOT_CONFIRM: "1"
     depends_on:
       redis:
         condition: service_healthy

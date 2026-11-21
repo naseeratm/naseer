@@ -65,6 +65,16 @@ interface MeshGenerativeToolProps {
     maxSkewness: number;
     description: string;
     vtkData?: VtkFieldPayload;
+    meshSize: number;
+    elementOrder: 1 | 2;
+    inflationLayers: number;
+    firstLayerHeight: number;
+    growthRate: number;
+    widthX: number;
+    heightY: number;
+    depthZ: number;
+    patches?: GmshPatchItem[];
+    cadFile?: { name: string; base64: string } | null;
   }) => void;
 }
 
@@ -346,8 +356,18 @@ export const MeshGenerativeTool: React.FC<MeshGenerativeToolProps> = ({
       maxSkewness: gmshResult.max_skewness ?? 0,
       description: `شبكة Gmsh 3D حقيقية (Order ${gmshResult.element_order ?? elementOrder}, ${gmshResult.elements_count} عنصر, جودة دنيا ${gmshResult.min_quality ?? '—'})`,
       vtkData: gmshResult.vtk_data,
+      meshSize,
+      elementOrder: (gmshResult.element_order === 2 ? 2 : elementOrder) as 1 | 2,
+      inflationLayers,
+      firstLayerHeight,
+      growthRate,
+      widthX,
+      heightY,
+      depthZ,
+      patches: gmshResult.patches,
+      cadFile: localCad,
     });
-    setAppliedFeedback('تم اعتماد شبكة Gmsh الثلاثية الأبعاد الحقيقية في المشروع النشط!');
+    setAppliedFeedback('تم اعتماد شبكة Gmsh ومزامنة جميع مقاسات التشبيك والرتبة مع الاستوديو والمحلل!');
     setTimeout(() => setAppliedFeedback(null), 3500);
   };
 

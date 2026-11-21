@@ -19,6 +19,7 @@ interface SolverConsoleProps {
   logs: string[];
   status: JobStatus;
   progress?: number | null;
+  currentIteration?: number | null;
   issues: ConsoleIssue[];
   residualSeries?: ResidualSeries[];
   onClearIssues: () => void;
@@ -112,6 +113,7 @@ export const SolverConsole: React.FC<SolverConsoleProps> = ({
   logs,
   status,
   progress = null,
+  currentIteration = null,
   issues,
   residualSeries = [],
   onClearIssues,
@@ -202,8 +204,9 @@ export const SolverConsole: React.FC<SolverConsoleProps> = ({
             {item.badge}
           </button>
         ))}
-        <span className="ml-auto mr-2 font-mono text-[10px] text-slate-500">
+        <span className="ml-auto mr-2 font-mono text-[10px] text-slate-500 tabular-nums">
           job: {status}
+          {typeof currentIteration === 'number' && currentIteration > 0 && ` · iter #${currentIteration}`}
           {typeof progress === 'number' && ` · ${Math.min(100, Math.max(0, Math.round(progress)))}%`}
         </span>
         {tab === 'errors' && combinedIssues.length > 0 && (
@@ -259,7 +262,9 @@ export const SolverConsole: React.FC<SolverConsoleProps> = ({
                   )}
                   <div className="flex items-center gap-2 text-sky-400">
                     <span className="inline-block h-3 w-1.5 animate-pulse bg-sky-400" />
-                    {status === 'queued' ? 'job queued on solver backend…' : 'solver running — streaming job state every 1.5 s…'}
+                    {status === 'queued'
+                      ? 'job queued on Celery/Docker solver worker…'
+                      : `solver running live${typeof currentIteration === 'number' && currentIteration > 0 ? ` (iteration #${currentIteration})` : ''} — streaming stdout & residuals every 1.0 s…`}
                   </div>
                 </div>
               )}

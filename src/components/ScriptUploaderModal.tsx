@@ -22,7 +22,7 @@ import {
   Table as TableIcon,
   Package,
 } from 'lucide-react';
-import { ThesisProject, IngestedFileItem, ApiKeyItem, EngineMode } from '../types/thesis';
+import { ThesisProject, IngestedFileItem } from '../types/thesis';
 import { SimulationInputs } from '../types/studio';
 import { generateLocalEngineeringProject } from '../utils/physicsEngine';
 import { parseEngineeringFilesOrArchive } from '../utils/fileParser';
@@ -32,8 +32,6 @@ interface ScriptUploaderModalProps {
   isOpen: boolean;
   onClose: () => void;
   onAnalysisComplete: (project: ThesisProject) => void;
-  apiKeys: ApiKeyItem[];
-  engineMode: EngineMode;
   simulationInputs?: SimulationInputs;
 }
 
@@ -41,8 +39,6 @@ export function ScriptUploaderModal({
   isOpen,
   onClose,
   onAnalysisComplete,
-  apiKeys,
-  engineMode,
   simulationInputs,
 }: ScriptUploaderModalProps) {
   const [filesList, setFilesList] = useState<IngestedFileItem[]>([]);
@@ -293,6 +289,27 @@ export function ScriptUploaderModal({
       const tEnd = numFromStr(simulationInputs?.endTime, NaN);
       if (Number.isFinite(tStep)) simPayload.time_step = tStep;
       if (Number.isFinite(tEnd)) simPayload.end_time = tEnd;
+      if (simulationInputs?.nonlinear !== undefined) simPayload.nonlinear = Boolean(simulationInputs.nonlinear);
+      if (simulationInputs?.contactType) simPayload.contact_type = simulationInputs.contactType;
+      if (simulationInputs?.materialModel) simPayload.material_model = simulationInputs.materialModel;
+      const syMpa = numFromStr(simulationInputs?.yieldStressMpa, NaN);
+      const etMpa = numFromStr(simulationInputs?.tangentModulusMpa, NaN);
+      const c10Mpa = numFromStr(simulationInputs?.hyperC10Mpa, NaN);
+      const d1Val = numFromStr(simulationInputs?.hyperD1, NaN);
+      const muFric = numFromStr(simulationInputs?.frictionCoeff, NaN);
+      const mrfRpm = numFromStr(simulationInputs?.mrfOmegaRpm, NaN);
+      const mrfRad = numFromStr(simulationInputs?.mrfRadius, NaN);
+      if (Number.isFinite(syMpa) && syMpa > 0) simPayload.yield_stress_pa = syMpa * 1e6;
+      if (Number.isFinite(etMpa) && etMpa > 0) simPayload.tangent_modulus_pa = etMpa * 1e6;
+      if (Number.isFinite(c10Mpa) && c10Mpa > 0) simPayload.hyper_c10_pa = c10Mpa * 1e6;
+      if (Number.isFinite(d1Val) && d1Val >= 0) simPayload.hyper_d1_inv_pa = d1Val;
+      if (Number.isFinite(muFric) && muFric >= 0) simPayload.friction_coeff = muFric;
+      if (simulationInputs?.mrfEnabled && Number.isFinite(mrfRpm) && mrfRpm !== 0) {
+        simPayload.mrf_enabled = true;
+        simPayload.mrf_omega_rad_s = mrfRpm * ((2 * Math.PI) / 60);
+        simPayload.mrf_axis = simulationInputs.mrfAxis || 'z';
+        if (Number.isFinite(mrfRad) && mrfRad > 0) simPayload.mrf_radius = mrfRad;
+      }
 
       // Apply any numeric parameters extracted from the uploaded file content
       if (Array.isArray(primaryItem.detectedParameters)) {
@@ -370,84 +387,6 @@ export function ScriptUploaderModal({
       setErrorMessage(err?.message || 'تعذر الاتصال ببوابة Docker (:8000). تأكد من تشغيل docker compose.');
       setIsProcessing(false);
     }
-  };
-
-  // Optional AI schema extraction (no fake offline fallback on failure)
-  const handleExecuteHybridAnalysis = async () => {
-    if (engineMode === 'pure_local') {
-      await handleExecuteOnDocker();
-      return;
-    }
-
-    setIsProcessing(true);
-    setProcessingStatus('جاري تحليل الملفات واستخراج المواصفات الهندسية...');
-    setErrorMessage(null);
-
-    const candidateKeys = apiKeys.filter((k) => k.status !== 'exhausted').map((k) => k.key);
-    const keyPoolToTry = candidateKeys.length > 0 ? candidateKeys : [''];
-    let lastErr = '';
-
-    for (let i = 0; i < keyPoolToTry.length; i++) {
-      const activeKey = keyPoolToTry[i];
-      setProcessingStatus(
-        candidateKeys.length > 0
-          ? `جاري التحليل بالمفتاح (${i + 1}/${candidateKeys.length})...`
-          : 'جاري التحليل عبر السيرفر...'
-      );
-
-      try {
-        const payload = {
-          files: filesList.map((f) => ({
-            name: f.name,
-            extension: f.extension,
-            category: f.category,
-            content: f.content,
-            base64Data: f.base64Data,
-            mimeType: f.mimeType,
-            isImage: f.isImage,
-          })),
-          directives,
-          projectField,
-          projectType: 'Engineering Simulation & Analysis',
-        };
-
-        const headers: Record<string, string> = {
-          'Content-Type': 'application/json',
-        };
-        if (activeKey) {
-          headers['x-gemini-api-key'] = activeKey;
-        }
-
-        const res = await fetch('/api/analyze-multiphysics', {
-          method: 'POST',
-          headers,
-          body: JSON.stringify(payload),
-        });
-
-        const data = await res.json();
-
-        if (res.ok && data.success && data.data) {
-          const proj: ThesisProject = data.data;
-          proj.attachedFilesCount = filesList.length;
-          proj.directivesApplied = directives;
-          proj.extractedSummary =
-            proj.extractedSummary ||
-            `تم استخراج بيانات ملف (${filesList[0]?.name || 'المشروع'}) — شغّل المحاكاة على Docker للحصول على النتائج العددية.`;
-
-          onAnalysisComplete(proj);
-          setIsProcessing(false);
-          onClose();
-          return;
-        } else {
-          lastErr = data.details || data.error || 'فشل معالجة النموذج عبر السيرفر';
-        }
-      } catch (err: any) {
-        lastErr = err?.message || String(err);
-      }
-    }
-
-    setErrorMessage(`تعذر إتمام التحليل السحابي للمستندات: ${lastErr || 'يرجى التحقق من مفتاح API أو استخدام الرفع المباشر لـ Docker (:8000).'}`);
-    setIsProcessing(false);
   };
 
   return (
@@ -736,18 +675,6 @@ export function ScriptUploaderModal({
             >
               رفع وتشغيل عبر Docker (:8000)
             </button>
-
-            {engineMode !== 'pure_local' && (
-              <button
-                type="button"
-                disabled={isProcessing}
-                onClick={handleExecuteHybridAnalysis}
-                className="px-4 py-2 rounded-xl bg-gradient-to-r from-sky-500 to-indigo-600 hover:from-sky-400 hover:to-indigo-500 text-white font-bold text-xs shadow-md shadow-sky-500/20 active:scale-95 transition-all flex items-center gap-1.5 disabled:opacity-50"
-              >
-                <Sparkles className="w-4 h-4" />
-                <span>استخلاص المعطيات بالذكاء الاصطناعي</span>
-              </button>
-            )}
           </div>
         </div>
 

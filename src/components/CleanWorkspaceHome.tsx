@@ -8,15 +8,12 @@ import {
   ShieldCheck,
   Loader2,
 } from 'lucide-react';
-import { ThesisProject, IngestedFileItem, ApiKeyItem, EngineMode } from '../types/thesis';
+import { ThesisProject, IngestedFileItem } from '../types/thesis';
 import { generateLocalEngineeringProject } from '../utils/physicsEngine';
 import { parseEngineeringFilesOrArchive } from '../utils/fileParser';
 
 interface CleanWorkspaceHomeProps {
   onStartProject: (project: ThesisProject) => void;
-  apiKeys: ApiKeyItem[];
-  engineMode: EngineMode;
-  onOpenKeyPool: () => void;
   onOpenNewProjectWizard?: () => void;
   onOpenProjectsLibrary?: () => void;
   onOpenCloudSettings?: () => void;
@@ -24,7 +21,6 @@ interface CleanWorkspaceHomeProps {
   onOpenMeshGenerator?: () => void;
   onOpenMaterialsModal?: () => void;
   onOpenParametricSweep?: () => void;
-  onOpenPipelineTracker?: () => void;
   savedProjectsCount?: number;
   onResetWorkspace?: () => void;
 }

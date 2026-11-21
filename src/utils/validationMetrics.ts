@@ -1,4 +1,4 @@
-import { ProfileSpec, ReferencePoint } from '../types/thesis';
+import { CaseStudyItem, ProfileSpec, ReferencePoint, VtkFieldPayload } from '../types/thesis';
 import { formatNumber } from './numberFormat';
 
 // A 2-D result field on a uniform grid: row 0 is y = 0, column 0 is x = 0.
@@ -11,6 +11,261 @@ export interface FieldGrid {
   data: number[][];
   widthM?: number;
   heightM?: number;
+  source?: 'matrix' | 'vtk_midplane';
+}
+
+const VTK_FIELD_LABELS: Record<string, string> = {
+  U_mag: 'Velocity magnitude |U| (VTK mid-plane)',
+  p: 'Pressure p (VTK mid-plane)',
+  T: 'Temperature T (VTK mid-plane)',
+  temperature: 'Temperature T (VTK mid-plane)',
+  k: 'Turbulent kinetic energy k (VTK mid-plane)',
+  epsilon: 'Turbulent dissipation ε (VTK mid-plane)',
+  omega: 'Specific dissipation ω (VTK mid-plane)',
+  alpha_water: 'Water phase fraction α (VTK mid-plane)',
+  von_mises: 'Von Mises stress σ_vM (VTK mid-plane)',
+  displacement: 'Displacement magnitude |u| (VTK mid-plane)',
+  displacement_mag: 'Displacement magnitude |u| (VTK mid-plane)',
+  potential: 'Electric potential φ (VTK mid-plane)',
+  electric_field_mag: 'Electric field |E| (VTK mid-plane)',
+  magnetic_flux_mag: 'Magnetic flux density |B| (VTK mid-plane)',
+  pressure_real: 'Acoustic pressure Re(p) (VTK mid-plane)',
+};
+
+const humanizeScalarKey = (key: string): string =>
+  VTK_FIELD_LABELS[key] ??
+  `${key.replace(/[_.]+/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase())} (VTK mid-plane)`;
+
+/**
+ * Projects real 3D VTK nodal scalars from OpenFOAM, CalculiX, or ElmerFEM onto a deterministic 2D
+ * mid-Z FieldGrid so Spatial Profile Validation and exported reports work for all physics engines.
+ * Uses only real solver nodes (no extrapolation outside the geometry; empty exterior bins remain NaN).
+ */
+export function vtkToFieldGrids(vtkData: VtkFieldPayload | undefined): FieldGrid[] {
+  if (!vtkData || !Array.isArray(vtkData.points) || vtkData.points.length < 12 || !vtkData.scalars) {
+    return [];
+  }
+  const points = vtkData.points;
+  const nodeCount = Math.floor(points.length / 3);
+  if (nodeCount < 4) return [];
+
+  let minX = Infinity;
+  let maxX = -Infinity;
+  let minY = Infinity;
+  let maxY = -Infinity;
+  let minZ = Infinity;
+  let maxZ = -Infinity;
+
+  for (let i = 0; i < nodeCount; i++) {
+    const x = points[i * 3];
+    const y = points[i * 3 + 1];
+    const z = points[i * 3 + 2];
+    if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) continue;
+    if (x < minX) minX = x;
+    if (x > maxX) maxX = x;
+    if (y < minY) minY = y;
+    if (y > maxY) maxY = y;
+    if (z < minZ) minZ = z;
+    if (z > maxZ) maxZ = z;
+  }
+
+  const W = maxX - minX;
+  const H = maxY - minY;
+  const D = maxZ - minZ;
+  if (!Number.isFinite(W) || !Number.isFinite(H) || W <= 1e-12 || H <= 1e-12) return [];
+
+  // Select nodes on/near mid-Z plane; fall back to all nodes for 1-cell-thick quasi-2D meshes where
+  // nodes sit only at z = minZ and z = maxZ.
+  const zMid = 0.5 * (minZ + maxZ);
+  let selectedIndices: number[] = [];
+  if (D > 1e-9 * Math.max(W, H)) {
+    const halfSlab = 0.15 * D;
+    for (let i = 0; i < nodeCount; i++) {
+      const z = points[i * 3 + 2];
+      if (Number.isFinite(z) && Math.abs(z - zMid) <= halfSlab) {
+        selectedIndices.push(i);
+      }
+    }
+  }
+  if (selectedIndices.length < Math.min(16, nodeCount)) {
+    selectedIndices = [];
+    for (let i = 0; i < nodeCount; i++) {
+      if (Number.isFinite(points[i * 3]) && Number.isFinite(points[i * 3 + 1])) {
+        selectedIndices.push(i);
+      }
+    }
+  }
+  if (selectedIndices.length < 4) return [];
+
+  // Choose grid resolution matching domain aspect ratio and real node density.
+  const aspect = Math.min(4, Math.max(0.25, W / H));
+  const approxScale = Math.min(36, Math.max(12, Math.round(Math.sqrt(selectedIndices.length) * 0.9)));
+  const cols = Math.min(56, Math.max(12, Math.round(approxScale * Math.sqrt(aspect))));
+  const rows = Math.min(56, Math.max(12, Math.round(approxScale / Math.sqrt(aspect))));
+  const dx = W / (cols - 1);
+  const dy = H / (rows - 1);
+  const maxSearchDistSq = (2.6 * Math.max(dx, dy)) ** 2;
+
+  const xs = new Float64Array(selectedIndices.length);
+  const ys = new Float64Array(selectedIndices.length);
+  for (let k = 0; k < selectedIndices.length; k++) {
+    const idx = selectedIndices[k];
+    xs[k] = points[idx * 3] - minX;
+    ys[k] = points[idx * 3 + 1] - minY;
+  }
+
+  // Pre-compute bin membership and fallback IDW neighbor lists once for all scalar fields.
+  const binNodes: number[][][] = Array.from({ length: rows }, () =>
+    Array.from({ length: cols }, () => []),
+  );
+  for (let k = 0; k < selectedIndices.length; k++) {
+    const c = Math.min(cols - 1, Math.max(0, Math.round(xs[k] / dx)));
+    const r = Math.min(rows - 1, Math.max(0, Math.round(ys[k] / dy)));
+    binNodes[r][c].push(k);
+  }
+
+  type NeighborWeight = { k: number; w: number };
+  const fallbackWeights: (NeighborWeight[] | null)[][] = Array.from({ length: rows }, () =>
+    Array.from({ length: cols }, () => null),
+  );
+  for (let r = 0; r < rows; r++) {
+    const gy = r * dy;
+    for (let c = 0; c < cols; c++) {
+      if (binNodes[r][c].length > 0) continue;
+      const gx = c * dx;
+      // Search nearby bins (radius 3) first; if sparse mesh, scan selected nodes bounded by maxSearchDistSq.
+      const candidates: { k: number; d2: number }[] = [];
+      const rMin = Math.max(0, r - 3);
+      const rMax = Math.min(rows - 1, r + 3);
+      const cMin = Math.max(0, c - 3);
+      const cMax = Math.min(cols - 1, c + 3);
+      for (let rr = rMin; rr <= rMax; rr++) {
+        for (let cc = cMin; cc <= cMax; cc++) {
+          const list = binNodes[rr][cc];
+          for (let j = 0; j < list.length; j++) {
+            const k = list[j];
+            const d2 = (xs[k] - gx) ** 2 + (ys[k] - gy) ** 2;
+            if (d2 <= maxSearchDistSq) candidates.push({ k, d2 });
+          }
+        }
+      }
+      if (candidates.length === 0) continue;
+      candidates.sort((a, b) => a.d2 - b.d2);
+      const top = candidates.slice(0, 4);
+      if (top[0].d2 < 1e-18) {
+        fallbackWeights[r][c] = [{ k: top[0].k, w: 1 }];
+      } else {
+        let wSum = 0;
+        const weights = top.map((item) => {
+          const w = 1 / item.d2;
+          wSum += w;
+          return { k: item.k, w };
+        });
+        fallbackWeights[r][c] = weights.map((item) => ({ k: item.k, w: item.w / wSum }));
+      }
+    }
+  }
+
+  const units = vtkData.units ?? {};
+  const grids: FieldGrid[] = [];
+  for (const [scalarKey, rawValues] of Object.entries(vtkData.scalars)) {
+    if (!Array.isArray(rawValues) || rawValues.length < nodeCount) continue;
+    let finiteCount = 0;
+    const data: number[][] = Array.from({ length: rows }, () => Array<number>(cols).fill(Number.NaN));
+    for (let r = 0; r < rows; r++) {
+      for (let c = 0; c < cols; c++) {
+        const direct = binNodes[r][c];
+        if (direct.length > 0) {
+          let sum = 0;
+          let cnt = 0;
+          for (let j = 0; j < direct.length; j++) {
+            const v = rawValues[selectedIndices[direct[j]]];
+            if (typeof v === 'number' && Number.isFinite(v)) {
+              sum += v;
+              cnt += 1;
+            }
+          }
+          if (cnt > 0) {
+            data[r][c] = sum / cnt;
+            finiteCount += 1;
+          }
+        } else {
+          const nw = fallbackWeights[r][c];
+          if (nw && nw.length > 0) {
+            let sum = 0;
+            let wAcc = 0;
+            for (let j = 0; j < nw.length; j++) {
+              const v = rawValues[selectedIndices[nw[j].k]];
+              if (typeof v === 'number' && Number.isFinite(v)) {
+                sum += v * nw[j].w;
+                wAcc += nw[j].w;
+              }
+            }
+            if (wAcc > 0) {
+              data[r][c] = sum / wAcc;
+              finiteCount += 1;
+            }
+          }
+        }
+      }
+    }
+    if (finiteCount < 4) continue;
+    grids.push({
+      key: `vtk_${scalarKey}`,
+      label: humanizeScalarKey(scalarKey),
+      unit: units[scalarKey],
+      rows,
+      cols,
+      data,
+      widthM: W,
+      heightM: H,
+      source: 'vtk_midplane',
+    });
+  }
+  return grids;
+}
+
+/**
+ * Extracts a real X-Y curve from completed Parametric Sweep cases (`project.casesMatrix`) so
+ * researchers can validate sweep trends (e.g. Velocity vs ΔP, Load vs Stress) against experimental data.
+ */
+export function buildParametricProfile(cases: CaseStudyItem[] | undefined): SampledProfile | null {
+  if (!Array.isArray(cases) || cases.length < 2) return null;
+  let paramName = 'Parameter';
+  let paramUnit = '';
+  let outputName = 'Output';
+  let outputUnit = '';
+  const points: ProfilePoint[] = [];
+
+  for (const item of cases) {
+    if (!item || item.status === 'Pending') continue;
+    if (typeof item.keyOutputValue !== 'number' || !Number.isFinite(item.keyOutputValue)) continue;
+    const raw = String(item.studyVariable || '');
+    const match = raw.match(/^\s*([^=]+?)\s*=\s*([-+]?\d*\.?\d+(?:[eE][-+]?\d+)?)\s*(.*)$/);
+    if (!match) continue;
+    const xVal = Number(match[2]);
+    if (!Number.isFinite(xVal)) continue;
+    if (points.length === 0) {
+      paramName = match[1].trim() || 'Parameter';
+      paramUnit = match[3].trim();
+      outputName = item.keyOutputName || 'Key Output';
+      outputUnit = item.keyOutputUnit || '';
+    }
+    points.push({ s: xVal, value: item.keyOutputValue, x: xVal, y: item.keyOutputValue });
+  }
+
+  points.sort((a, b) => a.s - b.s);
+  if (points.length < 2 || points[points.length - 1].s === points[0].s) return null;
+
+  const abscissaLabel = paramUnit ? `${paramName} (${paramUnit})` : paramName;
+  const valueLabel = outputUnit ? `${outputName} (${outputUnit})` : outputName;
+  return {
+    points,
+    abscissaLabel,
+    valueLabel,
+    description: `Parametric Sweep: ${outputName} vs. ${abscissaLabel} (${points.length} real design points)`,
+    physical: true,
+  };
 }
 
 export const DEFAULT_PROFILE_SPEC: ProfileSpec = {

@@ -20,7 +20,10 @@ import math
 import os
 import re
 import shutil
+import struct
 import subprocess
+import threading
+import time
 import uuid
 import zipfile
 from pathlib import Path
@@ -77,16 +80,843 @@ celery_app.conf.update(
 )
 
 
+_STREAM_STATE = threading.local()
+_CPU_SAMPLE_LOCK = threading.Lock()
+_LAST_CPU_TICKS: Optional[Tuple[int, int]] = None
+
+
+def _read_proc_stat_ticks() -> Optional[Tuple[int, int]]:
+    """Read real aggregate (idle_ticks, total_ticks) from Linux /proc/stat."""
+    stat_path = Path("/proc/stat")
+    if not stat_path.exists():
+        return None
+    try:
+        first_line = stat_path.read_text(encoding="utf-8", errors="replace").splitlines()[0]
+        parts = first_line.split()
+        if not parts or parts[0] != "cpu" or len(parts) < 5:
+            return None
+        nums = [int(x) for x in parts[1:] if x.isdigit()]
+        idle = nums[3] + (nums[4] if len(nums) > 4 else 0)
+        total = sum(nums)
+        return (idle, total)
+    except Exception:
+        return None
+
+
+def _read_cgroup_cpu_quota_cores() -> Optional[float]:
+    """Read Docker cgroup v2 or v1 CPU quota in cores if explicitly limited."""
+    try:
+        v2 = Path("/sys/fs/cgroup/cpu.max")
+        if v2.exists():
+            parts = v2.read_text(encoding="utf-8", errors="replace").strip().split()
+            if len(parts) >= 2 and parts[0] != "max":
+                quota, period = float(parts[0]), float(parts[1])
+                if quota > 0 and period > 0:
+                    return round(quota / period, 2)
+    except Exception:
+        pass
+    try:
+        q_path = Path("/sys/fs/cgroup/cpu/cpu.cfs_quota_us")
+        p_path = Path("/sys/fs/cgroup/cpu/cpu.cfs_period_us")
+        if q_path.exists() and p_path.exists():
+            quota = float(q_path.read_text(encoding="utf-8", errors="replace").strip())
+            period = float(p_path.read_text(encoding="utf-8", errors="replace").strip())
+            if quota > 0 and period > 0:
+                return round(quota / period, 2)
+    except Exception:
+        pass
+    return None
+
+
+def _read_memory_stats_mb() -> Tuple[Optional[float], Optional[float], Optional[float], str]:
+    """Read real memory usage from Linux /proc/meminfo or Docker cgroup limits (MB)."""
+    host_total_mb: Optional[float] = None
+    host_avail_mb: Optional[float] = None
+    meminfo = Path("/proc/meminfo")
+    if meminfo.exists():
+        try:
+            kv: Dict[str, float] = {}
+            for line in meminfo.read_text(encoding="utf-8", errors="replace").splitlines():
+                if ":" not in line:
+                    continue
+                k, rest = line.split(":", 1)
+                toks = rest.strip().split()
+                if toks and toks[0].isdigit():
+                    kv[k.strip()] = float(toks[0]) / 1024.0  # kB -> MB
+            host_total_mb = kv.get("MemTotal")
+            host_avail_mb = kv.get("MemAvailable", kv.get("MemFree"))
+        except Exception:
+            pass
+
+    # Prefer Docker cgroup v2 limit when container has an explicit cap lower than host RAM
+    try:
+        cg_cur = Path("/sys/fs/cgroup/memory.current")
+        cg_max = Path("/sys/fs/cgroup/memory.max")
+        if cg_cur.exists() and cg_max.exists():
+            max_raw = cg_max.read_text(encoding="utf-8", errors="replace").strip()
+            if max_raw != "max" and max_raw.isdigit():
+                lim_mb = int(max_raw) / (1024.0 * 1024.0)
+                cur_mb = int(cg_cur.read_text(encoding="utf-8", errors="replace").strip()) / (1024.0 * 1024.0)
+                if lim_mb > 0 and (host_total_mb is None or lim_mb < host_total_mb * 1.05):
+                    pct = round(min(100.0, max(0.0, (cur_mb / lim_mb) * 100.0)), 2)
+                    return (round(cur_mb, 1), round(lim_mb, 1), pct, "cgroup_v2")
+    except Exception:
+        pass
+
+    # Docker cgroup v1
+    try:
+        cg1_cur = Path("/sys/fs/cgroup/memory/memory.usage_in_bytes")
+        cg1_max = Path("/sys/fs/cgroup/memory/memory.limit_in_bytes")
+        if cg1_cur.exists() and cg1_max.exists():
+            lim_raw = int(cg1_max.read_text(encoding="utf-8", errors="replace").strip())
+            if 0 < lim_raw < (1 << 60):
+                lim_mb = lim_raw / (1024.0 * 1024.0)
+                cur_mb = int(cg1_cur.read_text(encoding="utf-8", errors="replace").strip()) / (1024.0 * 1024.0)
+                if host_total_mb is None or lim_mb < host_total_mb * 1.05:
+                    pct = round(min(100.0, max(0.0, (cur_mb / lim_mb) * 100.0)), 2)
+                    return (round(cur_mb, 1), round(lim_mb, 1), pct, "cgroup_v1")
+    except Exception:
+        pass
+
+    if host_total_mb and host_total_mb > 0 and host_avail_mb is not None:
+        used_mb = max(0.0, host_total_mb - host_avail_mb)
+        pct = round(min(100.0, max(0.0, (used_mb / host_total_mb) * 100.0)), 2)
+        return (round(used_mb, 1), round(host_total_mb, 1), pct, "proc_meminfo")
+
+    return (None, None, None, "unavailable")
+
+
+def _read_process_rss_mb(pid: Optional[int]) -> Optional[float]:
+    """Read real resident set size (VmRSS in MB) of an active solver subprocess PID."""
+    if not pid or pid <= 0:
+        return None
+    status_path = Path(f"/proc/{pid}/status")
+    if not status_path.exists():
+        return None
+    try:
+        for line in status_path.read_text(encoding="utf-8", errors="replace").splitlines():
+            if line.startswith("VmRSS:"):
+                toks = line.split()
+                if len(toks) >= 2 and toks[1].isdigit():
+                    return round(float(toks[1]) / 1024.0, 2)
+    except Exception:
+        return None
+    return None
+
+
+def sample_node_telemetry(pid: Optional[int] = None) -> Dict[str, Any]:
+    """Sample real OS/Docker CPU load, RAM usage, and optional solver process RSS (Zero-Mock)."""
+    global _LAST_CPU_TICKS
+    cpu_percent: Optional[float] = None
+    with _CPU_SAMPLE_LOCK:
+        cur = _read_proc_stat_ticks()
+        if cur is not None:
+            if _LAST_CPU_TICKS is None:
+                # One-time brief 50ms baseline delta so the very first poll returns a real reading
+                time.sleep(0.05)
+                cur2 = _read_proc_stat_ticks()
+                if cur2 is not None:
+                    d_total = cur2[1] - cur[1]
+                    d_idle = cur2[0] - cur[0]
+                    if d_total > 0:
+                        cpu_percent = round(min(100.0, max(0.0, (1.0 - (d_idle / d_total)) * 100.0)), 1)
+                    _LAST_CPU_TICKS = cur2
+                else:
+                    _LAST_CPU_TICKS = cur
+            else:
+                d_total = cur[1] - _LAST_CPU_TICKS[1]
+                d_idle = cur[0] - _LAST_CPU_TICKS[0]
+                if d_total > 0:
+                    cpu_percent = round(min(100.0, max(0.0, (1.0 - (d_idle / d_total)) * 100.0)), 1)
+                _LAST_CPU_TICKS = cur
+
+    host_cores = os.cpu_count() or 1
+    quota_cores = _read_cgroup_cpu_quota_cores()
+    effective_cores = min(float(host_cores), quota_cores) if quota_cores else float(host_cores)
+
+    load_1m: Optional[float] = None
+    load_5m: Optional[float] = None
+    try:
+        la1, la5, _ = os.getloadavg()
+        load_1m = round(la1, 2)
+        load_5m = round(la5, 2)
+    except (AttributeError, OSError):
+        pass
+
+    mem_used_mb, mem_total_mb, mem_pct, mem_source = _read_memory_stats_mb()
+    rss_mb = _read_process_rss_mb(pid)
+
+    return {
+        "hostname": os.uname().nodename if hasattr(os, "uname") else "unknown",
+        "sampled_at_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "cpu_percent": cpu_percent,
+        "cpu_cores": int(round(effective_cores)) if effective_cores >= 1 else 1,
+        "host_cpu_cores": host_cores,
+        "load_avg_1m": load_1m,
+        "load_avg_5m": load_5m,
+        "memory_used_mb": mem_used_mb,
+        "memory_total_mb": mem_total_mb,
+        "memory_percent": mem_pct,
+        "memory_source": mem_source,
+        "solver_pid": pid if rss_mb is not None else None,
+        "solver_rss_mb": rss_mb,
+    }
+
+
+def compute_wall_clock_sec(created_at: Any, completed_at: Any = None) -> Optional[float]:
+    """Compute real elapsed wall-clock seconds from persisted UTC ISO timestamps."""
+    if not isinstance(created_at, str) or not created_at.strip():
+        return None
+    try:
+        from datetime import datetime, timezone
+
+        t0 = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
+        if t0.tzinfo is None:
+            t0 = t0.replace(tzinfo=timezone.utc)
+        if isinstance(completed_at, str) and completed_at.strip():
+            t1 = datetime.fromisoformat(completed_at.replace("Z", "+00:00"))
+            if t1.tzinfo is None:
+                t1 = t1.replace(tzinfo=timezone.utc)
+        else:
+            t1 = datetime.now(timezone.utc)
+        return round(max(0.0, (t1 - t0).total_seconds()), 2)
+    except Exception:
+        return None
+
+
 def _task_progress(task: Any, progress: int, message: str, **extra: Any) -> None:
     """Publish a stable metadata shape that API clients can consume."""
-    task.update_state(
-        state="STARTED",
-        meta={
-            "progress": max(0, min(100, progress)),
-            "status_message": message,
-            "logs": [message],
-            **extra,
-        },
+    meta: Dict[str, Any] = {
+        "progress": max(0, min(100, progress)),
+        "status_message": message,
+        "logs": extra.pop("logs", [message]),
+        **extra,
+    }
+    task.update_state(state="STARTED", meta=meta)
+
+
+def _run_streaming_command(
+    command: List[str],
+    *,
+    cwd: Path,
+    env: Optional[Dict[str, str]] = None,
+    timeout: int = 180,
+    log_path: Optional[Path] = None,
+    append_log: bool = True,
+    solver_kind: str = "generic",
+    max_iters: Optional[int] = None,
+    end_time: Optional[float] = None,
+) -> subprocess.CompletedProcess[str]:
+    """Execute a real solver subprocess via Popen, streaming live iterations, residuals, and OS telemetry to Celery/SQLite."""
+    callback: Optional[Callable[[Dict[str, Any]], None]] = getattr(_STREAM_STATE, "callback", None)
+    started_mono = time.monotonic()
+    proc = subprocess.Popen(
+        command,
+        cwd=cwd,
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        bufsize=1,
+    )
+    lines: List[str] = []
+    live_residuals: Dict[str, Dict[str, List[float]]] = {}
+    current_iter = 0
+    current_time = 0.0
+    last_emit = started_mono
+    deadline = started_mono + float(timeout)
+
+    re_time = re.compile(r"^\s*Time\s*=\s*([0-9.eE+-]+)")
+    re_res = re.compile(r"Solving for\s+([A-Za-z_][\w.]*).*?Initial residual\s*=\s*([^\s,]+)", re.I)
+    re_ccx_inc = re.compile(r"\bincrement\s+(\d+)\s+attempt\s+(\d+)", re.I)
+    re_elmer_iter = re.compile(r"(?:ITERATION|ComputeChange|Nonlinear iteration)\s*[:=#]?\s*(\d+)?.*?([0-9.eE+-]+)?", re.I)
+
+    log_file = log_path.open("a" if append_log else "w", encoding="utf-8") if log_path is not None else None
+    try:
+        assert proc.stdout is not None
+        for raw_line in proc.stdout:
+            if time.monotonic() > deadline:
+                proc.kill()
+                proc.wait(timeout=5)
+                raise subprocess.TimeoutExpired(command, timeout, output="".join(lines[-200:]))
+            line = raw_line.rstrip("\r\n")
+            lines.append(line)
+            if log_file is not None:
+                log_file.write(raw_line)
+                log_file.flush()
+
+            if solver_kind == "openfoam":
+                m_t = re_time.match(line)
+                if m_t:
+                    try:
+                        current_time = float(m_t.group(1))
+                        current_iter += 1
+                    except ValueError:
+                        pass
+                m_r = re_res.search(line)
+                if m_r:
+                    field_name = m_r.group(1)
+                    try:
+                        val = float(m_r.group(2))
+                        if math.isfinite(val) and val > 0:
+                            entry = live_residuals.setdefault(field_name, {"iterations": [], "values": []})
+                            entry["iterations"].append(len(entry["iterations"]) + 1)
+                            entry["values"].append(val)
+                    except ValueError:
+                        pass
+            elif solver_kind == "calculix":
+                m_inc = re_ccx_inc.search(line)
+                if m_inc:
+                    current_iter = max(current_iter, int(m_inc.group(1)))
+            elif solver_kind == "elmer":
+                m_el = re_elmer_iter.search(line)
+                if m_el and m_el.group(1):
+                    try:
+                        current_iter = max(current_iter, int(m_el.group(1)))
+                    except ValueError:
+                        pass
+
+            now = time.monotonic()
+            if callback is not None and (now - last_emit >= 0.75):
+                last_emit = now
+                pct = 40
+                if end_time and end_time > 0 and current_time > 0:
+                    pct = int(35 + min(1.0, current_time / end_time) * 57)
+                elif max_iters and max_iters > 0 and current_iter > 0:
+                    pct = int(35 + min(1.0, current_iter / max_iters) * 57)
+                elif current_iter > 0:
+                    pct = min(90, 38 + current_iter)
+                try:
+                    live_tel = sample_node_telemetry(pid=proc.pid)
+                    live_tel["wall_clock_sec"] = round(now - started_mono, 2)
+                    live_tel["solver_binary"] = Path(command[0]).name
+                    callback({
+                        "progress": max(35, min(95, pct)),
+                        "logs": lines[-140:],
+                        "residuals": live_residuals,
+                        "current_iteration": current_iter,
+                        "status_message": f"{Path(command[0]).name}: iter {current_iter}" if current_iter > 0 else f"Running {Path(command[0]).name}",
+                        "telemetry": live_tel,
+                    })
+                except Exception:
+                    pass
+
+        if callback is not None and (live_residuals or current_iter > 0 or lines):
+            try:
+                now = time.monotonic()
+                live_tel = sample_node_telemetry(pid=proc.pid)
+                live_tel["wall_clock_sec"] = round(now - started_mono, 2)
+                live_tel["solver_binary"] = Path(command[0]).name
+                callback({
+                    "progress": 95,
+                    "logs": lines[-140:],
+                    "residuals": live_residuals,
+                    "current_iteration": current_iter,
+                    "status_message": f"{Path(command[0]).name}: iter {current_iter}" if current_iter > 0 else f"Completed {Path(command[0]).name}",
+                    "telemetry": live_tel,
+                })
+            except Exception:
+                pass
+
+        returncode = proc.wait(timeout=max(5, int(deadline - time.monotonic())))
+    except Exception:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait(timeout=5)
+        raise
+    finally:
+        if proc.stdout is not None:
+            try:
+                proc.stdout.close()
+            except Exception:
+                pass
+        if log_file is not None:
+            log_file.close()
+
+    full_output = "\n".join(lines) + ("\n" if lines else "")
+    return subprocess.CompletedProcess(command, returncode, stdout=full_output, stderr="")
+
+
+def _build_openfoam_function_objects(
+    solver_stem: str,
+    patch_roles: Mapping[str, str],
+    *,
+    rho: float,
+    velocity: float,
+    width: float,
+    height: float,
+    depth: float,
+    compressible: bool,
+) -> str:
+    """Build OpenFOAM v2406 native functionObjects for yPlus, wallShearStress, and aerodynamic forceCoeffs."""
+    supported = {"simpleFoam", "pimpleFoam", "rhoSimpleFoam", "rhoPimpleFoam", "buoyantSimpleFoam", "buoyantBoussinesqSimpleFoam"}
+    if solver_stem not in supported:
+        return ""
+    wall_patches = [pname for pname, role in patch_roles.items() if role == "wall"]
+    if not wall_patches:
+        return ""
+    patches_str = " ".join(wall_patches)
+    p_name = "p_rgh" if solver_stem in {"buoyantSimpleFoam", "buoyantBoussinesqSimpleFoam"} else "p"
+    rho_block = "rho rho;" if (compressible or solver_stem == "buoyantSimpleFoam") else f"rho rhoInf; rhoInf {max(rho, 1e-6):.8g};"
+    mag_u = max(abs(velocity), 1e-3)
+    l_ref = max(width, height, 1e-4)
+    a_ref = max(height * depth, 1e-6)
+    return (
+        "\nfunctions\n{\n"
+        "  yPlus\n  {\n"
+        "    type yPlus;\n"
+        "    libs (fieldFunctionObjects);\n"
+        "    writeControl writeTime;\n"
+        "    writeFields false;\n"
+        f"    patches ({patches_str});\n"
+        "  }\n"
+        "  wallShearStress\n  {\n"
+        "    type wallShearStress;\n"
+        "    libs (fieldFunctionObjects);\n"
+        "    writeControl writeTime;\n"
+        "    writeFields false;\n"
+        f"    patches ({patches_str});\n"
+        "  }\n"
+        "  forceCoeffs\n  {\n"
+        "    type forceCoeffs;\n"
+        "    libs (forces);\n"
+        "    writeControl writeTime;\n"
+        f"    patches ({patches_str});\n"
+        f"    p {p_name};\n"
+        f"    {rho_block}\n"
+        "    liftDir (0 1 0);\n"
+        "    dragDir (1 0 0);\n"
+        "    pitchAxis (0 0 1);\n"
+        "    CofR (0 0 0);\n"
+        f"    magUInf {mag_u:.8g};\n"
+        f"    lRef {l_ref:.8g};\n"
+        f"    Aref {a_ref:.8g};\n"
+        "  }\n"
+        "}\n"
+    )
+
+
+def _parse_openfoam_postprocessing(case_dir: Path) -> Dict[str, float]:
+    """Parse genuine OpenFOAM postProcessing/ files (yPlus, wallShearStress, forceCoeffs) without fabrication."""
+    out: Dict[str, float] = {}
+    pp = case_dir / "postProcessing"
+    if not pp.exists():
+        return out
+
+    # 1. yPlus.dat: columns typically Time patch min max average
+    yplus_files = sorted(pp.glob("yPlus/*/yPlus.dat"))
+    if yplus_files:
+        mins: List[float] = []
+        maxs: List[float] = []
+        avgs: List[float] = []
+        for raw_line in yplus_files[-1].read_text(encoding="utf-8", errors="replace").splitlines():
+            s = raw_line.strip()
+            if not s or s.startswith("#"):
+                continue
+            parts = s.split()
+            if len(parts) >= 5:
+                try:
+                    mins.append(float(parts[2]))
+                    maxs.append(float(parts[3]))
+                    avgs.append(float(parts[4]))
+                except ValueError:
+                    pass
+        if mins and maxs and avgs:
+            out["y_plus_min"] = round(mins[-1], 4)
+            out["y_plus_max"] = round(maxs[-1], 4)
+            out["y_plus_avg"] = round(avgs[-1], 4)
+
+    # 2. wallShearStress.dat: columns Time patch min(vx vy vz) max(vx vy vz)
+    wss_files = sorted(pp.glob("wallShearStress/*/wallShearStress.dat"))
+    if wss_files:
+        vec_re = re.compile(r"\(\s*([0-9.eE+-]+)\s+([0-9.eE+-]+)\s+([0-9.eE+-]+)\s*\)")
+        mags: List[float] = []
+        for raw_line in wss_files[-1].read_text(encoding="utf-8", errors="replace").splitlines():
+            s = raw_line.strip()
+            if not s or s.startswith("#"):
+                continue
+            vecs = vec_re.findall(s)
+            for vx, vy, vz in vecs:
+                try:
+                    mags.append(math.sqrt(float(vx) ** 2 + float(vy) ** 2 + float(vz) ** 2))
+                except ValueError:
+                    pass
+        if mags:
+            out["wall_shear_stress_max_pa"] = round(max(mags), 6)
+
+    # 3. forceCoeffs coefficient.dat: columns Time Cd Cs Cl CmRoll CmPitch CmYaw ...
+    coeff_files = sorted(pp.glob("forceCoeffs/*/coefficient.dat")) or sorted(pp.glob("forceCoeffs/*/forceCoeffs.dat"))
+    if coeff_files:
+        header_cols: List[str] = []
+        last_nums: List[float] = []
+        for raw_line in coeff_files[-1].read_text(encoding="utf-8", errors="replace").splitlines():
+            s = raw_line.strip()
+            if not s:
+                continue
+            if s.startswith("#"):
+                tokens = s.lstrip("#").split()
+                if "Cd" in tokens and "Cl" in tokens:
+                    header_cols = tokens
+                continue
+            parts = s.split()
+            try:
+                nums = [float(x) for x in parts]
+                if len(nums) >= 4:
+                    last_nums = nums
+            except ValueError:
+                pass
+        if last_nums:
+            cd_idx = header_cols.index("Cd") if "Cd" in header_cols else 1
+            cl_idx = header_cols.index("Cl") if "Cl" in header_cols else (3 if len(last_nums) > 3 else 2)
+            if cd_idx < len(last_nums):
+                out["drag_coefficient_cd"] = round(last_nums[cd_idx], 5)
+            if cl_idx < len(last_nums):
+                out["lift_coefficient_cl"] = round(last_nums[cl_idx], 5)
+
+    return out
+
+
+def _compute_stl_bounds(stl_path: Path) -> Tuple[List[float], List[float]]:
+    """Compute exact 3D bounding box [min_x, min_y, min_z], [max_x, max_y, max_z] from binary or ASCII STL."""
+    raw = stl_path.read_bytes()
+    if len(raw) < 15:
+        raise ValueError(f"STL file '{stl_path.name}' is empty or truncated.")
+
+    min_v = [float("inf"), float("inf"), float("inf")]
+    max_v = [float("-inf"), float("-inf"), float("-inf")]
+    vertex_count = 0
+
+    # Check binary STL exact size: 80-byte header + 4-byte uint32 tri count + 50 bytes per triangle
+    is_binary = False
+    if len(raw) >= 84:
+        tri_count = struct.unpack("<I", raw[80:84])[0]
+        if 84 + tri_count * 50 == len(raw) and tri_count > 0:
+            is_binary = True
+            offset = 84
+            for _ in range(tri_count):
+                # Skip 12-byte normal; read 3 vertices (9 floats)
+                floats = struct.unpack_from("<9f", raw, offset + 12)
+                for k in range(0, 9, 3):
+                    vx, vy, vz = floats[k], floats[k + 1], floats[k + 2]
+                    if math.isfinite(vx) and math.isfinite(vy) and math.isfinite(vz):
+                        if vx < min_v[0]: min_v[0] = vx
+                        if vx > max_v[0]: max_v[0] = vx
+                        if vy < min_v[1]: min_v[1] = vy
+                        if vy > max_v[1]: max_v[1] = vy
+                        if vz < min_v[2]: min_v[2] = vz
+                        if vz > max_v[2]: max_v[2] = vz
+                        vertex_count += 1
+                offset += 50
+
+    if not is_binary:
+        text = raw.decode("utf-8", errors="replace")
+        for match in re.finditer(r"vertex\s+([-+]?\d*\.?\d+(?:[eE][-+]?\d+)?)\s+([-+]?\d*\.?\d+(?:[eE][-+]?\d+)?)\s+([-+]?\d*\.?\d+(?:[eE][-+]?\d+)?)", text):
+            vx, vy, vz = float(match.group(1)), float(match.group(2)), float(match.group(3))
+            if math.isfinite(vx) and math.isfinite(vy) and math.isfinite(vz):
+                if vx < min_v[0]: min_v[0] = vx
+                if vx > max_v[0]: max_v[0] = vx
+                if vy < min_v[1]: min_v[1] = vy
+                if vy > max_v[1]: max_v[1] = vy
+                if vz < min_v[2]: min_v[2] = vz
+                if vz > max_v[2]: max_v[2] = vz
+                vertex_count += 1
+
+    if vertex_count < 3 or any(not math.isfinite(v) for v in min_v + max_v):
+        raise ValueError(f"Could not extract valid 3D vertices from STL file '{stl_path.name}'.")
+    return min_v, max_v
+
+
+def _prepare_external_aero_stl(raw_cad: bytes, cad_filename: str, tri_surface_dir: Path) -> Path:
+    """Place or tessellate uploaded STL/STEP/IGES geometry into constant/triSurface/obstacle.stl."""
+    tri_surface_dir.mkdir(parents=True, exist_ok=True)
+    target_stl = tri_surface_dir / "obstacle.stl"
+    ext = Path(cad_filename).suffix.lower()
+    if ext == ".stl":
+        target_stl.write_bytes(raw_cad)
+        return target_stl
+
+    if ext in {".step", ".stp", ".iges", ".igs", ".brep"}:
+        src_path = tri_surface_dir / f"source{ext}"
+        src_path.write_bytes(raw_cad)
+        try:
+            import gmsh  # type: ignore[import-not-found]
+            gmsh.initialize()
+            gmsh.option.setNumber("General.Terminal", 0)
+            gmsh.model.add("ext_aero_stl")
+            gmsh.model.occ.importShapes(str(src_path))
+            gmsh.model.occ.synchronize()
+            gmsh.model.mesh.generate(2)
+            gmsh.write(str(target_stl))
+            gmsh.finalize()
+            if target_stl.exists() and target_stl.stat().st_size > 84:
+                return target_stl
+        except Exception as exc:
+            try:
+                import gmsh  # type: ignore[import-not-found]
+                if gmsh.isInitialized():
+                    gmsh.finalize()
+            except Exception:
+                pass
+            raise RuntimeError(f"Failed to tessellate CAD '{cad_filename}' into STL for snappyHexMesh: {exc}") from exc
+
+    raise ValueError(
+        f"Unsupported CAD format '{cad_filename}' for external aerodynamics snappyHexMesh. Upload an .STL, .STEP, or .IGES file."
+    )
+
+
+def _build_external_wind_tunnel_spec(
+    bmin: Sequence[float],
+    bmax: Sequence[float],
+    *,
+    upstream_mult: float = 3.0,
+    downstream_mult: float = 6.0,
+    pad_mult: float = 2.5,
+    base_cell_size: Optional[float] = None,
+) -> Dict[str, Any]:
+    """Compute wind-tunnel domain, wake refinement box, safe locationInMesh, and background cell counts."""
+    obs_l = max(1e-4, float(bmax[0]) - float(bmin[0]))
+    obs_h = max(1e-4, float(bmax[1]) - float(bmin[1]))
+    obs_w = max(1e-4, float(bmax[2]) - float(bmin[2]))
+    char_d = max(obs_l, obs_h, obs_w)
+
+    up_m = max(1.5, min(15.0, float(upstream_mult)))
+    down_m = max(3.0, min(25.0, float(downstream_mult)))
+    pad_m = max(1.5, min(12.0, float(pad_mult)))
+
+    upstream_len = max(up_m * obs_l, 2.0 * char_d)
+    downstream_len = max(down_m * obs_l, 4.0 * char_d)
+    lat_pad_y = max(pad_m * obs_h, 1.8 * char_d)
+    lat_pad_z = max(pad_m * obs_w, 1.8 * char_d)
+
+    tx0 = float(bmin[0]) - upstream_len
+    tx1 = float(bmax[0]) + downstream_len
+    ty0 = float(bmin[1]) - lat_pad_y
+    ty1 = float(bmax[1]) + lat_pad_y
+    tz0 = float(bmin[2]) - lat_pad_z
+    tz1 = float(bmax[2]) + lat_pad_z
+
+    tunnel_l = tx1 - tx0
+    tunnel_h = ty1 - ty0
+    tunnel_w = tz1 - tz0
+
+    # Wake refinement box starting slightly upstream of nose and covering turbulent wake downstream
+    wake_min = [
+        float(bmin[0]) - 0.35 * obs_l,
+        float(bmin[1]) - 0.65 * obs_h,
+        float(bmin[2]) - 0.65 * obs_w,
+    ]
+    wake_max = [
+        min(tx1 - 0.1 * downstream_len, float(bmax[0]) + min(downstream_len * 0.75, 4.0 * obs_l)),
+        float(bmax[1]) + 0.65 * obs_h,
+        float(bmax[2]) + 0.65 * obs_w,
+    ]
+
+    # Guaranteed safe point strictly inside wind tunnel and strictly outside obstacle bounding box
+    loc_in_mesh = [
+        tx0 + 0.15 * upstream_len,
+        ty1 - 0.15 * lat_pad_y,
+        0.5 * (tz0 + tz1),
+    ]
+
+    bg_cell = (
+        float(base_cell_size)
+        if (base_cell_size is not None and math.isfinite(float(base_cell_size)) and float(base_cell_size) > 0)
+        else max(1e-4, char_d * 0.35)
+    )
+    nx = max(12, min(80, int(round(tunnel_l / bg_cell))))
+    ny = max(8, min(50, int(round(tunnel_h / bg_cell))))
+    nz = max(8, min(50, int(round(tunnel_w / bg_cell))))
+
+    return {
+        "obstacle_min": [float(bmin[0]), float(bmin[1]), float(bmin[2])],
+        "obstacle_max": [float(bmax[0]), float(bmax[1]), float(bmax[2])],
+        "obstacle_dims": [obs_l, obs_h, obs_w],
+        "tunnel_min": [tx0, ty0, tz0],
+        "tunnel_max": [tx1, ty1, tz1],
+        "tunnel_dims": [tunnel_l, tunnel_h, tunnel_w],
+        "wake_min": wake_min,
+        "wake_max": wake_max,
+        "location_in_mesh": loc_in_mesh,
+        "nx": nx,
+        "ny": ny,
+        "nz": nz,
+    }
+
+
+def _write_external_aero_dicts(
+    case_dir: Path,
+    spec: Mapping[str, Any],
+    *,
+    surface_level: int = 2,
+    wake_level: int = 1,
+    inflation_layers: int = 3,
+    growth_rate: float = 1.2,
+    use_feature_extract: bool = True,
+) -> None:
+    """Write genuine OpenFOAM v2406 blockMeshDict, surfaceFeatureExtractDict, and snappyHexMeshDict."""
+    tx0, ty0, tz0 = spec["tunnel_min"]
+    tx1, ty1, tz1 = spec["tunnel_max"]
+    wx0, wy0, wz0 = spec["wake_min"]
+    wx1, wy1, wz1 = spec["wake_max"]
+    lx, ly, lz = spec["location_in_mesh"]
+    nx, ny, nz = int(spec["nx"]), int(spec["ny"]), int(spec["nz"])
+
+    s_lvl = max(1, min(4, int(surface_level)))
+    s_lvl_max = min(5, s_lvl + 1)
+    w_lvl = max(1, min(3, int(wake_level)))
+    n_layers = max(0, min(12, int(inflation_layers)))
+    exp_ratio = max(1.05, min(1.5, float(growth_rate)))
+
+    (case_dir / "system" / "blockMeshDict").write_text(
+        'FoamFile { version 2.0; format ascii; class dictionary; object blockMeshDict; }\n'
+        "convertToMeters 1;\n"
+        f"vertices (\n"
+        f"  ({tx0:.8g} {ty0:.8g} {tz0:.8g})\n"
+        f"  ({tx1:.8g} {ty0:.8g} {tz0:.8g})\n"
+        f"  ({tx1:.8g} {ty1:.8g} {tz0:.8g})\n"
+        f"  ({tx0:.8g} {ty1:.8g} {tz0:.8g})\n"
+        f"  ({tx0:.8g} {ty0:.8g} {tz1:.8g})\n"
+        f"  ({tx1:.8g} {ty0:.8g} {tz1:.8g})\n"
+        f"  ({tx1:.8g} {ty1:.8g} {tz1:.8g})\n"
+        f"  ({tx0:.8g} {ty1:.8g} {tz1:.8g})\n"
+        ");\n"
+        f"blocks ( hex (0 1 2 3 4 5 6 7) ({nx} {ny} {nz}) simpleGrading (1 1 1) );\n"
+        "edges ();\n"
+        "boundary (\n"
+        "  inlet    { type patch; faces ((0 4 7 3)); }\n"
+        "  outlet   { type patch; faces ((1 2 6 5)); }\n"
+        "  farfield { type patch; faces ((0 1 5 4) (3 7 6 2) (0 3 2 1) (4 5 6 7)); }\n"
+        ");\n"
+        "mergePatchPairs ();\n",
+        encoding="utf-8",
+    )
+
+    (case_dir / "system" / "surfaceFeatureExtractDict").write_text(
+        'FoamFile { version 2.0; format ascii; class dictionary; object surfaceFeatureExtractDict; }\n'
+        "obstacle.stl\n"
+        "{\n"
+        "  extractionMethod extractFromSurface;\n"
+        "  extractFromSurfaceCoeffs\n"
+        "  {\n"
+        "    includedAngle 150;\n"
+        "  }\n"
+        "  writeObj no;\n"
+        "}\n",
+        encoding="utf-8",
+    )
+
+    features_block = (
+        f'  features ( {{ file "obstacle.eMesh"; level {s_lvl}; }} );\n'
+        if use_feature_extract
+        else "  features ();\n"
+    )
+    add_layers_flag = "true" if n_layers > 0 else "false"
+    explicit_snap = "true" if use_feature_extract else "false"
+    implicit_snap = "false" if use_feature_extract else "true"
+
+    (case_dir / "system" / "snappyHexMeshDict").write_text(
+        'FoamFile { version 2.0; format ascii; class dictionary; object snappyHexMeshDict; }\n'
+        "castellatedMesh true;\n"
+        "snap            true;\n"
+        f"addLayers       {add_layers_flag};\n\n"
+        "geometry\n"
+        "{\n"
+        "  obstacle.stl\n"
+        "  {\n"
+        "    type triSurfaceMesh;\n"
+        "    name obstacle;\n"
+        "  }\n"
+        "  wakeBox\n"
+        "  {\n"
+        "    type searchableBox;\n"
+        f"    min ({wx0:.8g} {wy0:.8g} {wz0:.8g});\n"
+        f"    max ({wx1:.8g} {wy1:.8g} {wz1:.8g});\n"
+        "  }\n"
+        "};\n\n"
+        "castellatedMeshControls\n"
+        "{\n"
+        "  maxLocalCells 250000;\n"
+        "  maxGlobalCells 1500000;\n"
+        "  minRefinementCells 10;\n"
+        "  maxLoadUnbalance 0.10;\n"
+        "  nCellsBetweenLevels 3;\n"
+        + features_block
+        + "  refinementSurfaces\n"
+        "  {\n"
+        "    obstacle\n"
+        "    {\n"
+        f"      level ({s_lvl} {s_lvl_max});\n"
+        "      patchInfo { type wall; }\n"
+        "    }\n"
+        "  }\n"
+        "  resolveFeatureAngle 30;\n"
+        "  refinementRegions\n"
+        "  {\n"
+        "    wakeBox\n"
+        "    {\n"
+        "      mode inside;\n"
+        f"      levels ((1E15 {w_lvl}));\n"
+        "    }\n"
+        "  }\n"
+        f"  locationInMesh ({lx:.8g} {ly:.8g} {lz:.8g});\n"
+        "  allowFreeStandingZoneFaces true;\n"
+        "}\n\n"
+        "snapControls\n"
+        "{\n"
+        "  nSmoothPatch 3;\n"
+        "  tolerance 2.0;\n"
+        "  nSolveIter 30;\n"
+        "  nRelaxIter 5;\n"
+        "  nFeatureSnapIter 10;\n"
+        f"  implicitFeatureSnap {implicit_snap};\n"
+        f"  explicitFeatureSnap {explicit_snap};\n"
+        "  multiRegionFeatureSnap false;\n"
+        "}\n\n"
+        "addLayersControls\n"
+        "{\n"
+        "  relativeSizes true;\n"
+        "  layers\n"
+        "  {\n"
+        '    "obstacle.*"\n'
+        "    {\n"
+        f"      nSurfaceLayers {max(1, n_layers)};\n"
+        "    }\n"
+        "  }\n"
+        f"  expansionRatio {exp_ratio:.4g};\n"
+        "  finalLayerThickness 0.35;\n"
+        "  minThickness 0.1;\n"
+        "  nGrow 0;\n"
+        "  featureAngle 60;\n"
+        "  slipFeatureAngle 30;\n"
+        "  nRelaxIter 5;\n"
+        "  nSmoothSurfaceNormals 1;\n"
+        "  nSmoothNormals 3;\n"
+        "  nSmoothThickness 10;\n"
+        "  maxFaceThicknessRatio 0.5;\n"
+        "  maxThicknessToMedialRatio 0.3;\n"
+        "  minMedialAxisAngle 90;\n"
+        "  nBufferCellsNoExtrude 0;\n"
+        "  nLayerIter 50;\n"
+        "}\n\n"
+        "meshQualityControls\n"
+        "{\n"
+        "  maxNonOrtho 65;\n"
+        "  maxBoundarySkewness 20;\n"
+        "  maxInternalSkewness 4;\n"
+        "  maxConcave 80;\n"
+        "  minVol 1e-13;\n"
+        "  minTetQuality -1e30;\n"
+        "  minArea -1;\n"
+        "  minTwist 0.02;\n"
+        "  minDeterminant 0.001;\n"
+        "  minFaceWeight 0.02;\n"
+        "  minVolRatio 0.01;\n"
+        "  minTriangleTwist -1;\n"
+        "  nSmoothScale 4;\n"
+        "  errorReduction 0.75;\n"
+        "}\n\n"
+        "mergeTolerance 1e-6;\n",
+        encoding="utf-8",
     )
 
 
@@ -252,6 +1082,8 @@ def probe_worker_capabilities() -> Dict[str, Any]:
     return {
         "openfoam": _probe_binary_version("simpleFoam", ("-help",)),
         "openfoam_blockMesh": _probe_binary_version("blockMesh", ("-help",)),
+        "openfoam_snappyHexMesh": _probe_binary_version("snappyHexMesh", ("-help",)),
+        "openfoam_surfaceFeatureExtract": _probe_binary_version("surfaceFeatureExtract", ("-help",)),
         "openfoam_interFoam": _probe_binary_version("interFoam", ("-help",)),
         "openfoam_buoyantSimpleFoam": _probe_binary_version("buoyantSimpleFoam", ("-help",)),
         "openfoam_foamToVTK": _probe_binary_version("foamToVTK", ("-help",)),
@@ -1192,6 +2024,58 @@ def _compute_effective_fluid_props(data: Mapping[str, Any]) -> Dict[str, float]:
     }
 
 
+def _classify_openfoam_turbulence(turb_model: str) -> Dict[str, Any]:
+    """Classify OpenFOAM turbulence selection into laminar, RAS, LES, or DDES metadata."""
+    norm = (turb_model or "laminar").strip().lower().replace("-", "_").replace(" ", "_")
+    if norm in {"", "laminar", "none"}:
+        return {
+            "simulation_type": "laminar",
+            "model": "laminar",
+            "delta": None,
+            "is_les": False,
+            "needs_nutilda": False,
+            "uses_k": False,
+        }
+    les_map: Dict[str, Tuple[str, str, bool, bool]] = {
+        "wale": ("WALE", "cubeRootVol", False, False),
+        "les_wale": ("WALE", "cubeRootVol", False, False),
+        "smagorinsky": ("Smagorinsky", "cubeRootVol", False, False),
+        "les_smagorinsky": ("Smagorinsky", "cubeRootVol", False, False),
+        "keqn": ("kEqn", "cubeRootVol", False, True),
+        "les_keqn": ("kEqn", "cubeRootVol", False, True),
+        "spalartallmarasddes": ("SpalartAllmarasDDES", "vanDriest", True, False),
+        "spalart_allmaras_ddes": ("SpalartAllmarasDDES", "vanDriest", True, False),
+        "ddes": ("SpalartAllmarasDDES", "vanDriest", True, False),
+    }
+    if norm in les_map:
+        model_name, delta_name, needs_nutilda, uses_k = les_map[norm]
+        return {
+            "simulation_type": "LES",
+            "model": model_name,
+            "delta": delta_name,
+            "is_les": True,
+            "needs_nutilda": needs_nutilda,
+            "uses_k": uses_k,
+        }
+    ras_map: Dict[str, Tuple[str, bool, bool]] = {
+        "komegasst": ("kOmegaSST", False, True),
+        "k_omega_sst": ("kOmegaSST", False, True),
+        "kepsilon": ("kEpsilon", False, True),
+        "k_epsilon": ("kEpsilon", False, True),
+        "spalartallmaras": ("SpalartAllmaras", True, False),
+        "spalart_allmaras": ("SpalartAllmaras", True, False),
+    }
+    ras_name, needs_nutilda, uses_k = ras_map.get(norm, ("kOmegaSST", False, True))
+    return {
+        "simulation_type": "RAS",
+        "model": ras_name,
+        "delta": None,
+        "is_les": False,
+        "needs_nutilda": needs_nutilda,
+        "uses_k": uses_k,
+    }
+
+
 def _openfoam_turbulence_setup(
     case_dir: Path,
     turb_model: str,
@@ -1199,32 +2083,54 @@ def _openfoam_turbulence_setup(
     char_len: float,
     nu: float,
     patch_roles: Optional[Mapping[str, str]] = None,
-) -> None:
-    """Write turbulenceProperties + RAS initial fields (k, omega, epsilon, nut) when turbulent."""
-    norm = turb_model.strip().lower()
-    if norm in {"", "laminar", "none"}:
+) -> Dict[str, Any]:
+    """Write turbulenceProperties + RAS/LES/DDES initial fields (k, omega, epsilon, nuTilda, nut)."""
+    meta = _classify_openfoam_turbulence(turb_model)
+    if meta["simulation_type"] == "laminar":
         (case_dir / "constant" / "turbulenceProperties").write_text(
             'FoamFile { version 2.0; format ascii; class dictionary; location "constant"; object turbulenceProperties; }\n'
             "simulationType laminar;\n",
             encoding="utf-8",
         )
-        return
+        return meta
 
-    model_map = {
-        "komegasst": "kOmegaSST",
-        "k_omega_sst": "kOmegaSST",
-        "kepsilon": "kEpsilon",
-        "k_epsilon": "kEpsilon",
-        "spalartallmaras": "SpalartAllmaras",
-        "spalart_allmaras": "SpalartAllmaras",
-    }
-    ras_name = model_map.get(norm.replace("-", "_"), "kOmegaSST")
-    (case_dir / "constant" / "turbulenceProperties").write_text(
-        'FoamFile { version 2.0; format ascii; class dictionary; location "constant"; object turbulenceProperties; }\n'
-        "simulationType RAS;\n"
-        f"RAS {{ RASModel {ras_name}; turbulence on; printCoeffs on; }}\n",
-        encoding="utf-8",
-    )
+    if meta["simulation_type"] == "LES":
+        model_name = meta["model"]
+        if meta["delta"] == "vanDriest":
+            delta_block = (
+                "  delta vanDriest;\n"
+                "  vanDriestCoeffs {\n"
+                "    delta cubeRootVol;\n"
+                "    cubeRootVolCoeffs { deltaCoeff 1; }\n"
+                "    kappa 0.41;\n"
+                "    Aplus 26;\n"
+                "    Cdelta 0.158;\n"
+                "  }\n"
+            )
+        else:
+            delta_block = (
+                "  delta cubeRootVol;\n"
+                "  cubeRootVolCoeffs { deltaCoeff 1; }\n"
+            )
+        (case_dir / "constant" / "turbulenceProperties").write_text(
+            'FoamFile { version 2.0; format ascii; class dictionary; location "constant"; object turbulenceProperties; }\n'
+            "simulationType LES;\n"
+            "LES {\n"
+            f"  LESModel {model_name};\n"
+            "  turbulence on;\n"
+            "  printCoeffs on;\n"
+            f"{delta_block}"
+            "}\n",
+            encoding="utf-8",
+        )
+    else:
+        ras_name = meta["model"]
+        (case_dir / "constant" / "turbulenceProperties").write_text(
+            'FoamFile { version 2.0; format ascii; class dictionary; location "constant"; object turbulenceProperties; }\n'
+            "simulationType RAS;\n"
+            f"RAS {{ RASModel {ras_name}; turbulence on; printCoeffs on; }}\n",
+            encoding="utf-8",
+        )
 
     u_ref = max(abs(velocity), 0.1)
     intensity = 0.05
@@ -1233,6 +2139,8 @@ def _openfoam_turbulence_setup(
     eps_val = max(1e-6, (0.09 ** 0.75) * (k_val ** 1.5) / l_mix)
     omega_val = max(1e-3, (k_val ** 0.5) / ((0.09 ** 0.25) * l_mix))
     nut_val = max(nu, 0.09 * (k_val ** 2) / eps_val)
+    nu_tilda_val = max(3.0 * max(nu, 1e-9), 1e-6)
+    nut_wall_fn = "nutkWallFunction" if meta["uses_k"] else "nutUSpaldingWallFunction"
 
     roles = dict(patch_roles or {
         "inlet": "inlet",
@@ -1253,6 +2161,8 @@ def _openfoam_turbulence_setup(
                     lines.append(f"  {pname} {{ type fixedValue; value uniform {eps_val:.6g}; }}")
                 elif field_name == "omega":
                     lines.append(f"  {pname} {{ type fixedValue; value uniform {omega_val:.6g}; }}")
+                elif field_name == "nuTilda":
+                    lines.append(f"  {pname} {{ type fixedValue; value uniform {nu_tilda_val:.6g}; }}")
                 else:
                     lines.append(f"  {pname} {{ type calculated; value uniform 0; }}")
             elif role == "outlet":
@@ -1260,6 +2170,11 @@ def _openfoam_turbulence_setup(
                     lines.append(f"  {pname} {{ type calculated; value uniform 0; }}")
                 else:
                     lines.append(f"  {pname} {{ type zeroGradient; }}")
+            elif role == "slip":
+                if field_name == "nut":
+                    lines.append(f"  {pname} {{ type calculated; value uniform 0; }}")
+                else:
+                    lines.append(f"  {pname} {{ type slip; }}")
             else:
                 if field_name == "k":
                     lines.append(f"  {pname} {{ type kqRWallFunction; value uniform {k_val:.6g}; }}")
@@ -1267,34 +2182,131 @@ def _openfoam_turbulence_setup(
                     lines.append(f"  {pname} {{ type epsilonWallFunction; value uniform {eps_val:.6g}; }}")
                 elif field_name == "omega":
                     lines.append(f"  {pname} {{ type omegaWallFunction; value uniform {omega_val:.6g}; }}")
+                elif field_name == "nuTilda":
+                    lines.append(f"  {pname} {{ type fixedValue; value uniform 0; }}")
                 else:
-                    lines.append(f"  {pname} {{ type nutkWallFunction; value uniform 0; }}")
+                    lines.append(f"  {pname} {{ type {nut_wall_fn}; value uniform 0; }}")
         return "\n".join(lines)
 
-    (case_dir / "0" / "k").write_text(
-        'FoamFile { version 2.0; format ascii; class volScalarField; object k; }\n'
-        f"dimensions [0 2 -2 0 0 0 0];\ninternalField uniform {k_val:.6g};\n"
-        f"boundaryField {{\n{_bc_block('k')}\n}}\n",
-        encoding="utf-8",
-    )
-    (case_dir / "0" / "epsilon").write_text(
-        'FoamFile { version 2.0; format ascii; class volScalarField; object epsilon; }\n'
-        f"dimensions [0 2 -3 0 0 0 0];\ninternalField uniform {eps_val:.6g};\n"
-        f"boundaryField {{\n{_bc_block('epsilon')}\n}}\n",
-        encoding="utf-8",
-    )
-    (case_dir / "0" / "omega").write_text(
-        'FoamFile { version 2.0; format ascii; class volScalarField; object omega; }\n'
-        f"dimensions [0 0 -1 0 0 0 0];\ninternalField uniform {omega_val:.6g};\n"
-        f"boundaryField {{\n{_bc_block('omega')}\n}}\n",
-        encoding="utf-8",
-    )
+    if meta["uses_k"] or meta["simulation_type"] == "RAS":
+        (case_dir / "0" / "k").write_text(
+            'FoamFile { version 2.0; format ascii; class volScalarField; object k; }\n'
+            f"dimensions [0 2 -2 0 0 0 0];\ninternalField uniform {k_val:.6g};\n"
+            f"boundaryField {{\n{_bc_block('k')}\n}}\n",
+            encoding="utf-8",
+        )
+    if meta["simulation_type"] == "RAS":
+        (case_dir / "0" / "epsilon").write_text(
+            'FoamFile { version 2.0; format ascii; class volScalarField; object epsilon; }\n'
+            f"dimensions [0 2 -3 0 0 0 0];\ninternalField uniform {eps_val:.6g};\n"
+            f"boundaryField {{\n{_bc_block('epsilon')}\n}}\n",
+            encoding="utf-8",
+        )
+        (case_dir / "0" / "omega").write_text(
+            'FoamFile { version 2.0; format ascii; class volScalarField; object omega; }\n'
+            f"dimensions [0 0 -1 0 0 0 0];\ninternalField uniform {omega_val:.6g};\n"
+            f"boundaryField {{\n{_bc_block('omega')}\n}}\n",
+            encoding="utf-8",
+        )
+    if meta["needs_nutilda"]:
+        (case_dir / "0" / "nuTilda").write_text(
+            'FoamFile { version 2.0; format ascii; class volScalarField; object nuTilda; }\n'
+            f"dimensions [0 2 -1 0 0 0 0];\ninternalField uniform {nu_tilda_val:.6g};\n"
+            f"boundaryField {{\n{_bc_block('nuTilda')}\n}}\n",
+            encoding="utf-8",
+        )
     (case_dir / "0" / "nut").write_text(
         'FoamFile { version 2.0; format ascii; class volScalarField; object nut; }\n'
         f"dimensions [0 2 -1 0 0 0 0];\ninternalField uniform {nut_val:.6g};\n"
         f"boundaryField {{\n{_bc_block('nut')}\n}}\n",
         encoding="utf-8",
     )
+    return meta
+
+
+def _write_openfoam_mrf_setup(
+    case_dir: Path,
+    data: Mapping[str, Any],
+    patch_roles: Mapping[str, str],
+    width: float,
+    height: float,
+    depth: float,
+    existing_topo_actions: Optional[List[str]] = None,
+) -> Dict[str, Any]:
+    """Write OpenFOAM v2406 constant/MRFProperties and cylinderToCell rotorZone in system/topoSetDict."""
+    omega = float(data.get("mrf_omega_rad_s") or 0.0)
+    if abs(omega) <= 1e-12:
+        raise ValueError("MRF rotating zone requires a non-zero angular velocity (`mrf_omega_rad_s`, rad/s).")
+
+    radius = float(data.get("mrf_radius") or (min(width, height) * 0.3))
+    if radius <= 0.0:
+        raise ValueError("MRF rotor radius (`mrf_radius`) must be strictly positive (meters).")
+
+    raw_axis = data.get("mrf_axis")
+    if isinstance(raw_axis, str):
+        axis_lut = {"x": (1.0, 0.0, 0.0), "y": (0.0, 1.0, 0.0), "z": (0.0, 0.0, 1.0)}
+        ax, ay, az = axis_lut.get(raw_axis.strip().lower(), (0.0, 0.0, 1.0))
+    elif isinstance(raw_axis, (list, tuple)) and len(raw_axis) >= 3:
+        ax, ay, az = float(raw_axis[0]), float(raw_axis[1]), float(raw_axis[2])
+    else:
+        ax, ay, az = 0.0, 0.0, 1.0
+    a_mag = math.sqrt(ax * ax + ay * ay + az * az)
+    if a_mag <= 1e-12:
+        ax, ay, az = 0.0, 0.0, 1.0
+    else:
+        ax, ay, az = ax / a_mag, ay / a_mag, az / a_mag
+
+    raw_origin = data.get("mrf_origin")
+    if isinstance(raw_origin, (list, tuple)) and len(raw_origin) >= 3:
+        ox, oy, oz = float(raw_origin[0]), float(raw_origin[1]), float(raw_origin[2])
+    else:
+        ox, oy, oz = width * 0.5, height * 0.5, depth * 0.5
+
+    half_span = max(width, height, depth) * 0.6 + 1e-3
+    p1 = (ox - ax * half_span, oy - ay * half_span, oz - az * half_span)
+    p2 = (ox + ax * half_span, oy + ay * half_span, oz + az * half_span)
+
+    actions: List[str] = list(existing_topo_actions or [])
+    actions.append(
+        "{ name rotorZone; type cellSet; action new; source cylinderToCell; "
+        f"sourceInfo {{ p1 ({p1[0]:.8g} {p1[1]:.8g} {p1[2]:.8g}); "
+        f"p2 ({p2[0]:.8g} {p2[1]:.8g} {p2[2]:.8g}); radius {radius:.8g}; }} }}"
+    )
+    actions.append(
+        "{ name rotorZone; type cellZoneSet; action new; source setToCellZone; sourceInfo { set rotorZone; } }"
+    )
+    (case_dir / "system" / "topoSetDict").write_text(
+        'FoamFile { version 2.0; format ascii; class dictionary; object topoSetDict; }\n'
+        "actions (\n  " + "\n  ".join(actions) + "\n);\n",
+        encoding="utf-8",
+    )
+
+    non_rotating = [
+        pname
+        for pname, role in patch_roles.items()
+        if role != "empty" and not any(tok in pname.lower() for tok in ("rotor", "impeller", "blade"))
+    ]
+    non_rot_str = " ".join(non_rotating)
+    (case_dir / "constant" / "MRFProperties").write_text(
+        'FoamFile { version 2.0; format ascii; class dictionary; location "constant"; object MRFProperties; }\n'
+        "MRF1\n{\n"
+        "  cellZone        rotorZone;\n"
+        "  active          yes;\n"
+        f"  nonRotatingPatches ( {non_rot_str} );\n"
+        f"  origin          ({ox:.8g} {oy:.8g} {oz:.8g});\n"
+        f"  axis            ({ax:.8g} {ay:.8g} {az:.8g});\n"
+        f"  omega           {omega:.8g};\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    return {
+        "cell_zone": "rotorZone",
+        "omega_rad_s": omega,
+        "radius_m": radius,
+        "origin": [ox, oy, oz],
+        "axis": [ax, ay, az],
+        "non_rotating_patches": non_rotating,
+    }
 
 
 def _run_openfoam_archive(archive_b64: str, data: Mapping[str, Any]) -> PhysicsResult:
@@ -1469,8 +2481,10 @@ def call_openfoam_solver(data: Mapping[str, Any]) -> PhysicsResult:
     is_cht = physics_type == "CHT_Coupled"
     is_vof = physics_type == "Multiphase_VOF"
     turb_model = str(data.get("turbulence_model") or "laminar")
+    turb_class = _classify_openfoam_turbulence("laminar" if compressible else turb_model)
+    mrf_requested = bool(data.get("mrf_enabled")) or abs(float(data.get("mrf_omega_rad_s") or 0.0)) > 0.0
     time_mode = str(data.get("time_mode") or "steady").lower()
-    is_transient = time_mode == "transient" or is_vof
+    is_transient = time_mode == "transient" or is_vof or bool(turb_class["is_les"])
 
     # Promote CFD to CHT when wall thermal boundary conditions (heat flux / wall temperature) are present
     markers = data.get("boundary_markers")
@@ -1489,10 +2503,12 @@ def call_openfoam_solver(data: Mapping[str, Any]) -> PhysicsResult:
         candidates = ("buoyantSimpleFoam", "buoyantBoussinesqSimpleFoam", "simpleFoam")
     elif compressible:
         candidates = ("rhoPimpleFoam", "rhoSimpleFoam", "sonicFoam") if is_transient else ("rhoSimpleFoam", "rhoPimpleFoam", "sonicFoam")
+    elif turb_class["is_les"]:
+        candidates = ("pimpleFoam", "simpleFoam")
     elif is_transient:
-        candidates = ("pimpleFoam", "icoFoam", "simpleFoam")
+        candidates = ("pimpleFoam", "simpleFoam") if mrf_requested else ("pimpleFoam", "icoFoam", "simpleFoam")
     else:
-        candidates = ("simpleFoam", "pimpleFoam", "icoFoam") if turb_model.lower() != "laminar" else ("icoFoam", "simpleFoam", "pimpleFoam")
+        candidates = ("simpleFoam", "pimpleFoam") if (turb_class["simulation_type"] != "laminar" or mrf_requested) else ("icoFoam", "simpleFoam", "pimpleFoam")
 
     resolved = {name: shutil.which(name) for name in candidates}
     executable = next((path for path in resolved.values() if path), None)
@@ -1587,10 +2603,15 @@ def call_openfoam_solver(data: Mapping[str, Any]) -> PhysicsResult:
                 wall_temp_k = mval + 273.15 if mval < 150.0 else mval
                 wall_t_bc = f"type fixedValue; value uniform {wall_temp_k:.8g};"
 
-    # Check if user uploaded an STL/STEP CAD file -> mesh via Gmsh and gmshToFoam
+    # Check if user enabled External Aerodynamics (snappyHexMesh) OR uploaded internal CAD for Gmsh
     raw_cad, cad_filename = _extract_upload_path_content(data)
+    external_aero = bool(data.get("external_aero"))
     gmsh_to_foam = shutil.which("gmshToFoam")
+    snappy_bin = shutil.which("snappyHexMesh")
+    sfe_bin = shutil.which("surfaceFeatureExtract")
     used_gmsh_cad = False
+    used_snappy_aero = False
+    aero_spec: Optional[Dict[str, Any]] = None
     cad_mesh_res: Optional[Dict[str, Any]] = None
     geometry_mode = str(data.get("geometry_mode") or "smooth_channel").lower()
     wave_count = max(0, int(data.get("wave_count") or 0))
@@ -1601,9 +2622,40 @@ def call_openfoam_solver(data: Mapping[str, Any]) -> PhysicsResult:
     if is_corrugated:
         nx = max(nx, min(200, wave_count * 16))
     ny = max(4, min(200, int(round(height / size))))
-    nz = max(4, min(16, int(round(depth / size)))) if is_vof else 1
+    nz = max(4, min(16, int(round(depth / size)))) if (is_vof or turb_class["is_les"]) else 1
 
-    if raw_cad and cad_filename and gmsh_to_foam:
+    if external_aero:
+        if not (raw_cad and cad_filename):
+            raise ValueError(
+                "External Aerodynamics (snappyHexMesh) requires an uploaded 3D body (.STL, .STEP, or .IGES)."
+            )
+        if not snappy_bin:
+            raise RuntimeError(
+                "OpenFOAM environment validation failed: snappyHexMesh must be available on PATH inside the Docker worker."
+            )
+        stl_path = _prepare_external_aero_stl(raw_cad, cad_filename, case_dir / "constant" / "triSurface")
+        obs_min, obs_max = _compute_stl_bounds(stl_path)
+        aero_spec = _build_external_wind_tunnel_spec(
+            obs_min,
+            obs_max,
+            upstream_mult=float(data.get("tunnel_upstream_mult") or 3.0),
+            downstream_mult=float(data.get("tunnel_downstream_mult") or 6.0),
+            pad_mult=float(data.get("tunnel_pad_mult") or 2.5),
+            base_cell_size=size if size > 0 else None,
+        )
+        _write_external_aero_dicts(
+            case_dir,
+            aero_spec,
+            surface_level=int(data.get("aero_surface_level") or 2),
+            wake_level=int(data.get("aero_wake_level") or 1),
+            inflation_layers=int(data.get("inflation_layers") or 3),
+            growth_rate=float(data.get("growth_rate") or 1.2),
+            use_feature_extract=bool(sfe_bin),
+        )
+        nx, ny, nz = int(aero_spec["nx"]), int(aero_spec["ny"]), int(aero_spec["nz"])
+        width, height, depth = aero_spec["obstacle_dims"]
+        used_snappy_aero = True
+    elif raw_cad and cad_filename and gmsh_to_foam:
         cad_mesh_res = call_gmsh_mesher({
             "cad_stl_b64": base64.b64encode(raw_cad).decode("ascii"),
             "cad_filename": cad_filename,
@@ -1624,7 +2676,7 @@ def call_openfoam_solver(data: Mapping[str, Any]) -> PhysicsResult:
             raise RuntimeError(f"gmshToFoam conversion failed for '{cad_filename}': {(proc_g2f.stderr or proc_g2f.stdout)[-2000:]}")
         used_gmsh_cad = True
 
-    if not used_gmsh_cad:
+    if not used_gmsh_cad and not used_snappy_aero:
         fb_type = "patch" if nz > 1 else "empty"
         edges_block = "edges ();"
         if is_corrugated:
@@ -1735,6 +2787,13 @@ def call_openfoam_solver(data: Mapping[str, Any]) -> PhysicsResult:
             width = max(1e-4, float(bmax[0]) - float(bmin[0]))
             height = max(1e-4, float(bmax[1]) - float(bmin[1]))
             depth = max(1e-4, float(bmax[2]) - float(bmin[2]))
+    elif used_snappy_aero:
+        patch_roles = {
+            "inlet": "inlet",
+            "outlet": "outlet",
+            "farfield": "slip",
+            "obstacle": "wall",
+        }
     else:
         patch_roles = {
             "inlet": "inlet",
@@ -1781,8 +2840,16 @@ def call_openfoam_solver(data: Mapping[str, Any]) -> PhysicsResult:
             encoding="utf-8",
         )
 
-    is_turb = not compressible and turb_model.lower() not in {"", "laminar", "none"}
-    _openfoam_turbulence_setup(case_dir, "laminar" if compressible else turb_model, velocity, min(width, height), fluid["nu"], patch_roles=patch_roles)
+    turb_meta = _openfoam_turbulence_setup(
+        case_dir,
+        "laminar" if compressible else turb_model,
+        velocity,
+        min(width, height),
+        fluid["nu"],
+        patch_roles=patch_roles,
+    )
+    is_turb = not compressible and turb_meta["simulation_type"] != "laminar"
+    is_les = not compressible and bool(turb_meta["is_les"])
 
     if compressible or solver_stem == "buoyantSimpleFoam":
         (case_dir / "constant" / "thermophysicalProperties").write_text(
@@ -1801,9 +2868,13 @@ def call_openfoam_solver(data: Mapping[str, Any]) -> PhysicsResult:
     relax_u = max(0.05, min(1.0, float(data.get("relaxation_u") or 0.7)))
     relax_t = max(0.05, min(1.0, float(data.get("relaxation_t") or 0.7)))
     scheme_choice = str(data.get("discretization_scheme") or ("first_order" if compressible else "second_order")).lower()
-    div_u = "Gauss linearUpwind grad(U)" if ("second" in scheme_choice and not compressible) else "Gauss upwind"
+    div_u = (
+        "Gauss limitedLinearV 1"
+        if is_les
+        else ("Gauss linearUpwind grad(U)" if ("second" in scheme_choice and not compressible) else "Gauss upwind")
+    )
 
-    is_transient_run = bool(is_vof or is_transient or solver_stem in {"icoFoam", "pimpleFoam", "rhoPimpleFoam"})
+    is_transient_run = bool(is_vof or is_transient or is_les or solver_stem in {"icoFoam", "pimpleFoam", "rhoPimpleFoam"})
     if is_transient_run:
         n_steps = max(1, int(round(end_t_val / dt_val)))
         w_int = max(1, n_steps // 12)
@@ -1820,19 +2891,32 @@ def call_openfoam_solver(data: Mapping[str, Any]) -> PhysicsResult:
             f"endTime {max_iters};\ndeltaT 1;\nwriteInterval {max(50, max_iters // 4)};\npurgeWrite 2;\nwriteFormat ascii;\n"
             "writePrecision 8;\ntimeFormat general;\ntimePrecision 8;\nrunTimeModifiable true;\n"
         )
-    (case_dir / "system" / "controlDict").write_text(ctrl_text, encoding="utf-8")
+    fn_objects_block = _build_openfoam_function_objects(
+        solver_stem,
+        patch_roles,
+        rho=fluid["rho"],
+        velocity=velocity,
+        width=width,
+        height=height,
+        depth=depth,
+        compressible=compressible,
+    )
+    (case_dir / "system" / "controlDict").write_text(ctrl_text + fn_objects_block, encoding="utf-8")
 
+    ddt_scheme = "backward" if is_les else ("Euler" if is_transient_run else "steadyState")
     (case_dir / "system" / "fvSchemes").write_text(
         'FoamFile { version 2.0; format ascii; class dictionary; object fvSchemes; }\n'
-        + ("ddtSchemes { default Euler; }\n" if (is_vof or is_transient or solver_stem in {"icoFoam", "pimpleFoam", "rhoPimpleFoam"}) else "ddtSchemes { default steadyState; }\n")
+        + f"ddtSchemes {{ default {ddt_scheme}; }}\n"
         + "gradSchemes { default Gauss linear; }\n"
         + f"divSchemes {{ default none; div(phi,U) {div_u}; div(phi,h) {div_u}; div(phi,K) Gauss upwind; div(phi,T) {div_u}; "
           "div(phid,p) Gauss upwind; div(phi,k) Gauss upwind; div(phi,epsilon) Gauss upwind; div(phi,omega) Gauss upwind; "
+          "div(phi,nuTilda) Gauss linearUpwind grad(nuTilda); "
           "div(rhoPhi,U) Gauss linearUpwind grad(U); div(phi,alpha) Gauss vanLeer; div(phirb,alpha) Gauss linear; "
           "\"div\\(.*\\)\" Gauss linear; }\n"
         + "laplacianSchemes { default Gauss linear corrected; }\n"
         + "interpolationSchemes { default linear; }\n"
-        + "snGradSchemes { default corrected; }\n",
+        + "snGradSchemes { default corrected; }\n"
+        + "wallDist { method meshWave; }\n",
         encoding="utf-8",
     )
 
@@ -1842,8 +2926,13 @@ def call_openfoam_solver(data: Mapping[str, Any]) -> PhysicsResult:
     if is_turb:
         extra_solvers += (
             "  k { solver smoothSolver; smoother symGaussSeidel; tolerance 1e-6; relTol 0.05; }\n"
+            "  kFinal { $k; relTol 0; }\n"
             "  epsilon { solver smoothSolver; smoother symGaussSeidel; tolerance 1e-6; relTol 0.05; }\n"
+            "  epsilonFinal { $epsilon; relTol 0; }\n"
             "  omega { solver smoothSolver; smoother symGaussSeidel; tolerance 1e-6; relTol 0.05; }\n"
+            "  omegaFinal { $omega; relTol 0; }\n"
+            "  nuTilda { solver smoothSolver; smoother symGaussSeidel; tolerance 1e-6; relTol 0.05; }\n"
+            "  nuTildaFinal { $nuTilda; relTol 0; }\n"
         )
     if is_vof:
         extra_solvers += (
@@ -1876,21 +2965,46 @@ def call_openfoam_solver(data: Mapping[str, Any]) -> PhysicsResult:
         f"SIMPLE {{ nNonOrthogonalCorrectors 1; pRefCell 0; pRefValue {pressure:.8g}; residualControl {{ p {residual_target:.2e}; p_rgh {residual_target:.2e}; U {residual_target:.2e}; T {residual_target:.2e}; }} }}\n"
         "PISO { nCorrectors 2; nNonOrthogonalCorrectors 0; pRefCell 0; pRefValue 0; }\n"
         "PIMPLE { momentumPredictor yes; nCorrectors 2; nNonOrthogonalCorrectors 0; nOuterCorrectors 1; }\n"
-        f"relaxationFactors {{ fields {{ p {relax_p:.4g}; p_rgh {relax_p:.4g}; rho 0.5; }} equations {{ U {relax_u:.4g}; T {relax_t:.4g}; h {relax_t:.4g}; k {relax_u:.4g}; epsilon {relax_u:.4g}; omega {relax_u:.4g}; }} }}\n",
+        f"relaxationFactors {{ fields {{ p {relax_p:.4g}; p_rgh {relax_p:.4g}; rho 0.5; }} equations {{ U {relax_u:.4g}; T {relax_t:.4g}; h {relax_t:.4g}; k {relax_u:.4g}; epsilon {relax_u:.4g}; omega {relax_u:.4g}; nuTilda {relax_u:.4g}; }} }}\n",
         encoding="utf-8",
     )
 
-    # Region box volumetric source if provided
+    # Region box volumetric source & MRF rotating cellZone (combined cleanly in system/topoSetDict)
+    topo_actions: List[str] = []
     region_box = data.get("region_box")
     if isinstance(region_box, Mapping) and (is_cht or solver_stem in {"buoyantSimpleFoam", "buoyantBoussinesqSimpleFoam"}):
-        c_pos = region_box.get("center", [width * 0.5, height * 0.5, depth * 0.5])
-        s_dim = region_box.get("size", [width * 0.2, height * 0.2, depth])
-        x0, y0, z0 = float(c_pos[0]) - float(s_dim[0]) / 2, float(c_pos[1]) - float(s_dim[1]) / 2, -1.0
-        x1, y1, z1 = float(c_pos[0]) + float(s_dim[0]) / 2, float(c_pos[1]) + float(s_dim[1]) / 2, depth + 1.0
+        if isinstance(region_box.get("min"), (list, tuple)) and isinstance(region_box.get("max"), (list, tuple)) and len(region_box["min"]) >= 3 and len(region_box["max"]) >= 3:
+            b_min = [float(v) for v in region_box["min"][:3]]
+            b_max = [float(v) for v in region_box["max"][:3]]
+            x0, y0, z0 = min(b_min[0], b_max[0]), min(b_min[1], b_max[1]), min(b_min[2], b_max[2]) - 1e-3
+            x1, y1, z1 = max(b_min[0], b_max[0]), max(b_min[1], b_max[1]), max(b_min[2], b_max[2]) + 1e-3
+        else:
+            c_pos = region_box.get("center", [width * 0.5, height * 0.5, depth * 0.5])
+            s_dim = region_box.get("size", [width * 0.2, height * 0.2, depth])
+            x0, y0, z0 = float(c_pos[0]) - float(s_dim[0]) / 2, float(c_pos[1]) - float(s_dim[1]) / 2, -1.0
+            x1, y1, z1 = float(c_pos[0]) + float(s_dim[0]) / 2, float(c_pos[1]) + float(s_dim[1]) / 2, depth + 1.0
+        topo_actions.append(
+            f"{{ name heatZone; type cellSet; action new; source boxToCell; sourceInfo {{ box ({x0} {y0} {z0}) ({x1} {y1} {z1}); }} }}"
+        )
+        topo_actions.append(
+            "{ name heatZone; type cellZoneSet; action new; source setToCellZone; sourceInfo { set heatZone; } }"
+        )
+
+    mrf_info: Optional[Dict[str, Any]] = None
+    if mrf_requested:
+        mrf_info = _write_openfoam_mrf_setup(
+            case_dir,
+            data,
+            patch_roles,
+            width,
+            height,
+            depth,
+            existing_topo_actions=topo_actions,
+        )
+    elif topo_actions:
         (case_dir / "system" / "topoSetDict").write_text(
             'FoamFile { version 2.0; format ascii; class dictionary; object topoSetDict; }\n'
-            f"actions ( {{ name heatZone; type cellSet; action new; source boxToCell; sourceInfo {{ box ({x0} {y0} {z0}) ({x1} {y1} {z1}); }} }} "
-            "{ name heatZone; type cellZoneSet; action new; source setToCellZone; sourceInfo { set heatZone; } } );\n",
+            "actions (\n  " + "\n  ".join(topo_actions) + "\n);\n",
             encoding="utf-8",
         )
 
@@ -1905,6 +3019,8 @@ def call_openfoam_solver(data: Mapping[str, Any]) -> PhysicsResult:
     for pname, role in patch_roles.items():
         if role == "empty":
             u_entries.append(f"  {pname} {{ type empty; }}")
+        elif role == "slip":
+            u_entries.append(f"  {pname} {{ type slip; }}")
         elif role == "patch":
             u_entries.append(f"  {pname} {{ type noSlip; }}")
         elif role == "inlet":
@@ -2001,6 +3117,8 @@ def call_openfoam_solver(data: Mapping[str, Any]) -> PhysicsResult:
         for pname, role in patch_roles.items():
             if role == "empty":
                 t_entries.append(f"  {pname} {{ type empty; }}")
+            elif role == "slip":
+                t_entries.append(f"  {pname} {{ type zeroGradient; }}")
             elif role == "inlet":
                 t_entries.append(f"  {pname} {{ type fixedValue; value uniform {temperature_kelvin:.8g}; }}")
             elif role == "outlet":
@@ -2034,14 +3152,27 @@ def call_openfoam_solver(data: Mapping[str, Any]) -> PhysicsResult:
     use_mpi = requested_cores > 1 and bool(decompose_bin and mpirun_bin and reconstruct_bin)
     actual_cores = requested_cores if use_mpi else 1
 
-    def run(command: list[str]) -> subprocess.CompletedProcess[str]:
-        proc = subprocess.run(
-            command, cwd=case_dir, env=env, text=True,
-            capture_output=True, timeout=180, check=False,
-        )
-        with (case_dir / "solver.log").open("a", encoding="utf-8") as stream:
-            stream.write(proc.stdout or "")
-            stream.write(proc.stderr or "")
+    def run(command: list[str], stream_solver: bool = False) -> subprocess.CompletedProcess[str]:
+        if stream_solver:
+            proc = _run_streaming_command(
+                command,
+                cwd=case_dir,
+                env=env,
+                timeout=300,
+                log_path=case_dir / "solver.log",
+                append_log=True,
+                solver_kind="openfoam",
+                max_iters=max_iters,
+                end_time=end_t_val if is_transient_run else float(max_iters),
+            )
+        else:
+            proc = subprocess.run(
+                command, cwd=case_dir, env=env, text=True,
+                capture_output=True, timeout=180, check=False,
+            )
+            with (case_dir / "solver.log").open("a", encoding="utf-8") as stream:
+                stream.write(proc.stdout or "")
+                stream.write(proc.stderr or "")
         if proc.returncode != 0:
             raise subprocess.CalledProcessError(
                 proc.returncode, command, output=proc.stdout, stderr=proc.stderr,
@@ -2049,18 +3180,34 @@ def call_openfoam_solver(data: Mapping[str, Any]) -> PhysicsResult:
         return proc
 
     try:
-        if not used_gmsh_cad:
+        if used_snappy_aero:
+            run([block_mesh])
+            if sfe_bin:
+                run([sfe_bin])
+            run([snappy_bin, "-overwrite"])
+            check_mesh_bin = shutil.which("checkMesh", path=env.get("PATH")) or shutil.which("checkMesh")
+            if check_mesh_bin:
+                subprocess.run([check_mesh_bin], cwd=case_dir, env=env, text=True, capture_output=True, timeout=90, check=False)
+        elif not used_gmsh_cad:
             run([block_mesh])
             _write_block_mesh_boundary_summary(case_dir, nx, ny, nz, width, height, depth)
+        if (case_dir / "system" / "topoSetDict").exists():
+            topo_set_bin = shutil.which("topoSet", path=env.get("PATH")) or shutil.which("topoSet")
+            if mrf_info and not topo_set_bin:
+                raise RuntimeError(
+                    "OpenFOAM environment validation failed: topoSet binary is required to build MRF rotorZone cellZones."
+                )
+            if topo_set_bin:
+                run([topo_set_bin])
         if is_vof and shutil.which("setFields"):
             run([shutil.which("setFields") or "setFields"])
         if use_mpi and decompose_bin and mpirun_bin and reconstruct_bin:
             _write_openfoam_decompose_dict(case_dir, requested_cores)
             run([decompose_bin, "-force"])
-            run([mpirun_bin, "--allow-run-as-root", "--oversubscribe", "-np", str(requested_cores), executable, "-parallel"])
+            run([mpirun_bin, "--allow-run-as-root", "--oversubscribe", "-np", str(requested_cores), executable, "-parallel"], stream_solver=True)
             run([reconstruct_bin])
         else:
-            run([executable])
+            run([executable], stream_solver=True)
     except subprocess.CalledProcessError as exc:
         raise RuntimeError(
             f"OpenFOAM execution failed: {(exc.stderr or exc.stdout or '')[-4000:]}"
@@ -2107,7 +3254,7 @@ def call_openfoam_solver(data: Mapping[str, Any]) -> PhysicsResult:
 
     vtk_payload: Any = []
     foam_to_vtk = shutil.which("foamToVTK", path=env.get("PATH")) or shutil.which("foamToVTK")
-    if used_gmsh_cad and foam_to_vtk:
+    if (used_gmsh_cad or used_snappy_aero) and foam_to_vtk:
         try:
             vtk_cmd = [foam_to_vtk] if is_transient_run else [foam_to_vtk, "-latestTime"]
             run(vtk_cmd)
@@ -2136,7 +3283,7 @@ def call_openfoam_solver(data: Mapping[str, Any]) -> PhysicsResult:
             pass
 
     t_internal_vals: List[float] = []
-    if not used_gmsh_cad:
+    if not used_gmsh_cad and not used_snappy_aero:
         try:
             time_dirs_asc = sorted(
                 [p for p in case_dir.iterdir() if p.is_dir() and re.fullmatch(r"\d+(?:\.\d*)?", p.name) and float(p.name) > 0],
@@ -2177,7 +3324,10 @@ def call_openfoam_solver(data: Mapping[str, Any]) -> PhysicsResult:
         "status": "SOLVED_REALTIME",
         "solver": "OpenFOAM",
         "solver_variant": solver_stem,
-        "turbulence_model": turb_model,
+        "turbulence_model": turb_meta["model"],
+        "turbulence_simulation_type": turb_meta["simulation_type"],
+        "mrf_active": bool(mrf_info),
+        "mrf_omega_rad_s": float(mrf_info["omega_rad_s"]) if mrf_info else 0.0,
         "geometry_mode": geometry_mode,
         "parallel_cores": actual_cores,
         "effective_fluid": fluid,
@@ -2212,7 +3362,15 @@ def call_openfoam_solver(data: Mapping[str, Any]) -> PhysicsResult:
         "mass_flow_kg_s": mass_flow_kg_s,
         "domain_volume_m3": round(width * height * depth, 6),
         "wetted_area_m2": round(2.0 * (width * height + width * depth), 6),
+        "turbulence_simulation_type": turb_meta["simulation_type"],
+        "turbulence_model": turb_meta["model"],
     }
+    if mrf_info:
+        integrals["mrf_omega_rad_s"] = round(float(mrf_info["omega_rad_s"]), 5)
+        integrals["mrf_radius_m"] = round(float(mrf_info["radius_m"]), 5)
+    pp_metrics = _parse_openfoam_postprocessing(case_dir)
+    if pp_metrics:
+        integrals.update(pp_metrics)
 
     if not used_gmsh_cad:
         try:
@@ -2372,10 +3530,29 @@ def _parse_calculix_modal_or_buckling(path: Path) -> list[dict[str, Any]]:
         return []
     modes: list[dict[str, Any]] = []
     text = path.read_text(encoding="utf-8", errors="replace")
+    is_eigen = "E I G E N V A L U E" in text
+    is_buckle = "B U C K L I N G" in text
+    if not (is_eigen or is_buckle):
+        return modes
     for line in text.splitlines():
-        m = re.match(r"^\s*(\d+)\s+([-+]?\d+\.\d+(?:[eE][-+]?\d+)?)\s+([-+]?\d+\.\d+(?:[eE][-+]?\d+)?)", line)
-        if m and ("E I G E N V A L U E" in text or "B U C K L I N G" in text):
-            modes.append({"mode": int(m.group(1)), "eigenvalue": float(m.group(2)), "frequency_or_factor": float(m.group(3))})
+        m = re.match(
+            r"^\s*(\d+)\s+([-+]?\d+\.\d+(?:[eE][-+]?\d+)?)\s+([-+]?\d+\.\d+(?:[eE][-+]?\d+)?)(?:\s+([-+]?\d+\.\d+(?:[eE][-+]?\d+)?))?",
+            line,
+        )
+        if m:
+            eigenvalue = float(m.group(2))
+            col3 = float(m.group(3))
+            entry: dict[str, Any] = {
+                "mode": int(m.group(1)),
+                "eigenvalue": eigenvalue,
+                "frequency_or_factor": col3,
+            }
+            if is_eigen:
+                if m.group(4) is not None:
+                    entry["frequency_hz"] = float(m.group(4))
+                elif eigenvalue > 0.0:
+                    entry["frequency_hz"] = round(math.sqrt(eigenvalue) / (2.0 * math.pi), 6)
+            modes.append(entry)
     return modes
 
 
@@ -2899,7 +4076,21 @@ def call_calculix_solver(data: Mapping[str, Any]) -> PhysicsResult:
             if face in {"zmax", "z_max", "back"}:
                 return [nid for nid, (_, _, z) in node_coords.items() if z >= z_max - tol_z]
             return []
-    else:
+    used_twobody_contact = False
+    lower_elem_ids: List[int] = []
+    upper_elem_ids: List[int] = []
+    master_contact_faces: List[Tuple[int, str]] = []
+    slave_contact_faces: List[Tuple[int, str]] = []
+    contact_mode_norm = str(data.get("contact_type") or "Bonded").strip().lower()
+    wants_twobody_contact = (
+        (not used_gmsh_cad)
+        and (not is_thermal_only)
+        and (not is_dynamic)
+        and (not is_buckling)
+        and contact_mode_norm in {"frictional", "contact_frictionless", "tie"}
+    )
+
+    if not used_gmsh_cad:
         divisions = geometry.get("divisions", mesh.get("divisions", {})) if isinstance(mesh, Mapping) else {}
         if not isinstance(divisions, Mapping):
             divisions = {}
@@ -2909,53 +4100,96 @@ def call_calculix_solver(data: Mapping[str, Any]) -> PhysicsResult:
         nx = max(1, int(divisions.get("x", mesh.get("nx", default_nx) if isinstance(mesh, Mapping) else default_nx)))
         ny = max(1, int(divisions.get("y", mesh.get("ny", default_ny) if isinstance(mesh, Mapping) else default_ny)))
         nz = max(1, int(divisions.get("z", mesh.get("nz", default_nz) if isinstance(mesh, Mapping) else default_nz)))
-
-        node_id = 1
-        for k in range(nz + 1):
-            for j in range(ny + 1):
-                for i in range(nx + 1):
-                    nodes[(i, j, k)] = node_id
-                    node_coords[node_id] = (length * i / nx, height * j / ny, depth * k / nz)
-                    node_id += 1
         elem_type = "DC3D8" if is_thermal_only else ("C3D8T" if is_coupled_ts else "C3D8")
-        element_id = 1
-        for k in range(nz):
-            for j in range(ny):
-                for i in range(nx):
-                    conn = [
-                        nodes[(i, j, k)], nodes[(i + 1, j, k)], nodes[(i + 1, j + 1, k)], nodes[(i, j + 1, k)],
-                        nodes[(i, j, k + 1)], nodes[(i + 1, j, k + 1)], nodes[(i + 1, j + 1, k + 1)], nodes[(i, j + 1, k + 1)],
-                    ]
-                    elements.append((element_id, *conn))
-                    elem_conn[element_id] = (elem_type, conn)
-                    element_id += 1
 
-        def node_set(predicate) -> list[int]:
-            return [nid for (i, j, k), nid in nodes.items()
-                    if predicate(length * i / nx, height * j / ny, depth * k / nz)]
+        if wants_twobody_contact:
+            ny = max(2, ny)
+            (
+                node_coords,
+                elements,
+                elem_conn,
+                lower_elem_ids,
+                upper_elem_ids,
+                master_contact_faces,
+                slave_contact_faces,
+            ) = _generate_calculix_twobody_mesh(length, height, depth, nx, ny, nz, elem_type)
+            used_twobody_contact = True
 
-        def face_nodes(face: str) -> list[int]:
-            tol = 1e-9 * max(length, height, depth, 1.0)
-            face = face.lower()
-            if face in {"xmin", "x_min", "left"}:
-                return node_set(lambda x, y, z: abs(x) < tol)
-            if face in {"xmax", "x_max", "right"}:
-                return node_set(lambda x, y, z: abs(x - length) < tol)
-            if face in {"ymin", "y_min", "bottom"}:
-                return node_set(lambda x, y, z: abs(y) < tol)
-            if face in {"ymax", "y_max", "top"}:
-                return node_set(lambda x, y, z: abs(y - height) < tol)
-            if face in {"zmin", "z_min", "front"}:
-                return node_set(lambda x, y, z: abs(z) < tol)
-            if face in {"zmax", "z_max", "back"}:
-                return node_set(lambda x, y, z: abs(z - depth) < tol)
-            return []
+            def face_nodes(face: str) -> list[int]:
+                tol = 1e-7 * max(length, height, depth, 1.0)
+                face = face.lower()
+                if face in {"xmin", "x_min", "left"}:
+                    return [nid for nid, (x, _, _) in node_coords.items() if abs(x) <= tol]
+                if face in {"xmax", "x_max", "right"}:
+                    return [nid for nid, (x, _, _) in node_coords.items() if abs(x - length) <= tol]
+                if face in {"ymin", "y_min", "bottom"}:
+                    return [nid for nid, (_, y, _) in node_coords.items() if abs(y) <= tol]
+                if face in {"ymax", "y_max", "top"}:
+                    return [nid for nid, (_, y, _) in node_coords.items() if abs(y - height) <= tol]
+                if face in {"zmin", "z_min", "front"}:
+                    return [nid for nid, (_, _, z) in node_coords.items() if abs(z) <= tol]
+                if face in {"zmax", "z_max", "back"}:
+                    return [nid for nid, (_, _, z) in node_coords.items() if abs(z - depth) <= tol]
+                return []
+        else:
+            node_id = 1
+            for k in range(nz + 1):
+                for j in range(ny + 1):
+                    for i in range(nx + 1):
+                        nodes[(i, j, k)] = node_id
+                        node_coords[node_id] = (length * i / nx, height * j / ny, depth * k / nz)
+                        node_id += 1
+            element_id = 1
+            for k in range(nz):
+                for j in range(ny):
+                    for i in range(nx):
+                        conn = [
+                            nodes[(i, j, k)], nodes[(i + 1, j, k)], nodes[(i + 1, j + 1, k)], nodes[(i, j + 1, k)],
+                            nodes[(i, j, k + 1)], nodes[(i + 1, j, k + 1)], nodes[(i + 1, j + 1, k + 1)], nodes[(i, j + 1, k + 1)],
+                        ]
+                        elements.append((element_id, *conn))
+                        elem_conn[element_id] = (elem_type, conn)
+                        element_id += 1
+
+            def node_set(predicate) -> list[int]:
+                return [nid for (i, j, k), nid in nodes.items()
+                        if predicate(length * i / nx, height * j / ny, depth * k / nz)]
+
+            def face_nodes(face: str) -> list[int]:
+                tol = 1e-9 * max(length, height, depth, 1.0)
+                face = face.lower()
+                if face in {"xmin", "x_min", "left"}:
+                    return node_set(lambda x, y, z: abs(x) < tol)
+                if face in {"xmax", "x_max", "right"}:
+                    return node_set(lambda x, y, z: abs(x - length) < tol)
+                if face in {"ymin", "y_min", "bottom"}:
+                    return node_set(lambda x, y, z: abs(y) < tol)
+                if face in {"ymax", "y_max", "top"}:
+                    return node_set(lambda x, y, z: abs(y - height) < tol)
+                if face in {"zmin", "z_min", "front"}:
+                    return node_set(lambda x, y, z: abs(z) < tol)
+                if face in {"zmax", "z_max", "back"}:
+                    return node_set(lambda x, y, z: abs(z - depth) < tol)
+                return []
 
     def _ccx_elem_line(tup: Tuple[int, ...]) -> str:
         if len(tup) <= 16:
             return ",".join(map(str, tup)) + "\n"
         # CalculiX max 16 entries per line -> split continuation cleanly
         return ",".join(map(str, tup[:16])) + ",\n" + ",".join(map(str, tup[16:])) + "\n"
+
+    mat_cards, mat_meta = _build_calculix_material_cards(
+        data,
+        mat_name=name,
+        E=E,
+        nu=nu,
+        density=density,
+        k_cond=k_cond,
+        cp_solid=cp_solid,
+        alpha_exp=alpha_exp,
+        is_thermal_only=is_thermal_only,
+        is_coupled_ts=is_coupled_ts,
+    )
 
     ordered_nids = sorted(node_coords.keys())
     header_lines = [
@@ -2966,20 +4200,30 @@ def call_calculix_solver(data: Mapping[str, Any]) -> PhysicsResult:
         f"*ELEMENT,TYPE={elem_type},ELSET=SOLID",
         "".join(_ccx_elem_line(e) for e in elements).rstrip("\n"),
         f"*SOLID SECTION,ELSET=SOLID,MATERIAL={name}",
-        f"*MATERIAL,NAME={name}",
+        *mat_cards,
     ]
-    if not is_thermal_only:
-        header_lines.append(f"*ELASTIC\n{E},{nu}")
-    if is_thermal_only or is_coupled_ts:
-        header_lines.append(f"*CONDUCTIVITY\n{k_cond}")
-        header_lines.append(f"*SPECIFIC HEAT\n{cp_solid}")
-    if is_coupled_ts:
-        header_lines.append(f"*EXPANSION,ZERO=293.15\n{alpha_exp}")
-    if density > 0:
-        header_lines.append(f"*DENSITY\n{density}")
     if is_thermal_only or is_coupled_ts:
         t_init = temperature_to_kelvin(data, default=293.15)
         header_lines.append(f"*INITIAL CONDITIONS,TYPE=TEMPERATURE\nALL,{t_init}")
+
+    contact_meta: Dict[str, Any] = {
+        "contact_pair_active": False,
+        "contact_type": str(data.get("contact_type") or "Bonded"),
+        "friction_coeff": 0.0,
+        "requires_nlgeom": False,
+    }
+    if used_twobody_contact:
+        contact_cards, contact_meta = _build_calculix_contact_cards(
+            contact_type=str(data.get("contact_type") or "Tie"),
+            friction_coeff=float(data.get("friction_coeff") if data.get("friction_coeff") is not None else 0.2),
+            E=E,
+            height=height,
+            master_faces=master_contact_faces,
+            slave_faces=slave_contact_faces,
+        )
+        header_lines.append(f"*ELSET,ELSET=BODY_LOWER\n{_ccx_id_lines(lower_elem_ids).rstrip()}")
+        header_lines.append(f"*ELSET,ELSET=BODY_UPPER\n{_ccx_id_lines(upper_elem_ids).rstrip()}")
+        header_lines.append(contact_cards.rstrip("\n"))
 
     inp.write_text("\n".join(header_lines) + "\n", encoding="utf-8")
 
@@ -3166,14 +4410,27 @@ def call_calculix_solver(data: Mapping[str, Any]) -> PhysicsResult:
 
             if not applied_any_constraint:
                 support_type = str(data.get("support_type") or "cantilever").lower()
+                contact_mode = str(data.get("contact_type") or "Bonded").strip().lower()
+                is_sliding = contact_mode == "sliding"
                 if support_type == "simply_supported":
                     f.write(f"*NSET,NSET=SUP_L\n{_ccx_id_lines(face_nodes('left'))}*BOUNDARY\nSUP_L,1,3,0\n")
-                    f.write(f"*NSET,NSET=SUP_R\n{_ccx_id_lines(face_nodes('right'))}*BOUNDARY\nSUP_R,2,3,0\n")
+                    f.write(f"*NSET,NSET=SUP_R\n{_ccx_id_lines(face_nodes('right'))}*BOUNDARY\nSUP_R,2,2,0\n")
                 elif support_type in {"fixed_both", "clamped"}:
                     f.write(f"*NSET,NSET=SUP_L\n{_ccx_id_lines(face_nodes('left'))}*BOUNDARY\nSUP_L,1,3,0\n")
-                    f.write(f"*NSET,NSET=SUP_R\n{_ccx_id_lines(face_nodes('right'))}*BOUNDARY\nSUP_R,1,3,0\n")
+                    if is_sliding:
+                        # Frictionless sliding support on right face: restrict normal Y/Z while allowing axial X sliding
+                        f.write(f"*NSET,NSET=SUP_R\n{_ccx_id_lines(face_nodes('right'))}*BOUNDARY\nSUP_R,2,3,0\n")
+                    else:
+                        f.write(f"*NSET,NSET=SUP_R\n{_ccx_id_lines(face_nodes('right'))}*BOUNDARY\nSUP_R,1,3,0\n")
                 else:
-                    f.write(f"*NSET,NSET=SUP_FIX\n{_ccx_id_lines(face_nodes('left'))}*BOUNDARY\nSUP_FIX,1,3,0\n")
+                    if is_sliding:
+                        # Frictionless sliding restraint on left face: fix normal X (DOF 1) + out-of-plane Z (DOF 3), anchor single bottom corner in Y to prevent rigid body mode
+                        left_n = face_nodes('left')
+                        f.write(f"*NSET,NSET=SUP_FIX\n{_ccx_id_lines(left_n)}*BOUNDARY\nSUP_FIX,1,1,0\nSUP_FIX,3,3,0\n")
+                        if left_n:
+                            f.write(f"*BOUNDARY\n{left_n[0]},2,2,0\n")
+                    else:
+                        f.write(f"*NSET,NSET=SUP_FIX\n{_ccx_id_lines(face_nodes('left'))}*BOUNDARY\nSUP_FIX,1,3,0\n")
 
             # Loads: explicit list OR pressure_load_mpa OR total force
             loads = data.get("loads", [])
@@ -3216,7 +4473,8 @@ def call_calculix_solver(data: Mapping[str, Any]) -> PhysicsResult:
                     )
 
         # Step definition by physics mode
-        nlgeom = ",NLGEOM" if data.get("nonlinear") else ""
+        needs_nlgeom = bool(data.get("nonlinear")) or bool(mat_meta.get("requires_nlgeom")) or bool(contact_meta.get("requires_nlgeom"))
+        nlgeom = ",NLGEOM,INC=100" if needs_nlgeom else ""
         modes_count = max(1, min(20, int(data.get("modes_count") or (5 if is_dynamic else 3))))
         dt_ccx = max(1e-4, float(data.get("time_step") or 0.1))
         end_t_ccx = max(dt_ccx, float(data.get("end_time") or 10.0))
@@ -3250,6 +4508,8 @@ def call_calculix_solver(data: Mapping[str, Any]) -> PhysicsResult:
             f.write("*NODE PRINT,NSET=ALL\nNT\n*NODE FILE\nNT\n*END STEP\n")
         elif is_coupled_ts:
             f.write(f"*STEP{nlgeom}\n*COUPLED TEMPERATURE-DISPLACEMENT,STEADY STATE\n")
+            if needs_nlgeom:
+                f.write("0.1,1.0,1e-5,0.25\n")
             f.write("".join(load_cards))
             f.write("".join(thermal_pin_flux_cards))
             f.write("*NODE PRINT,NSET=ALL\nU\n*NODE PRINT,NSET=ALL\nNT\n*NODE PRINT,NSET=ALL\nRF\n*EL PRINT,ELSET=SOLID\nS\n*NODE FILE\nU,NT\n*EL FILE\nS\n*END STEP\n")
@@ -3260,17 +4520,34 @@ def call_calculix_solver(data: Mapping[str, Any]) -> PhysicsResult:
             f.write("".join(load_cards))
             f.write("*NODE PRINT,NSET=ALL\nU\n*NODE FILE\nU\n*END STEP\n")
         else:
+            static_inc = "0.1,1.0,1e-5,0.25\n" if needs_nlgeom else ""
+            el_file_vars = "S,PEEQ" if mat_meta.get("material_model") == "plastic" else ("S,E" if mat_meta.get("material_model") == "hyperelastic" else "S")
+            contact_file_card = "*CONTACT FILE\nCDIS,CSTR\n" if contact_meta.get("contact_pair_active") else ""
             f.write(
                 f"*STEP{nlgeom}\n*STATIC\n"
+                + static_inc
                 + "".join(load_cards)
                 + "*NODE PRINT,NSET=ALL\nU\n*NODE PRINT,NSET=ALL\nRF\n"
-                + "*EL PRINT,ELSET=SOLID\nS\n*NODE FILE\nU\n*EL FILE\nS\n*END STEP\n"
+                + "*EL PRINT,ELSET=SOLID\nS\n*NODE FILE\nU\n"
+                + f"*EL FILE\n{el_file_vars}\n"
+                + contact_file_card
+                + "*END STEP\n"
             )
 
     try:
-        proc = subprocess.run([ccx, "model"], cwd=case_dir, env=ccx_env, text=True, capture_output=True, timeout=180, check=True)
+        proc = _run_streaming_command(
+            [ccx, "model"],
+            cwd=case_dir,
+            env=ccx_env,
+            timeout=300,
+            log_path=case_dir / "solver.log",
+            append_log=False,
+            solver_kind="calculix",
+        )
+        if proc.returncode != 0:
+            raise subprocess.CalledProcessError(proc.returncode, [ccx, "model"], output=proc.stdout, stderr=proc.stderr)
     except subprocess.CalledProcessError as exc:
-        raise RuntimeError(f"CalculiX execution failed: {exc.stderr[-4000:] or exc.stdout[-4000:]}") from exc
+        raise RuntimeError(f"CalculiX execution failed: {(exc.stderr or exc.stdout or '')[-4000:]}") from exc
 
     dat_path = case_dir / "model.dat"
     frd_path = case_dir / "model.frd"
@@ -3287,7 +4564,7 @@ def call_calculix_solver(data: Mapping[str, Any]) -> PhysicsResult:
 
     if temps:
         node_temp_map = {t["node"]: t["temperature"] for t in temps}
-        if not used_gmsh_cad:
+        if not used_gmsh_cad and not used_twobody_contact:
             mid_k = nz // 2
             slice_rows: List[List[float]] = []
             for j in range(ny + 1):
@@ -3316,7 +4593,14 @@ def call_calculix_solver(data: Mapping[str, Any]) -> PhysicsResult:
         "domain_volume_m3": round(length * height * depth, 6),
         "surface_area_m2": round(2.0 * (length * height + length * depth + height * depth), 6),
         "contact_type": str(data.get("contact_type") or "Bonded"),
+        "material_model": str(mat_meta.get("material_model") or "linear_elastic"),
+        "nlgeom_active": bool(needs_nlgeom),
     }
+    if contact_meta.get("contact_pair_active") or used_twobody_contact:
+        ccx_integrals["twobody_assembly"] = True
+        ccx_integrals["contact_pair_active"] = bool(contact_meta.get("contact_pair_active"))
+        if contact_meta.get("friction_coeff", 0.0) > 0.0:
+            ccx_integrals["friction_coeff"] = round(float(contact_meta["friction_coeff"]), 4)
     if disps:
         ccx_integrals["max_displacement_m"] = round(max(d["magnitude"] for d in disps), 8)
     if stresses:
@@ -3346,6 +4630,8 @@ def call_calculix_solver(data: Mapping[str, Any]) -> PhysicsResult:
         "status": "SOLVED_REALTIME",
         "solver": "CalculiX",
         "solver_variant": elem_type,
+        "material_model": mat_meta.get("material_model", "linear_elastic"),
+        "contact_pair_active": bool(contact_meta.get("contact_pair_active")),
         "executable": ccx,
         "parallel_cores": requested_cores,
         "case_directory": str(case_dir),
@@ -3376,6 +4662,213 @@ def call_calculix_solver(data: Mapping[str, Any]) -> PhysicsResult:
         out["calculated_heat_flux"] = calc_heat_flux
         out["material_k"] = k_cond
     return canonicalize_result(out, physics_type=physics_type, input_data=out["input"], solver="CalculiX")
+
+
+def _build_calculix_material_cards(
+    data: Mapping[str, Any],
+    *,
+    mat_name: str,
+    E: float,
+    nu: float,
+    density: float,
+    k_cond: float,
+    cp_solid: float,
+    alpha_exp: float,
+    is_thermal_only: bool,
+    is_coupled_ts: bool,
+) -> Tuple[List[str], Dict[str, Any]]:
+    """Build authentic CalculiX v2.21 material cards (*ELASTIC, *PLASTIC, or *HYPERELASTIC,NEO HOOKE)."""
+    mat_dict = data.get("material", {}) if isinstance(data.get("material"), Mapping) else {}
+    raw_model = str(data.get("material_model") or mat_dict.get("material_model") or "linear_elastic").strip().lower()
+    if raw_model in {"plastic", "elastoplastic", "bilinear_plastic", "plasticity"}:
+        model_key = "plastic"
+    elif raw_model in {"hyperelastic", "neo_hooke", "neohookean", "neo-hooke"}:
+        model_key = "hyperelastic"
+    else:
+        model_key = "linear_elastic"
+
+    cards: List[str] = [f"*MATERIAL,NAME={mat_name}"]
+    requires_nlgeom = False
+    meta: Dict[str, Any] = {"material_model": model_key, "requires_nlgeom": False}
+
+    if not is_thermal_only:
+        if model_key == "hyperelastic":
+            raw_c10 = data.get("hyper_c10_pa") if data.get("hyper_c10_pa") is not None else mat_dict.get("hyper_c10_pa")
+            raw_d1 = data.get("hyper_d1_inv_pa") if data.get("hyper_d1_inv_pa") is not None else mat_dict.get("hyper_d1_inv_pa")
+            if raw_c10 is not None and float(raw_c10) > 0.0:
+                c10 = float(raw_c10)
+            else:
+                shear_g = E / (2.0 * (1.0 + nu))
+                c10 = shear_g / 2.0
+            if raw_d1 is not None and float(raw_d1) >= 0.0:
+                d1 = float(raw_d1)
+            else:
+                bulk_k = E / (3.0 * max(1e-4, 1.0 - 2.0 * nu))
+                d1 = 2.0 / bulk_k
+            if c10 <= 0.0:
+                raise ValueError("Hyperelastic Neo-Hooke model requires strictly positive C10 (Pa).")
+            cards.append(f"*HYPERELASTIC,NEO HOOKE\n{c10:.8g},{d1:.8g}")
+            requires_nlgeom = True
+            meta["hyper_c10_pa"] = c10
+            meta["hyper_d1_inv_pa"] = d1
+        elif model_key == "plastic":
+            raw_sy = data.get("yield_stress_pa") if data.get("yield_stress_pa") is not None else mat_dict.get("yield_stress_pa")
+            if raw_sy is None or float(raw_sy) <= 0.0:
+                raise ValueError("Elastoplastic (*PLASTIC) model requires a strictly positive `yield_stress_pa` (Pa).")
+            sy = float(raw_sy)
+            raw_et = data.get("tangent_modulus_pa") if data.get("tangent_modulus_pa") is not None else mat_dict.get("tangent_modulus_pa")
+            et = float(raw_et) if (raw_et is not None and float(raw_et) > 0.0) else (0.05 * E)
+            if et >= E:
+                raise ValueError("Tangent modulus (`tangent_modulus_pa`) must be strictly less than Young's modulus E.")
+            hardening_h = (E * et) / (E - et)
+            eps_p2 = 0.2
+            sigma_p2 = sy + hardening_h * eps_p2
+            cards.append(f"*ELASTIC\n{E},{nu}")
+            cards.append(f"*PLASTIC\n{sy:.8g},0.0\n{sigma_p2:.8g},{eps_p2:.6g}")
+            requires_nlgeom = True
+            meta["yield_stress_pa"] = sy
+            meta["tangent_modulus_pa"] = et
+        else:
+            cards.append(f"*ELASTIC\n{E},{nu}")
+
+    if is_thermal_only or is_coupled_ts:
+        cards.append(f"*CONDUCTIVITY\n{k_cond}")
+        cards.append(f"*SPECIFIC HEAT\n{cp_solid}")
+    if is_coupled_ts:
+        cards.append(f"*EXPANSION,ZERO=293.15\n{alpha_exp}")
+    if density > 0:
+        cards.append(f"*DENSITY\n{density}")
+    meta["requires_nlgeom"] = requires_nlgeom
+    return cards, meta
+
+
+def _generate_calculix_twobody_mesh(
+    length: float,
+    height: float,
+    depth: float,
+    nx: int,
+    ny: int,
+    nz: int,
+    elem_type: str = "C3D8",
+) -> Tuple[
+    Dict[int, Tuple[float, float, float]],
+    List[Tuple[int, ...]],
+    Dict[int, Tuple[str, List[int]]],
+    List[int],
+    List[int],
+    List[Tuple[int, str]],
+    List[Tuple[int, str]],
+]:
+    """Build two disconnected hexahedral bodies (BODY_LOWER y in [0, H/2], BODY_UPPER y in [H/2, H]) with independent interface node IDs."""
+    ny_low = max(1, ny // 2)
+    ny_up = max(1, ny - ny_low)
+    y_mid = height * (ny_low / float(ny_low + ny_up))
+
+    node_coords: Dict[int, Tuple[float, float, float]] = {}
+    elements: List[Tuple[int, ...]] = []
+    elem_conn: Dict[int, Tuple[str, List[int]]] = {}
+    lower_elem_ids: List[int] = []
+    upper_elem_ids: List[int] = []
+    master_faces: List[Tuple[int, str]] = []
+    slave_faces: List[Tuple[int, str]] = []
+
+    nid = 1
+    eid = 1
+
+    # Lower body: y in [0, y_mid]
+    low_nodes: Dict[Tuple[int, int, int], int] = {}
+    for k in range(nz + 1):
+        for j in range(ny_low + 1):
+            for i in range(nx + 1):
+                low_nodes[(i, j, k)] = nid
+                node_coords[nid] = (length * i / nx, y_mid * j / ny_low, depth * k / nz)
+                nid += 1
+    for k in range(nz):
+        for j in range(ny_low):
+            for i in range(nx):
+                conn = [
+                    low_nodes[(i, j, k)], low_nodes[(i + 1, j, k)], low_nodes[(i + 1, j + 1, k)], low_nodes[(i, j + 1, k)],
+                    low_nodes[(i, j, k + 1)], low_nodes[(i + 1, j, k + 1)], low_nodes[(i + 1, j + 1, k + 1)], low_nodes[(i, j + 1, k + 1)],
+                ]
+                elements.append((eid, *conn))
+                elem_conn[eid] = (elem_type, conn)
+                lower_elem_ids.append(eid)
+                if j == ny_low - 1:
+                    # CalculiX C3D8 face S5 is top (+Y, nodes 3-4-8-7)
+                    master_faces.append((eid, "S5"))
+                eid += 1
+
+    # Upper body: y in [y_mid, height] with completely separate node IDs
+    up_nodes: Dict[Tuple[int, int, int], int] = {}
+    for k in range(nz + 1):
+        for j in range(ny_up + 1):
+            for i in range(nx + 1):
+                up_nodes[(i, j, k)] = nid
+                node_coords[nid] = (length * i / nx, y_mid + (height - y_mid) * j / ny_up, depth * k / nz)
+                nid += 1
+    for k in range(nz):
+        for j in range(ny_up):
+            for i in range(nx):
+                conn = [
+                    up_nodes[(i, j, k)], up_nodes[(i + 1, j, k)], up_nodes[(i + 1, j + 1, k)], up_nodes[(i, j + 1, k)],
+                    up_nodes[(i, j, k + 1)], up_nodes[(i + 1, j, k + 1)], up_nodes[(i + 1, j + 1, k + 1)], up_nodes[(i, j + 1, k + 1)],
+                ]
+                elements.append((eid, *conn))
+                elem_conn[eid] = (elem_type, conn)
+                upper_elem_ids.append(eid)
+                if j == 0:
+                    # CalculiX C3D8 face S3 is bottom (-Y, nodes 1-2-6-5)
+                    slave_faces.append((eid, "S3"))
+                eid += 1
+
+    return node_coords, elements, elem_conn, lower_elem_ids, upper_elem_ids, master_faces, slave_faces
+
+
+def _build_calculix_contact_cards(
+    *,
+    contact_type: str,
+    friction_coeff: float,
+    E: float,
+    height: float,
+    master_faces: List[Tuple[int, str]],
+    slave_faces: List[Tuple[int, str]],
+) -> Tuple[str, Dict[str, Any]]:
+    """Build authentic CalculiX v2.21 *SURFACE + (*TIE | *SURFACE INTERACTION + *FRICTION + *CONTACT PAIR)."""
+    mode = (contact_type or "Tie").strip().lower()
+    lines: List[str] = [
+        "*SURFACE,NAME=SURF_MASTER,TYPE=ELEMENT",
+        *(f"{eid},{face_id}" for eid, face_id in master_faces),
+        "*SURFACE,NAME=SURF_SLAVE,TYPE=ELEMENT",
+        *(f"{eid},{face_id}" for eid, face_id in slave_faces),
+    ]
+    if mode == "tie":
+        lines.append("*TIE,NAME=TIE_ASSY,POSITION TOLERANCE=1e-3")
+        lines.append("SURF_SLAVE,SURF_MASTER")
+        return "\n".join(lines) + "\n", {
+            "contact_pair_active": False,
+            "contact_type": "Tie",
+            "friction_coeff": 0.0,
+            "requires_nlgeom": False,
+        }
+
+    mu = 0.0 if mode == "contact_frictionless" else max(0.0, float(friction_coeff))
+    k_normal = max(1e6, 10.0 * E / max(height, 1e-4))
+    stick_slope = 0.1 * k_normal
+    lines.append("*SURFACE INTERACTION,NAME=INT_CONTACT")
+    lines.append("*SURFACE BEHAVIOR,PRESSURE-OVERCLOSURE=LINEAR")
+    lines.append(f"{k_normal:.6e}")
+    if mode == "frictional" and mu > 0.0:
+        lines.append("*FRICTION")
+        lines.append(f"{mu:.6g},{stick_slope:.6e}")
+    lines.append("*CONTACT PAIR,INTERACTION=INT_CONTACT,TYPE=SURFACE TO SURFACE")
+    lines.append("SURF_SLAVE,SURF_MASTER")
+    return "\n".join(lines) + "\n", {
+        "contact_pair_active": True,
+        "contact_type": "Frictional" if (mode == "frictional" and mu > 0.0) else "Contact_Frictionless",
+        "friction_coeff": mu,
+        "k_normal_pa_m": k_normal,
+        "requires_nlgeom": True,
+    }
 
 
 def _discover_elmer_boundary_centroids(case_dir: Path) -> Dict[int, List[float]]:
@@ -3736,9 +5229,16 @@ End
                     actual_cores = requested_cores
 
     if proc is None:
-        proc = subprocess.run([elmer_solver], cwd=case_dir, text=True, capture_output=True, timeout=180, check=False)
-
-    (case_dir / "solver.log").write_text((proc.stdout or "") + "\n" + (proc.stderr or ""), encoding="utf-8")
+        proc = _run_streaming_command(
+            [elmer_solver],
+            cwd=case_dir,
+            timeout=300,
+            log_path=case_dir / "solver.log",
+            append_log=False,
+            solver_kind="elmer",
+        )
+    else:
+        (case_dir / "solver.log").write_text((proc.stdout or "") + "\n" + (proc.stderr or ""), encoding="utf-8")
     if proc.returncode != 0:
         raise RuntimeError(f"ElmerSolver failed: {(proc.stderr or proc.stdout)[-3000:]}")
 
@@ -3904,7 +5404,31 @@ def run_simulation_task(self, data: Dict[str, Any]) -> PhysicsResult:
         recommended_solver=_recommended_engine(physics_type),
     )
     _task_progress(self, 35, f"Executing {_recommended_engine(physics_type)}", physics_type=physics_type)
-    result = execute_simulation(data)
+    def _live_stream_callback(payload: Dict[str, Any]) -> None:
+        pct = int(payload.get("progress", 40))
+        live_logs = payload.get("logs") if isinstance(payload.get("logs"), list) else []
+        live_res = payload.get("residuals") if isinstance(payload.get("residuals"), dict) else {}
+        cur_iter = int(payload.get("current_iteration") or 0)
+        msg = str(payload.get("status_message") or f"Running {_recommended_engine(physics_type)}")
+        live_tel = payload.get("telemetry") if isinstance(payload.get("telemetry"), dict) else sample_node_telemetry()
+        _task_progress(
+            self,
+            pct,
+            msg,
+            logs=live_logs,
+            live_residuals=live_res,
+            current_iteration=cur_iter,
+            physics_type=physics_type,
+            telemetry=live_tel,
+        )
+        _record_job_state(task_id, "RUNNING", progress=pct, logs=live_logs)
+
+    _STREAM_STATE.callback = _live_stream_callback
+    try:
+        result = execute_simulation(data)
+    finally:
+        _STREAM_STATE.callback = None
+
     if isinstance(result, dict) and (result.get("status") == "error" or result.get("error")):
         message = str(result.get("error") or "Simulation failed")
         result["logs"] = result.get("logs", ["Preparing simulation input", f"Failed ({physics_type})", message])
@@ -3952,4 +5476,10 @@ def preview_cad_task(data: Dict[str, Any]) -> PhysicsResult:
 def probe_capabilities_task() -> Dict[str, Any]:
     """Return live solver binary versions installed inside the Docker worker container."""
     return probe_worker_capabilities()
+
+
+@celery_app.task(name="universal_dispatcher.sample_telemetry")
+def sample_telemetry_task() -> Dict[str, Any]:
+    """Return real OS/Docker CPU load and RAM telemetry from the Celery worker container."""
+    return sample_node_telemetry()
 

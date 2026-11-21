@@ -4,6 +4,7 @@ import os
 import shutil
 import uuid
 import zipfile
+from datetime import datetime, timezone
 from enum import Enum
 from json import JSONDecodeError
 from pathlib import Path
@@ -19,25 +20,56 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validat
 from backend.file_parser import parse_engineering_file
 from backend.vv_metrics import KeyResultUnavailable, MeshStudyError, key_result_specs, run_mesh_study
 from cae_repository import JobRepository
+from enterprise_security import EnterpriseSecurityService, SecurityError
+from object_storage import ObjectStorageError, ObjectStorageService
 from universal_dispatcher import (
     call_gmsh_mesher,
     celery_app,
     classify_physics,
+    compute_wall_clock_sec,
     execute_simulation,
     preview_cad_geometry,
     probe_worker_capabilities,
+    sample_node_telemetry,
+)
+from vv_regression_suite import (
+    VV_BENCHMARK_BY_ID,
+    generate_vv_certificate_markdown,
+    list_vv_benchmarks,
+    run_vv_suite,
 )
 
 job_repository = JobRepository()
+security_service = EnterpriseSecurityService(job_repository.engine)
+object_storage = ObjectStorageService()
 
 app = FastAPI(title="NASEER Universal CAE Engine API")
 
+
+def _resolve_allowed_origins() -> List[str]:
+    configured = (os.getenv("NASEER_ALLOWED_ORIGINS") or "").strip()
+    if configured:
+        origins = [o.strip().rstrip("/") for o in configured.split(",") if o.strip() and o.strip() != "*"]
+        if origins:
+            return origins
+    defaults = [
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+    ]
+    app_url = (os.getenv("APP_URL") or "").strip().rstrip("/")
+    if app_url and app_url.startswith(("http://", "https://")) and app_url not in defaults:
+        defaults.append(app_url)
+    return defaults
+
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=_resolve_allowed_origins(),
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type", "Accept", "X-Requested-With"],
 )
 
 
@@ -122,8 +154,19 @@ class SimulationRequest(BaseModel):
     force_n: Optional[float] = None
     support_type: Optional[str] = Field(default="cantilever")
     nonlinear: Optional[bool] = False
+    material_model: Optional[str] = Field(default="linear_elastic")
+    yield_stress_pa: Optional[float] = None
+    tangent_modulus_pa: Optional[float] = None
+    hyper_c10_pa: Optional[float] = None
+    hyper_d1_inv_pa: Optional[float] = None
     modes_count: Optional[int] = None
     contact_type: Optional[str] = Field(default="Bonded")
+    friction_coeff: Optional[float] = None
+    mrf_enabled: Optional[bool] = False
+    mrf_omega_rad_s: Optional[float] = None
+    mrf_radius: Optional[float] = None
+    mrf_axis: Optional[Any] = None
+    mrf_origin: Optional[List[float]] = None
     solver_iterations: Optional[int] = None
     parallel_cores: Optional[int] = Field(default=1, ge=1, le=64)
     element_order: Optional[int] = Field(default=1)
@@ -150,16 +193,20 @@ class SimulationRequest(BaseModel):
         "velocity", "pressure", "displacement", "temperature", "width_x", "height_y", "depth_z",
         "thermal_conductivity_k", "young_modulus", "poisson_ratio", "density",
         "bc_left_temp", "bc_right_temp", "bc_top_temp", "bc_bottom_temp",
+        "yield_stress_pa", "tangent_modulus_pa", "hyper_c10_pa", "hyper_d1_inv_pa",
+        "friction_coeff", "mrf_omega_rad_s", "mrf_radius",
     )
     @classmethod
     def validate_finite_numbers(cls, value: Optional[float], info: ValidationInfo) -> Optional[float]:
         if value is not None:
             if isinstance(value, bool) or math.isnan(value) or math.isinf(value):
                 raise ValueError("Numeric fields must be finite numbers.")
-            if info.field_name in ("width_x", "height_y", "depth_z") and value <= 0.0:
+            if info.field_name in ("width_x", "height_y", "depth_z", "mrf_radius") and value <= 0.0:
                 raise ValueError(f"{info.field_name} must be strictly greater than 0 (meters).")
-            if info.field_name in ("thermal_conductivity_k", "young_modulus", "density") and value <= 0.0:
+            if info.field_name in ("thermal_conductivity_k", "young_modulus", "density", "yield_stress_pa", "hyper_c10_pa") and value <= 0.0:
                 raise ValueError(f"{info.field_name} must be strictly greater than 0.")
+            if info.field_name in ("friction_coeff", "hyper_d1_inv_pa", "tangent_modulus_pa") and value < 0.0:
+                raise ValueError(f"{info.field_name} must be non-negative.")
         return value
 
     @model_validator(mode="after")
@@ -306,6 +353,22 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
     )
 
 
+@app.exception_handler(SecurityError)
+async def security_error_handler(request: Request, exc: SecurityError):
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={"success": False, "code": "SECURITY_POLICY_VIOLATION", "error": exc.detail},
+    )
+
+
+@app.exception_handler(ObjectStorageError)
+async def object_storage_error_handler(request: Request, exc: ObjectStorageError):
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={"success": False, "code": "OBJECT_STORAGE_ERROR", "error": exc.detail},
+    )
+
+
 # ---------------------------------------------------------
 # 3. API Routes (Unified Port 8000 Authority)
 # ---------------------------------------------------------
@@ -427,7 +490,12 @@ async def upload_model(file: UploadFile = File(...), directives: str = Form(defa
 
 
 @app.post("/api/run-simulation")
-async def run_simulation(request: SimulationRequest):
+async def run_simulation(request: SimulationRequest, http_request: Request):
+    actor = security_service.resolve_actor(
+        http_request.headers.get("authorization"),
+        require_role="engineer",
+    )
+    client_ip = http_request.client.host if http_request.client else "local"
     payload = request.to_solver_payload()
     physics_type = classify_physics(payload)
 
@@ -441,6 +509,16 @@ async def run_simulation(request: SimulationRequest):
                 kwargs={},
                 task_id=task_id,
             )
+            security_service.record_audit(
+                actor_email=actor["email"],
+                actor_role=actor["role"],
+                workspace_id=actor.get("workspace_id", "ws-default"),
+                action="simulation.submit",
+                resource=f"job:{task_id}",
+                status="allowed",
+                detail={"physics_type": physics_type, "execution_mode": "celery"},
+                ip_address=client_ip,
+            )
             return JSONResponse(
                 status_code=status.HTTP_202_ACCEPTED,
                 content={"success": True, "task_id": task_id, "status": "QUEUED", "physics_type": physics_type},
@@ -453,12 +531,25 @@ async def run_simulation(request: SimulationRequest):
             )
     else:
         result = execute_simulation(payload)
+        security_service.record_audit(
+            actor_email=actor["email"],
+            actor_role=actor["role"],
+            workspace_id=actor.get("workspace_id", "ws-default"),
+            action="simulation.run_direct",
+            resource=f"physics:{physics_type}",
+            status="allowed" if result.get("status") != "error" else "failed",
+            detail={"physics_type": physics_type, "execution_mode": "direct"},
+            ip_address=client_ip,
+        )
         if result.get("status") == "error":
             return JSONResponse(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 content={"success": False, "code": "SIMULATION_FAILED", "error": result.get("error"), "result": result},
             )
         return {"success": True, "result": result}
+
+
+_compute_wall_clock_sec = compute_wall_clock_sec
 
 
 @app.get("/api/jobs/{task_id}")
@@ -469,7 +560,102 @@ async def get_job_status(task_id: str):
             status_code=status.HTTP_404_NOT_FOUND,
             detail={"success": False, "code": "JOB_NOT_FOUND", "error": f"Job {task_id} does not exist."},
         )
+    status_upper = str(job.get("status", "")).upper()
+    job_wall = _compute_wall_clock_sec(
+        job.get("created_at"),
+        job.get("completed_at") if status_upper not in {"QUEUED", "RUNNING"} else None,
+    )
+    if job_wall is not None:
+        job["wall_clock_sec"] = job_wall
+    if status_upper in {"QUEUED", "RUNNING"}:
+        try:
+            async_res = celery_app.AsyncResult(task_id)
+            meta = async_res.info if isinstance(async_res.info, dict) else {}
+            if meta:
+                if isinstance(meta.get("progress"), (int, float)):
+                    job["progress"] = max(int(job.get("progress") or 0), int(meta["progress"]))
+                if isinstance(meta.get("logs"), list) and meta["logs"]:
+                    job["logs"] = meta["logs"]
+                if isinstance(meta.get("live_residuals"), dict) and meta["live_residuals"]:
+                    job["live_residuals"] = meta["live_residuals"]
+                if isinstance(meta.get("current_iteration"), int):
+                    job["current_iteration"] = meta["current_iteration"]
+                if isinstance(meta.get("status_message"), str):
+                    job["status_message"] = meta["status_message"]
+                if isinstance(meta.get("telemetry"), dict) and meta["telemetry"]:
+                    tel = dict(meta["telemetry"])
+                    if job_wall is not None:
+                        tel["job_wall_clock_sec"] = job_wall
+                    job["telemetry"] = tel
+        except Exception:
+            pass
     return job
+
+
+@app.get("/api/telemetry/live")
+def get_live_hpc_telemetry():
+    """Return real OS/Docker CPU load, memory usage, and active job wall-clock time (Zero-Mock)."""
+    cluster = _inspect_celery_cluster()
+    workers_online = int(cluster.get("workers_online", 0)) if isinstance(cluster, dict) else 0
+    telemetry: Optional[Dict[str, Any]] = None
+    source = "api_container"
+
+    # Prefer live worker telemetry from active running job metadata first (zero extra queue roundtrip)
+    active_job_info: Optional[Dict[str, Any]] = None
+    try:
+        recent = job_repository.list()[:5]
+        for j in recent:
+            st = str(j.get("status", "")).upper()
+            if st in {"RUNNING", "QUEUED"}:
+                tid = j.get("task_id")
+                wall_sec = _compute_wall_clock_sec(j.get("created_at"), None)
+                active_job_info = {
+                    "task_id": tid,
+                    "status": st,
+                    "progress": j.get("progress", 0),
+                    "created_at": j.get("created_at"),
+                    "wall_clock_sec": wall_sec,
+                    "physics_type": (j.get("input") or {}).get("physics_type") or (j.get("input") or {}).get("simulation_type"),
+                }
+                if tid:
+                    try:
+                        meta = celery_app.AsyncResult(tid).info
+                        if isinstance(meta, dict):
+                            if isinstance(meta.get("current_iteration"), int):
+                                active_job_info["current_iteration"] = meta["current_iteration"]
+                            if isinstance(meta.get("status_message"), str):
+                                active_job_info["status_message"] = meta["status_message"]
+                            if isinstance(meta.get("telemetry"), dict) and meta["telemetry"]:
+                                telemetry = dict(meta["telemetry"])
+                                source = "docker_worker_job"
+                    except Exception:
+                        pass
+                break
+    except Exception:
+        pass
+
+    if telemetry is None and workers_online > 0:
+        try:
+            task = celery_app.send_task("universal_dispatcher.sample_telemetry")
+            sampled = task.get(timeout=2.5)
+            if isinstance(sampled, dict):
+                telemetry = sampled
+                source = "docker_worker"
+        except Exception:
+            telemetry = None
+
+    if telemetry is None:
+        telemetry = sample_node_telemetry()
+        source = "api_container"
+
+    return {
+        "success": True,
+        "source": source,
+        "workers_online": workers_online,
+        "total_cluster_cores": cluster.get("total_cluster_cores") if isinstance(cluster, dict) else telemetry.get("cpu_cores"),
+        "telemetry": telemetry,
+        "active_job": active_job_info,
+    }
 
 
 @app.post("/api/jobs/{task_id}/cancel")
@@ -707,6 +893,300 @@ def mesh_independence_study(request: MeshStudyRequest):
     except MeshStudyError as exc:
         return _study_error(exc.code, str(exc))
     return {"success": True, "study": study}
+
+
+# ---------------------------------------------------------
+# 5. Automated International V&V Regression Suite (Phase 2)
+# ---------------------------------------------------------
+class VVRunRequest(BaseModel):
+    benchmark_id: str = Field(default="all")
+    execution_mode: ExecutionMode = Field(default=ExecutionMode.CELERY)
+
+
+@app.get("/api/vv/benchmarks")
+def get_vv_benchmarks():
+    """Return the 6 canonical ASME/NAFEMS/NASA TMR benchmarks with live solver binary availability."""
+    cluster = _inspect_celery_cluster()
+    solvers = cluster.get("solvers") if isinstance(cluster, dict) else probe_worker_capabilities()
+    return {
+        "success": True,
+        "cluster_status": cluster.get("status") if isinstance(cluster, dict) else "UNKNOWN",
+        "workers_online": cluster.get("workers_online", 0) if isinstance(cluster, dict) else 0,
+        "benchmarks": list_vv_benchmarks(solvers),
+    }
+
+
+@app.post("/api/vv/run")
+def run_vv_benchmarks_endpoint(request: VVRunRequest, http_request: Request):
+    """Execute one or all 6 international V&V benchmarks strictly on real solvers (Zero-Mock)."""
+    actor = security_service.resolve_actor(
+        http_request.headers.get("authorization"),
+        require_role="engineer",
+    )
+    client_ip = http_request.client.host if http_request.client else "local"
+    bid = (request.benchmark_id or "all").strip()
+    if bid.lower() == "all":
+        selected = None
+    elif bid in VV_BENCHMARK_BY_ID:
+        selected = [bid]
+    else:
+        return JSONResponse(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            content={
+                "success": False,
+                "code": "INVALID_BENCHMARK_ID",
+                "error": f"Unknown benchmark_id '{bid}'. Valid IDs: {', '.join(VV_BENCHMARK_BY_ID.keys())} or 'all'.",
+            },
+        )
+
+    cluster = _inspect_celery_cluster()
+    cluster_solvers = cluster.get("solvers") if isinstance(cluster, dict) else probe_worker_capabilities()
+    workers_online = int(cluster.get("workers_online", 0)) if isinstance(cluster, dict) else 0
+    local_caps = probe_worker_capabilities()
+    has_local_solvers = any(
+        bool(local_caps.get(k, {}).get("available"))
+        for k in ("openfoam", "calculix", "elmer")
+    )
+
+    def _dispatch_vv_solver(level_payload: Dict[str, Any]) -> Dict[str, Any]:
+        if request.execution_mode == ExecutionMode.CELERY and workers_online > 0:
+            task = celery_app.send_task(
+                "universal_dispatcher.run_simulation",
+                args=[{**level_payload, "execution_mode": "celery"}],
+            )
+            res = task.get(timeout=240.0)
+            return res if isinstance(res, dict) else {"status": "ERROR", "error": "Invalid worker response"}
+        if has_local_solvers:
+            return execute_simulation({**level_payload, "execution_mode": "direct"})
+        return {
+            "status": "ERROR",
+            "error": "No online Celery solver worker and no local solver binaries found on API container.",
+        }
+
+    report = run_vv_suite(
+        selected,
+        executor=_dispatch_vv_solver,
+        capabilities=cluster_solvers,
+    )
+    security_service.record_audit(
+        actor_email=actor["email"],
+        actor_role=actor["role"],
+        workspace_id=actor.get("workspace_id", "ws-default"),
+        action="vv.run_suite",
+        resource=f"benchmark:{bid}",
+        status="allowed",
+        detail={"overall_status": report.get("overall_status"), "passed": report.get("summary", {}).get("passed")},
+        ip_address=client_ip,
+    )
+    return {
+        "success": True,
+        "report": report,
+        "certificate_markdown": generate_vv_certificate_markdown(report),
+    }
+
+
+# ---------------------------------------------------------
+# 6. Enterprise Multi-Tenant Auth, RBAC, S3 Storage & Cloud Packs (Phase 4)
+# ---------------------------------------------------------
+class AdminBootstrapRequest(BaseModel):
+    email: str = Field(..., min_length=5, max_length=255)
+    full_name: str = Field(..., min_length=2, max_length=128)
+    password: str = Field(..., min_length=10, max_length=128)
+    workspace_name: str = Field(default="NASEER Engineering Organization", max_length=128)
+    admin_passcode: Optional[str] = Field(default=None, max_length=128)
+
+
+class LoginRequest(BaseModel):
+    email: str = Field(..., min_length=3, max_length=255)
+    password: str = Field(..., min_length=1, max_length=128)
+
+
+class CreateUserRequest(BaseModel):
+    email: str = Field(..., min_length=5, max_length=255)
+    full_name: str = Field(..., min_length=2, max_length=128)
+    password: str = Field(..., min_length=10, max_length=128)
+    role: str = Field(default="engineer")
+
+
+class UpdateRoleRequest(BaseModel):
+    role: str = Field(..., min_length=3, max_length=32)
+
+
+ENTERPRISE_DEPLOY_PACKS: Dict[str, tuple[str, str, str]] = {
+    "k8s": ("deploy/k8s/naseer-cae-stack.yaml", "naseer-cae-k8s-stack.yaml", "text/yaml; charset=utf-8"),
+    "slurm": ("deploy/slurm/submit_naseer_job.sbatch", "submit_naseer_job.sbatch", "text/x-shellscript; charset=utf-8"),
+    "compose-enterprise": ("docker-compose.enterprise.yml", "docker-compose.enterprise.yml", "text/yaml; charset=utf-8"),
+    "cicd": (".github/workflows/ci-cd.yml", "naseer-ci-cd.yml", "text/yaml; charset=utf-8"),
+}
+
+
+@app.get("/api/enterprise/status")
+def get_enterprise_status(http_request: Request):
+    sec = security_service.status_summary()
+    storage = object_storage.status()
+    actor = None
+    auth_header = http_request.headers.get("authorization")
+    if auth_header and auth_header.lower().startswith("bearer "):
+        try:
+            actor = security_service.verify_access_token(auth_header[7:].strip())
+        except SecurityError:
+            actor = None
+    return {
+        "success": True,
+        "security": sec,
+        "storage": storage,
+        "current_actor": actor,
+        "deploy_packs": list(ENTERPRISE_DEPLOY_PACKS.keys()),
+    }
+
+
+@app.post("/api/enterprise/auth/bootstrap")
+def bootstrap_enterprise_admin(body: AdminBootstrapRequest, http_request: Request):
+    client_ip = http_request.client.host if http_request.client else "local"
+    user, token = security_service.bootstrap_admin(
+        email=body.email,
+        full_name=body.full_name,
+        password=body.password,
+        workspace_name=body.workspace_name,
+        admin_passcode=body.admin_passcode,
+        ip_address=client_ip,
+    )
+    return {"success": True, "user": user, "access_token": token, "token_type": "bearer"}
+
+
+@app.post("/api/enterprise/auth/login")
+def login_enterprise_user(body: LoginRequest, http_request: Request):
+    client_ip = http_request.client.host if http_request.client else "local"
+    user, token = security_service.authenticate(body.email, body.password, ip_address=client_ip)
+    return {"success": True, "user": user, "access_token": token, "token_type": "bearer"}
+
+
+@app.get("/api/enterprise/auth/me")
+def get_enterprise_me(http_request: Request):
+    actor = security_service.resolve_actor(http_request.headers.get("authorization"))
+    return {"success": True, "actor": actor, "auth_mode": security_service.auth_mode()}
+
+
+@app.get("/api/enterprise/users")
+def list_enterprise_users(http_request: Request):
+    security_service.resolve_actor(http_request.headers.get("authorization"), require_role="admin")
+    return {"success": True, "users": security_service.list_users()}
+
+
+@app.post("/api/enterprise/users")
+def create_enterprise_user(body: CreateUserRequest, http_request: Request):
+    actor = security_service.resolve_actor(http_request.headers.get("authorization"), require_role="admin")
+    client_ip = http_request.client.host if http_request.client else "local"
+    user = security_service.create_user(
+        email=body.email,
+        full_name=body.full_name,
+        password=body.password,
+        role=body.role,
+        actor=actor,
+        ip_address=client_ip,
+    )
+    return JSONResponse(status_code=status.HTTP_201_CREATED, content={"success": True, "user": user})
+
+
+@app.patch("/api/enterprise/users/{user_id}/role")
+def update_enterprise_user_role(user_id: str, body: UpdateRoleRequest, http_request: Request):
+    actor = security_service.resolve_actor(http_request.headers.get("authorization"), require_role="admin")
+    client_ip = http_request.client.host if http_request.client else "local"
+    user = security_service.update_user_role(
+        user_id=user_id,
+        new_role=body.role,
+        actor=actor,
+        ip_address=client_ip,
+    )
+    return {"success": True, "user": user}
+
+
+@app.get("/api/enterprise/audit-logs")
+def get_enterprise_audit_logs(http_request: Request, limit: int = 100):
+    security_service.resolve_actor(http_request.headers.get("authorization"), require_role="viewer")
+    return {"success": True, "logs": security_service.list_audit_logs(limit=limit)}
+
+
+@app.get("/api/enterprise/storage/status")
+def get_enterprise_storage_status(http_request: Request):
+    security_service.resolve_actor(http_request.headers.get("authorization"), require_role="viewer")
+    return {
+        "success": True,
+        "storage": object_storage.status(),
+        "archives": object_storage.list_archives(limit=50),
+    }
+
+
+@app.post("/api/enterprise/storage/archive/{task_id}")
+def archive_job_to_object_storage(task_id: str, http_request: Request):
+    actor = security_service.resolve_actor(http_request.headers.get("authorization"), require_role="engineer")
+    client_ip = http_request.client.host if http_request.client else "local"
+    job = job_repository.get(task_id)
+    if not job:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"success": False, "code": "JOB_NOT_FOUND", "error": f"Job {task_id} does not exist."},
+        )
+    result = job.get("result") or {}
+    case_dir = (
+        result.get("case_dir")
+        or (result.get("data") or {}).get("case_dir")
+        or (result.get("provenance") or {}).get("case_dir")
+    )
+    if not case_dir:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"success": False, "code": "CASE_DIR_MISSING", "error": "No solver case directory recorded for this job."},
+        )
+    allowed_roots = [
+        Path(os.getenv("CAE_WORK_DIR", "/tmp/naseer_cae_jobs")),
+        Path(os.getenv("NASEER_JOB_DIR", "/app/jobs")),
+        Path("/shared_jobs"),
+        Path("/tmp"),
+    ]
+    archive_info = object_storage.archive_case_directory(
+        task_id=task_id,
+        case_dir=str(case_dir),
+        allowed_roots=allowed_roots,
+    )
+    security_service.record_audit(
+        actor_email=actor["email"],
+        actor_role=actor["role"],
+        workspace_id=actor.get("workspace_id", "ws-default"),
+        action="storage.archive_case",
+        resource=f"job:{task_id}",
+        status="allowed",
+        detail={"backend": archive_info["backend"], "uri": archive_info["uri"], "sha256": archive_info["sha256"]},
+        ip_address=client_ip,
+    )
+    return {"success": True, "archive": archive_info}
+
+
+@app.get("/api/enterprise/deploy/{pack_name}")
+def download_enterprise_deploy_pack(pack_name: str):
+    entry = ENTERPRISE_DEPLOY_PACKS.get((pack_name or "").strip().lower())
+    if not entry:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={
+                "success": False,
+                "code": "UNKNOWN_DEPLOY_PACK",
+                "error": f"Unknown deployment pack '{pack_name}'. Valid options: {', '.join(ENTERPRISE_DEPLOY_PACKS.keys())}.",
+            },
+        )
+    rel_path, download_name, media_type = entry
+    base_dir = Path(__file__).resolve().parent
+    target_path = (base_dir / rel_path).resolve()
+    if not target_path.is_relative_to(base_dir) or not target_path.is_file():
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"success": False, "code": "DEPLOY_PACK_NOT_FOUND", "error": f"Pack file '{rel_path}' is missing."},
+        )
+    return Response(
+        content=target_path.read_bytes(),
+        media_type=media_type,
+        headers={"Content-Disposition": f'attachment; filename="{download_name}"'},
+    )
 
 
 if __name__ == "__main__":

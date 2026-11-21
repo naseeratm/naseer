@@ -26,6 +26,7 @@ import {
   Play,
   Pause,
   RotateCcw,
+  LineChart,
 } from 'lucide-react';
 import { VtkFieldPayload } from '../types/thesis';
 import { ColormapType, getColorFromColormap } from '../utils/physicsEngine';
@@ -209,6 +210,9 @@ export const Interactive3DViewport: React.FC<Interactive3DViewportProps> = ({
   const [isoMaxPct, setIsoMaxPct] = useState<number>(100);
   const [showPostControls, setShowPostControls] = useState<boolean>(false);
   const [showIntegralsHud, setShowIntegralsHud] = useState<boolean>(false);
+  const [showLinePlot, setShowLinePlot] = useState<boolean>(false);
+  const [linePlotAxis, setLinePlotAxis] = useState<'x' | 'y' | 'z'>('x');
+  const [linePlotSlicePct, setLinePlotSlicePct] = useState<number>(50);
   const [frameIndex, setFrameIndex] = useState<number>(0);
   const [isPlaying, setIsPlaying] = useState<boolean>(false);
 
@@ -316,6 +320,61 @@ export const Interactive3DViewport: React.FC<Interactive3DViewportProps> = ({
       unit,
     };
   }, [effectiveVtkData, selectedScalarKey, availableScalars, fieldMin, fieldMax, fieldUnit]);
+
+  // Real 3D Plot Over Line sampler directly on solved VTK nodal coordinates & scalars (zero fabrication)
+  const lineProfileData = useMemo(() => {
+    if (!showLinePlot || !effectiveVtkData?.points || !scalarRange.key) return [];
+    const pts = effectiveVtkData.points;
+    const scalars = effectiveVtkData.scalars?.[scalarRange.key];
+    if (!Array.isArray(scalars) || scalars.length === 0 || pts.length < 6) return [];
+
+    const nNodes = Math.min(Math.floor(pts.length / 3), scalars.length);
+    const axisIdx = linePlotAxis === 'x' ? 0 : linePlotAxis === 'y' ? 1 : 2;
+    const perpIdx = linePlotAxis === 'x' ? 1 : 0;
+
+    let axMin = Infinity;
+    let axMax = -Infinity;
+    let pMin = Infinity;
+    let pMax = -Infinity;
+    for (let i = 0; i < nNodes; i++) {
+      const a = pts[i * 3 + axisIdx];
+      const p = pts[i * 3 + perpIdx];
+      if (a < axMin) axMin = a;
+      if (a > axMax) axMax = a;
+      if (p < pMin) pMin = p;
+      if (p > pMax) pMax = p;
+    }
+    const axSpan = axMax - axMin;
+    if (!Number.isFinite(axSpan) || axSpan <= 1e-12) return [];
+    const pSpan = pMax - pMin;
+    const targetP = pMin + (linePlotSlicePct / 100) * pSpan;
+    const pTol = Math.max(pSpan * 0.14, 1e-6);
+
+    const bins = 36;
+    const sums = new Float64Array(bins);
+    const counts = new Uint32Array(bins);
+    for (let i = 0; i < nNodes; i++) {
+      const val = scalars[i];
+      if (!Number.isFinite(val)) continue;
+      const p = pts[i * 3 + perpIdx];
+      if (pSpan > 1e-9 && Math.abs(p - targetP) > pTol) continue;
+      const a = pts[i * 3 + axisIdx];
+      const b = Math.min(bins - 1, Math.max(0, Math.floor(((a - axMin) / axSpan) * bins)));
+      sums[b] += val;
+      counts[b] += 1;
+    }
+
+    const sampled: { coord: number; value: number }[] = [];
+    for (let b = 0; b < bins; b++) {
+      if (counts[b] > 0) {
+        sampled.push({
+          coord: axMin + ((b + 0.5) / bins) * axSpan,
+          value: sums[b] / counts[b],
+        });
+      }
+    }
+    return sampled;
+  }, [showLinePlot, effectiveVtkData, scalarRange.key, linePlotAxis, linePlotSlicePct]);
 
   const activeToolRef = useRef<ActiveToolType>(activeTool);
   activeToolRef.current = activeTool;
@@ -1387,6 +1446,19 @@ export const Interactive3DViewport: React.FC<Interactive3DViewportProps> = ({
           </button>
         )}
 
+        {availableScalars.length > 0 && (
+          <button
+            title="Plot Over Line (Sample real solved VTK nodal profile along X / Y / Z)"
+            onClick={() => setShowLinePlot((v) => !v)}
+            className={`flex h-7 shrink-0 items-center gap-1 px-2 rounded-lg text-xs font-semibold transition-colors ${
+              showLinePlot ? 'bg-sky-500/25 text-sky-300 ring-1 ring-sky-500/60' : 'text-slate-300 hover:bg-slate-800'
+            }`}
+          >
+            <LineChart className="h-3.5 w-3.5" />
+            <span>Line Profile</span>
+          </button>
+        )}
+
         <button
           title="Toggle Mesh Wireframe"
           onClick={() => setShowWireframe(!showWireframe)}
@@ -1722,6 +1794,80 @@ export const Interactive3DViewport: React.FC<Interactive3DViewportProps> = ({
                   )}
                 </div>
               ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* 3D Plot Over Line (Real VTK Nodal XY Profile) */}
+      {showLinePlot && availableScalars.length > 0 && (
+        <div className="absolute bottom-8 left-4 z-20 w-[340px] rounded-xl border border-sky-500/40 bg-slate-950/95 p-3 shadow-2xl">
+          <div className="mb-2 flex items-center justify-between gap-2">
+            <div className="flex items-center gap-1.5 text-[11px] font-semibold text-sky-300">
+              <LineChart className="h-3.5 w-3.5" />
+              <span>Plot Over Line · {scalarRange.key}</span>
+            </div>
+            <div className="flex items-center gap-1">
+              {(['x', 'y', 'z'] as const).map((ax) => (
+                <button
+                  key={ax}
+                  type="button"
+                  onClick={() => setLinePlotAxis(ax)}
+                  className={`rounded px-1.5 py-0.5 font-mono text-[10px] uppercase ${
+                    linePlotAxis === ax ? 'bg-sky-500 text-slate-950 font-bold' : 'bg-slate-800 text-slate-400 hover:text-white'
+                  }`}
+                >
+                  {ax}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div className="mb-2 flex items-center gap-2 text-[10px] font-mono text-slate-400">
+            <span>Cross-Section:</span>
+            <input
+              type="range"
+              min={5}
+              max={95}
+              value={linePlotSlicePct}
+              onChange={(e) => setLinePlotSlicePct(Number(e.target.value))}
+              className="flex-1 accent-sky-400"
+            />
+            <span className="w-8 text-right text-sky-300">{linePlotSlicePct}%</span>
+          </div>
+
+          {lineProfileData.length >= 2 ? (() => {
+            const xs = lineProfileData.map((d) => d.coord);
+            const ys = lineProfileData.map((d) => d.value);
+            const minX = Math.min(...xs);
+            const maxX = Math.max(...xs);
+            const minY = Math.min(...ys);
+            const maxY = Math.max(...ys);
+            const spanX = maxX - minX || 1;
+            const spanY = maxY - minY || 1;
+            const poly = lineProfileData
+              .map((d) => `${((d.coord - minX) / spanX) * 100},${(1 - (d.value - minY) / spanY) * 100}`)
+              .join(' ');
+            return (
+              <div className="space-y-1">
+                <div className="relative h-28 w-full pl-12 pb-4">
+                  <span className="absolute left-0 top-0 font-mono text-[9px] text-slate-400">{maxY.toPrecision(4)}</span>
+                  <span className="absolute bottom-4 left-0 font-mono text-[9px] text-slate-400">{minY.toPrecision(4)}</span>
+                  <svg viewBox="0 0 100 100" preserveAspectRatio="none" className="h-full w-full border-b border-l border-slate-700 bg-slate-900/60">
+                    <line x1="0" x2="100" y1="50" y2="50" stroke="#334155" strokeWidth="0.4" vectorEffect="non-scaling-stroke" />
+                    <polyline points={poly} fill="none" stroke="#38bdf8" strokeWidth="1.8" vectorEffect="non-scaling-stroke" />
+                  </svg>
+                  <div className="mt-0.5 flex justify-between font-mono text-[9px] text-slate-500">
+                    <span>{linePlotAxis.toUpperCase()} = {minX.toPrecision(3)} m</span>
+                    <span>{scalarRange.unit || 'SI'} ({lineProfileData.length} pts)</span>
+                    <span>{maxX.toPrecision(3)} m</span>
+                  </div>
+                </div>
+              </div>
+            );
+          })() : (
+            <div className="py-6 text-center font-mono text-[10px] text-slate-500">
+              No nodal samples along {linePlotAxis.toUpperCase()} at {linePlotSlicePct}% — adjust axis or cross-section slider.
             </div>
           )}
         </div>

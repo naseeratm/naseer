@@ -385,7 +385,7 @@ export interface ThesisProject {
   university: string; // المنشأة الهندسية أو المنصة
   department: string;
   date: string;
-  field: 'CFD' | 'FEA' | 'Thermal' | 'Multiphysics' | 'FSI' | 'Supersonic' | 'PCM' | 'TopologyOptimization';
+  field: 'CFD' | 'FEA' | 'Thermal' | 'Electromagnetic' | 'Multiphysics' | 'FSI' | 'Supersonic' | 'PCM' | 'TopologyOptimization';
   softwareType: string; // e.g. ANSYS Fluent 2024 R2, ANSYS APDL, ANSYS Mechanical
   abstractAr: string;
   abstractEn: string;

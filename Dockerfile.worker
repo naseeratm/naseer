@@ -56,7 +56,7 @@ COPY docker-requirements.txt ./requirements.txt
 RUN pip install --upgrade pip setuptools wheel && \
     pip install -r requirements.txt
 
-COPY main.py physics_solver.py universal_dispatcher.py cae_repository.py ./
+COPY main.py physics_solver.py universal_dispatcher.py cae_repository.py vv_regression_suite.py enterprise_security.py object_storage.py ./
 COPY backend/ ./backend/
 COPY docker-entrypoint-worker.sh /usr/local/bin/docker-entrypoint-worker.sh
 RUN sed -i 's/\r$//' /usr/local/bin/docker-entrypoint-worker.sh && \

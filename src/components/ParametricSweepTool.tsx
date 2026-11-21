@@ -311,6 +311,27 @@ export const ParametricSweepTool: React.FC<ParametricSweepToolProps> = ({
       if (relEps !== undefined) basePayload.relative_permittivity = relEps;
       if (elecCond !== undefined) basePayload.electric_conductivity = elecCond;
       if (thermExp !== undefined) basePayload.thermal_expansion_coeff = thermExp;
+      if (simulationInputs?.nonlinear !== undefined) basePayload.nonlinear = Boolean(simulationInputs.nonlinear);
+      if (simulationInputs?.contactType) basePayload.contact_type = simulationInputs.contactType;
+      if (simulationInputs?.materialModel) basePayload.material_model = simulationInputs.materialModel;
+      const syMpa = numOrUndef(simulationInputs?.yieldStressMpa);
+      const etMpa = numOrUndef(simulationInputs?.tangentModulusMpa);
+      const c10Mpa = numOrUndef(simulationInputs?.hyperC10Mpa);
+      const d1Val = numOrUndef(simulationInputs?.hyperD1);
+      const muFric = numOrUndef(simulationInputs?.frictionCoeff);
+      const mrfRpm = numOrUndef(simulationInputs?.mrfOmegaRpm);
+      const mrfRad = numOrUndef(simulationInputs?.mrfRadius);
+      if (syMpa !== undefined && syMpa > 0) basePayload.yield_stress_pa = syMpa * 1e6;
+      if (etMpa !== undefined && etMpa > 0) basePayload.tangent_modulus_pa = etMpa * 1e6;
+      if (c10Mpa !== undefined && c10Mpa > 0) basePayload.hyper_c10_pa = c10Mpa * 1e6;
+      if (d1Val !== undefined && d1Val >= 0) basePayload.hyper_d1_inv_pa = d1Val;
+      if (muFric !== undefined && muFric >= 0) basePayload.friction_coeff = muFric;
+      if (simulationInputs?.mrfEnabled && mrfRpm !== undefined && mrfRpm !== 0) {
+        basePayload.mrf_enabled = true;
+        basePayload.mrf_omega_rad_s = mrfRpm * ((2 * Math.PI) / 60);
+        basePayload.mrf_axis = simulationInputs.mrfAxis || 'z';
+        if (mrfRad !== undefined && mrfRad > 0) basePayload.mrf_radius = mrfRad;
+      }
 
       if (uploadedCadStl) {
         basePayload.cad_file_b64 = uploadedCadStl.base64;

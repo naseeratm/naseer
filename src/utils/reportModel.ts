@@ -2,11 +2,11 @@ import { MeshStudyResult, ProfileSpec, ReferenceDataSet, SimulationRunRecord, Th
 import { normalizeSolverResponse } from './normalizedSolverResults';
 import { formatNumber } from './numberFormat';
 import { meshStudyVerdict } from './meshStudyVerdict';
-import { Comparison, SampledProfile, evaluateValidation } from './validationMetrics';
+import { Comparison, SampledProfile, evaluateValidation, vtkToFieldGrids } from './validationMetrics';
 
 export const PLATFORM_NAME = 'NASEER Universal CAE Studio';
-export const AI_ASSISTANT_NAME = 'OmniSolve AI';
-export const AI_ASSISTANT_LABEL = 'OmniSolve AI (Copilot)';
+export const AI_ASSISTANT_NAME = 'NASEER CAE Solver Engine';
+export const AI_ASSISTANT_LABEL = 'NASEER Deterministic CAE Workbench';
 
 export interface ReportRow {
   label: string;
@@ -469,7 +469,8 @@ export function buildRealReport(project: ThesisProject): RealReport {
     ...(isStructural ? [row('Displacement', source.displacement, 'm'), row('Pressure', source.pressure, 'Pa')] : []),
   ]);
 
-  // --- Matrices --------------------------------------------------------------------------------
+  // --- Matrices (2D native grids + 3D VTK mid-plane projections for OpenFOAM/CalculiX/Elmer) ---
+  const normalized = normalizeSolverResponse(result, project);
   const matrixSources: Dict[] = [nested, ...(isDict(nested.contours) ? [nested.contours as Dict] : []), ...(isDict(nested.fields) ? [nested.fields as Dict] : [])];
   const seen = new Set<string>();
   const matrices: ReportMatrix[] = [];
@@ -482,6 +483,7 @@ export function buildRealReport(project: ThesisProject): RealReport {
       if (!data) return;
       seen.add(key);
       const finiteValues = data.flat().filter(Number.isFinite);
+      if (finiteValues.length === 0) return;
       const total = data.length * data[0].length;
       matrices.push({
         key,
@@ -499,6 +501,32 @@ export function buildRealReport(project: ThesisProject): RealReport {
       });
     });
   });
+
+  const vtkPayload = normalized.vtkData ?? project.normalizedSolverResult?.vtkData;
+  if (vtkPayload) {
+    const vtkGrids = vtkToFieldGrids(vtkPayload);
+    for (const grid of vtkGrids) {
+      if (seen.has(grid.key)) continue;
+      const finiteValues = grid.data.flat().filter(Number.isFinite);
+      if (finiteValues.length === 0) continue;
+      seen.add(grid.key);
+      const total = grid.rows * grid.cols;
+      matrices.push({
+        key: grid.key,
+        label: grid.label,
+        unit: prettyUnit(grid.unit),
+        rows: grid.rows,
+        cols: grid.cols,
+        min: Math.min(...finiteValues),
+        max: Math.max(...finiteValues),
+        mean: finiteValues.reduce((sum, v) => sum + v, 0) / finiteValues.length,
+        nonFiniteCount: total - finiteValues.length,
+        data: grid.data,
+        widthM: grid.widthM ?? widthM,
+        heightM: grid.heightM ?? heightM,
+      });
+    }
+  }
   const temperature = matrices.find((matrix) => matrix.key === 'temperature_matrix');
 
   // --- Scalar results -------------------------------------------------------------------------
@@ -601,7 +629,6 @@ export function buildRealReport(project: ThesisProject): RealReport {
 
   // --- Convergence -----------------------------------------------------------------------------
   const conv = isDict(nested.convergence) ? nested.convergence : isDict(result.convergence) ? result.convergence : undefined;
-  const normalized = normalizeSolverResponse(result, project);
   const series: ReportSeries[] = (normalized.residualSeries ?? [])
     .map((item) => ({ name: item.name, points: item.points.filter((p) => Number.isFinite(p.iteration) && Number.isFinite(p.value) && p.value > 0) }))
     .filter((item) => item.points.length >= 2);
