@@ -1069,11 +1069,25 @@ def _probe_binary_version(binary: str, args: Sequence[str] = ("--version",)) -> 
     version_text = None
     try:
         proc = subprocess.run([resolved, *args], text=True, capture_output=True, timeout=3, check=False)
-        raw = (proc.stdout or proc.stderr or "").strip().splitlines()
+        combined = f"{proc.stdout or ''}\n{proc.stderr or ''}"
+        lower_combined = combined.lower()
+        raw = [ln.strip() for ln in combined.splitlines() if ln.strip()]
         if raw:
-            version_text = raw[0][:120]
-    except Exception:
-        version_text = None
+            version_text = raw[0][:140]
+        if (
+            proc.returncode == 127
+            or "error while loading shared libraries" in lower_combined
+            or "cannot open shared object file" in lower_combined
+            or "symbol lookup error" in lower_combined
+        ):
+            return {
+                "available": False,
+                "path": resolved,
+                "version": None,
+                "error": version_text or "Binary failed to load required shared libraries",
+            }
+    except Exception as exc:
+        return {"available": False, "path": resolved, "version": None, "error": str(exc)[:140]}
     return {"available": True, "path": resolved, "version": version_text}
 
 

@@ -30,6 +30,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libxft2 \
     libfontconfig1 \
     libgomp1 \
+    libgfortran5 \
+    libopenblas0 \
+    liblapack3 \
+    libblas3 \
     libqt5xml5 \
     openmpi-bin \
     libopenmpi-dev \

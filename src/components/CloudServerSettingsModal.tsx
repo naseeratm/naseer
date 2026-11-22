@@ -224,15 +224,14 @@ export function CloudServerSettingsModal({
   };
 
   const copyClusterScalingBash = () => {
-    const text = `# 1. التشغيل المتوازي متعدد العمال (Multi-Worker HPC Cluster: ${workerReplicas} Workers x ${formData.parallelCores} MPI Cores):
-NASEER_MPI_CORES_PER_WORKER=${formData.parallelCores} docker compose -f docker-compose.cluster.yml up -d --build --scale worker=${workerReplicas}
+    const text = `# Windows PowerShell (${workerReplicas} Workers x ${formData.parallelCores} MPI Cores = ${workerReplicas * formData.parallelCores} Total Cores):
+$env:NASEER_MPI_CORES_PER_WORKER="${formData.parallelCores}"; docker compose -f docker-compose.cluster.yml up -d --scale worker=${workerReplicas}
 
-# 2. أو التشغيل الآلي بضغطة واحدة على خادم سحابي Ubuntu HPC أو محطة عمل Linux:
-chmod +x deploy-hpc-cluster.sh
-./deploy-hpc-cluster.sh ${workerReplicas} ${formData.parallelCores}
+# Linux / macOS Bash:
+NASEER_MPI_CORES_PER_WORKER=${formData.parallelCores} docker compose -f docker-compose.cluster.yml up -d --scale worker=${workerReplicas}
 
-# 3. فحص حالة العنقود والأنوية النشطة:
-curl -s http://127.0.0.1:8000/api/cluster/status | python3 -m json.tool`;
+# Verify Live Cluster Status:
+curl http://127.0.0.1:8000/api/cluster/status`;
     navigator.clipboard.writeText(text);
     setCopiedBash(true);
     setTimeout(() => setCopiedBash(false), 2500);
@@ -534,6 +533,9 @@ curl -s http://127.0.0.1:8000/api/cluster/status | python3 -m json.tool`;
                 </select>
               </div>
             </div>
+            <div className="rounded-lg border border-amber-500/25 bg-amber-500/5 px-3 py-2 text-[11px] leading-relaxed text-amber-200/90">
+              <strong className="text-amber-300">ملاحظة Zero-Mock:</strong> الشريط العلوي (Workers · Cores) يعرض فقط حاويات Docker الفعلية الشغّالة الآن عبر Celery. تغيير عدد العمال هنا يُحدّث أمر التوسيع أدناه ولا يغيّر الرقم وهمياً حتى تنفّذ الأمر في Terminal / PowerShell.
+            </div>
           </div>
 
           {/* Section 2: Ready-to-Run Multi-Worker Compose & Automated Ubuntu Cloud Script */}
@@ -573,14 +575,14 @@ curl -s http://127.0.0.1:8000/api/cluster/status | python3 -m json.tool`;
               </div>
             </div>
             <pre className="p-3 rounded-lg bg-slate-950 border border-slate-800 text-[11px] font-mono text-emerald-400 overflow-x-auto text-left dir-ltr">
-              {`# Option A — Scale ${workerReplicas} Parallel Workers x ${formData.parallelCores} MPI Cores (${workerReplicas * formData.parallelCores} Total Cores):
-NASEER_MPI_CORES_PER_WORKER=${formData.parallelCores} docker compose -f docker-compose.cluster.yml up -d --build --scale worker=${workerReplicas}
+              {`# Windows PowerShell (${workerReplicas} Parallel Workers x ${formData.parallelCores} MPI Cores = ${workerReplicas * formData.parallelCores} Total Cores):
+$env:NASEER_MPI_CORES_PER_WORKER="${formData.parallelCores}"; docker compose -f docker-compose.cluster.yml up -d --scale worker=${workerReplicas}
 
-# Option B — Automated One-Command Ubuntu Cloud HPC Setup:
-chmod +x deploy-hpc-cluster.sh && ./deploy-hpc-cluster.sh ${workerReplicas} ${formData.parallelCores}
+# Linux / macOS Bash:
+NASEER_MPI_CORES_PER_WORKER=${formData.parallelCores} docker compose -f docker-compose.cluster.yml up -d --scale worker=${workerReplicas}
 
 # Verify Live Cluster Status:
-curl -s http://127.0.0.1:8000/api/cluster/status | python3 -m json.tool`}
+curl http://127.0.0.1:8000/api/cluster/status`}
             </pre>
           </div>
 
