@@ -220,7 +220,10 @@ curl http://127.0.0.1:8000/api/cluster/status
   - سكربت السوبر كمبيوتر (`deploy/slurm/submit_naseer_job.sbatch`) لتشغيل `OpenFOAM MPI` و`CalculiX OpenMP` و`ElmerFEM` على عناقيد الجامعات ومراكز الحوسبة.
   - خط أنابيب التكامل المستمر (`/.github/workflows/ci-cd.yml`) لتشغيل جميع اختبارات البايثون وفحص TypeScript وبناء Vite والتحقق من بناء `Dockerfile.api`.
 - **لوحة الإدارة المؤسسية (`EnterpriseAdminModal.tsx`) وحزمة الاختبارات (`test_phase4_enterprise.py`):**
-  - واجهة حقيقية متاحة من قائمة `Infrastructure -> Enterprise Security, S3 & K8s` بـ 4 تبويبات (`Identity & RBAC`، `S3 / MinIO Storage`، `K8s, Slurm & CI/CD`، `Audit Trail`) وتمرير `/api/enterprise` في `server.ts` وتحديث `Dockerfile.api` و`Dockerfile.worker` و`.env.example`.
+  - واجهة حقيقية متاحة من قائمة `Infrastructure -> Enterprise Security, S3 & K8s` بـ 4 تبويبات (`Identity & RBAC`، `S3 / MinIO Storage`، `K8s, Slurm & CI/CD`، `Audit Trail`) وتمرير `/api/enterprise` في `server.ts` وتحديث `Dockerfile.api` و`Dockerfile.worker` و`.env.example` (مجموع **`31 / 31 OK`**).
+- **تحديثات التثبيت الميداني بعد البناء الأول (`Field Hardening`):**
+  - إضافة `libopenblas0` و`liblapack3` و`libblas3` و`libgfortran5` إلى `Dockerfile.worker` لعمل `ElmerSolver` دون أخطاء مكتبات مشتركة، وترقية `_probe_binary_version` لعدم إظهار `READY` إذا فشل تحميل أي مكتبة.
+  - تحديث `.github/workflows/ci-cd.yml` لـ `Node 22` والتوافق مع `bun.lock`، وإضافة أوامر `Windows PowerShell` الجاهزة في نافذة إدارة العنقود (`CloudServerSettingsModal.tsx`).
 
 ---
 
