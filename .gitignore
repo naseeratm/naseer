@@ -16,6 +16,6 @@ backend/.venv312/
 *venv*
 *.db
 *.sqlite*
-cae-workspace/
-data/
-
+/cae-workspace/
+/data/
+!src/data/
