@@ -30,10 +30,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libxft2 \
     libfontconfig1 \
     libgomp1 \
-    libgfortran5 \
-    libopenblas0 \
-    liblapack3 \
-    libblas3 \
     libqt5xml5 \
     openmpi-bin \
     libopenmpi-dev \
@@ -59,6 +55,16 @@ ENV PATH="/opt/venv/bin:$PATH"
 COPY docker-requirements.txt ./requirements.txt
 RUN pip install --upgrade pip setuptools wheel && \
     pip install -r requirements.txt
+
+# 4. OpenBLAS/LAPACK/Fortran shared libraries required by ElmerSolver (separate layer preserves OpenFOAM/Elmer/pip build cache)
+RUN apt-get -o Acquire::Retries=5 update && \
+    apt-get -o Acquire::Retries=5 install -y --no-install-recommends --fix-missing \
+        libgfortran5 \
+        libopenblas0 \
+        liblapack3 \
+        libblas3 \
+    && ldconfig \
+    && rm -rf /var/lib/apt/lists/*
 
 COPY main.py physics_solver.py universal_dispatcher.py cae_repository.py vv_regression_suite.py enterprise_security.py object_storage.py ./
 COPY backend/ ./backend/
