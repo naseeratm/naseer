@@ -23,6 +23,7 @@ import {
   Package,
 } from 'lucide-react';
 import { ThesisProject, IngestedFileItem } from '../types/thesis';
+import { withEnterpriseAuthHeaders } from '../utils/enterpriseAuth';
 import { SimulationInputs } from '../types/studio';
 import { generateLocalEngineeringProject } from '../utils/physicsEngine';
 import { parseEngineeringFilesOrArchive } from '../utils/fileParser';
@@ -217,6 +218,7 @@ export function ScriptUploaderModal({
 
       const uploadRes = await fetch('/api/upload-model', {
         method: 'POST',
+        headers: withEnterpriseAuthHeaders(),
         body: form,
       });
       const uploaded = await uploadRes.json();
@@ -334,7 +336,7 @@ export function ScriptUploaderModal({
       setProcessingStatus('جاري تشغيل المحاكاة الفعلية عبر Docker (:8000)...');
       const runRes = await fetch('/api/run-simulation', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: withEnterpriseAuthHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify(simPayload),
       });
       const runData = await runRes.json();
@@ -348,7 +350,9 @@ export function ScriptUploaderModal({
         const started = Date.now();
         while (Date.now() - started < 180_000) {
           await new Promise((r) => setTimeout(r, 1200));
-          const jobRes = await fetch(`/api/jobs/${encodeURIComponent(taskId)}`);
+          const jobRes = await fetch(`/api/jobs/${encodeURIComponent(taskId)}`, {
+            headers: withEnterpriseAuthHeaders(),
+          });
           if (!jobRes.ok) continue;
           const job = await jobRes.json();
           const st = String(job.status || '').toUpperCase();

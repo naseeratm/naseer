@@ -12,6 +12,7 @@ import {
 import { CaseStudyItem, ThesisProject } from '../types/thesis';
 import { SimulationInputs, SimulationType } from '../types/studio';
 import { BoundaryMarker } from './Interactive3DViewport';
+import { withEnterpriseAuthHeaders } from '../utils/enterpriseAuth';
 
 interface DesignPointItem {
   dpId: string;
@@ -354,7 +355,7 @@ export const ParametricSweepTool: React.FC<ParametricSweepToolProps> = ({
 
       const response = await fetch('/api/parametric-sweep', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: withEnterpriseAuthHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify(basePayload),
       });
 
@@ -395,7 +396,9 @@ export const ParametricSweepTool: React.FC<ParametricSweepToolProps> = ({
         await Promise.all(
           Array.from(pending).map(async (taskId) => {
             try {
-              const jobRes = await fetch(`/api/jobs/${encodeURIComponent(taskId)}`);
+              const jobRes = await fetch(`/api/jobs/${encodeURIComponent(taskId)}`, {
+                headers: withEnterpriseAuthHeaders(),
+              });
               if (!jobRes.ok) return;
               const job = await jobRes.json();
               const jobStatus = String(job.status || '').toUpperCase();

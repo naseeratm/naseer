@@ -84,8 +84,12 @@ services:
     ports:
       - "8000:8000"
     environment:
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/0
       - REDIS_URL=redis://redis:6379/0
       - CAE_WORK_DIR=/shared_jobs
+      - NASEER_JOB_DIR=/shared_jobs
+      - OPENFOAM_CASE_ROOT=/shared_jobs
       - CAE_DATABASE_URL=postgresql+psycopg://${POSTGRES_USER:-naseer}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-naseer_cae}
       - NASEER_AUTH_MODE=${NASEER_AUTH_MODE:-enforced}
       - NASEER_JWT_SECRET=${NASEER_JWT_SECRET:?Set NASEER_JWT_SECRET in .env}
@@ -113,8 +117,12 @@ services:
     container_name: naseer_cae_worker_ent
     restart: unless-stopped
     environment:
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/0
       - REDIS_URL=redis://redis:6379/0
       - CAE_WORK_DIR=/shared_jobs
+      - NASEER_JOB_DIR=/shared_jobs
+      - OPENFOAM_CASE_ROOT=/shared_jobs
       - CAE_DATABASE_URL=postgresql+psycopg://${POSTGRES_USER:-naseer}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-naseer_cae}
       - OMP_NUM_THREADS=${OMP_NUM_THREADS:-4}
       - OMPI_ALLOW_RUN_AS_ROOT=1

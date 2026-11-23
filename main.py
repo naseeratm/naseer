@@ -465,8 +465,9 @@ async def cluster_status():
 
 
 @app.post("/api/upload-model")
-async def upload_model(file: UploadFile = File(...), directives: str = Form(default="")):
+async def upload_model(http_request: Request, file: UploadFile = File(...), directives: str = Form(default="")):
     """Parse uploaded CAD/mesh/script (.stl, .step, .inp, .zip, .mac, .csv) and persist on shared workspace."""
+    security_service.resolve_actor(http_request.headers.get("authorization"), require_role="engineer")
     raw = await file.read()
     if not raw:
         raise HTTPException(status_code=400, detail="Uploaded file is empty")
@@ -553,7 +554,8 @@ _compute_wall_clock_sec = compute_wall_clock_sec
 
 
 @app.get("/api/jobs/{task_id}")
-async def get_job_status(task_id: str):
+async def get_job_status(task_id: str, http_request: Request):
+    security_service.resolve_actor(http_request.headers.get("authorization"), require_role="viewer")
     job = job_repository.get(task_id)
     if not job:
         raise HTTPException(
@@ -659,8 +661,10 @@ def get_live_hpc_telemetry():
 
 
 @app.post("/api/jobs/{task_id}/cancel")
-async def cancel_job(task_id: str):
+async def cancel_job(task_id: str, http_request: Request):
     """Revoke running/queued Celery task and mark CANCELLED in SQLite repository."""
+    actor = security_service.resolve_actor(http_request.headers.get("authorization"), require_role="engineer")
+    client_ip = http_request.client.host if http_request.client else "local"
     job = job_repository.get(task_id)
     if not job:
         raise HTTPException(status_code=404, detail={"success": False, "code": "JOB_NOT_FOUND", "error": f"Job {task_id} does not exist."})
@@ -674,12 +678,23 @@ async def cancel_job(task_id: str):
         progress=job.get("progress", 0),
         error="Cancelled by engineer",
     )
+    security_service.record_audit(
+        actor_email=actor["email"],
+        actor_role=actor["role"],
+        workspace_id=actor.get("workspace_id", "ws-default"),
+        action="simulation.cancel",
+        resource=f"job:{task_id}",
+        status="allowed",
+        detail={},
+        ip_address=client_ip,
+    )
     return {"success": True, "task_id": task_id, "status": "CANCELLED", "job": updated}
 
 
 @app.get("/api/jobs/{task_id}/export-case")
-async def export_job_case_archive(task_id: str):
+async def export_job_case_archive(task_id: str, http_request: Request):
     """Stream a ZIP archive of the real solver case directory (OpenFOAM/CalculiX/Elmer files, VTK, logs)."""
+    security_service.resolve_actor(http_request.headers.get("authorization"), require_role="viewer")
     job = job_repository.get(task_id)
     if not job:
         raise HTTPException(status_code=404, detail={"success": False, "code": "JOB_NOT_FOUND", "error": f"Job {task_id} not found."})
@@ -704,7 +719,9 @@ async def export_job_case_archive(task_id: str):
         for p in (
             os.getenv("NASEER_JOB_DIR", ""),
             os.getenv("OPENFOAM_CASE_ROOT", ""),
+            os.getenv("CAE_WORK_DIR", ""),
             "/app/jobs",
+            "/shared_jobs",
             str(Path.cwd() / "jobs"),
         )
         if p
@@ -741,7 +758,8 @@ async def export_job_case_archive(task_id: str):
 
 
 @app.get("/api/verify-job/{task_id}")
-async def verify_job_provenance(task_id: str):
+async def verify_job_provenance(task_id: str, http_request: Request):
+    security_service.resolve_actor(http_request.headers.get("authorization"), require_role="viewer")
     job = job_repository.get(task_id)
     if not job:
         raise HTTPException(status_code=404, detail={"success": False, "code": "JOB_NOT_FOUND", "error": f"Job {task_id} not found."})
@@ -760,8 +778,9 @@ async def verify_job_provenance(task_id: str):
 
 
 @app.post("/api/cad-preview")
-async def cad_preview_endpoint(request: CadPreviewRequest):
+async def cad_preview_endpoint(request: CadPreviewRequest, http_request: Request):
     """Tessellate uploaded .STL/.STEP/.IGES/.INP/.MSH CAD via real Gmsh/meshio on Docker worker or local."""
+    security_service.resolve_actor(http_request.headers.get("authorization"), require_role="engineer")
     payload = request.model_dump(mode="json")
     local_caps = probe_worker_capabilities()
     has_local_gmsh = bool(local_caps.get("gmsh", {}).get("available"))
@@ -780,8 +799,9 @@ async def cad_preview_endpoint(request: CadPreviewRequest):
 
 
 @app.post("/api/mesh-generate")
-async def generate_mesh_endpoint(request: MeshGenerateRequest):
+async def generate_mesh_endpoint(request: MeshGenerateRequest, http_request: Request):
     """Run real Gmsh 2D/3D meshing on parametric domain or uploaded CAD STL/STEP."""
+    security_service.resolve_actor(http_request.headers.get("authorization"), require_role="engineer")
     payload = request.model_dump(mode="json")
     if request.execution_mode == ExecutionMode.CELERY:
         task_id = str(uuid.uuid4())
@@ -800,12 +820,24 @@ async def generate_mesh_endpoint(request: MeshGenerateRequest):
 
 
 @app.post("/api/parametric-sweep")
-async def run_parametric_sweep(request: ParametricSweepRequest):
+async def run_parametric_sweep(request: ParametricSweepRequest, http_request: Request):
     """Dispatch each parametric sweep sample as a genuine Celery solver job."""
+    actor = security_service.resolve_actor(http_request.headers.get("authorization"), require_role="engineer")
+    client_ip = http_request.client.host if http_request.client else "local"
     base = request.to_solver_payload()
     param_name = base.pop("sweep_parameter", "velocity")
     values = base.pop("values", [])
     physics_type = classify_physics(base)
+    security_service.record_audit(
+        actor_email=actor["email"],
+        actor_role=actor["role"],
+        workspace_id=actor.get("workspace_id", "ws-default"),
+        action="simulation.parametric_sweep",
+        resource=f"physics:{physics_type}",
+        status="allowed",
+        detail={"parameter": param_name, "samples": len(values)},
+        ip_address=client_ip,
+    )
 
     runs: List[Dict[str, Any]] = []
     for val in values:
@@ -862,10 +894,22 @@ def mesh_study_key_results(simulation_type: str):
 
 
 @app.post("/api/mesh-study")
-def mesh_independence_study(request: MeshStudyRequest):
+def mesh_independence_study(request: MeshStudyRequest, http_request: Request):
+    actor = security_service.resolve_actor(http_request.headers.get("authorization"), require_role="engineer")
+    client_ip = http_request.client.host if http_request.client else "local"
     payload = request.to_solver_payload()
     key_result = payload.pop("key_result", None)
     physics_type = classify_physics(payload)
+    security_service.record_audit(
+        actor_email=actor["email"],
+        actor_role=actor["role"],
+        workspace_id=actor.get("workspace_id", "ws-default"),
+        action="simulation.mesh_study",
+        resource=f"physics:{physics_type}",
+        status="allowed",
+        detail={"key_result": key_result},
+        ip_address=client_ip,
+    )
 
     local_caps = probe_worker_capabilities()
     has_local_solvers = any(
@@ -1128,21 +1172,33 @@ def archive_job_to_object_storage(task_id: str, http_request: Request):
             detail={"success": False, "code": "JOB_NOT_FOUND", "error": f"Job {task_id} does not exist."},
         )
     result = job.get("result") or {}
+    nested = result.get("data") if isinstance(result.get("data"), dict) else {}
+    artifacts = result.get("artifacts") if isinstance(result.get("artifacts"), dict) else {}
+    provenance = result.get("provenance") if isinstance(result.get("provenance"), dict) else {}
     case_dir = (
-        result.get("case_dir")
-        or (result.get("data") or {}).get("case_dir")
-        or (result.get("provenance") or {}).get("case_dir")
+        result.get("case_directory")
+        or artifacts.get("case_directory")
+        or nested.get("case_directory")
+        or result.get("case_dir")
+        or nested.get("case_dir")
+        or provenance.get("case_dir")
     )
-    if not case_dir:
+    if not case_dir or not isinstance(case_dir, str):
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail={"success": False, "code": "CASE_DIR_MISSING", "error": "No solver case directory recorded for this job."},
         )
     allowed_roots = [
-        Path(os.getenv("CAE_WORK_DIR", "/tmp/naseer_cae_jobs")),
-        Path(os.getenv("NASEER_JOB_DIR", "/app/jobs")),
-        Path("/shared_jobs"),
-        Path("/tmp"),
+        Path(p).resolve()
+        for p in (
+            os.getenv("CAE_WORK_DIR", "/tmp/naseer_cae_jobs"),
+            os.getenv("NASEER_JOB_DIR", "/app/jobs"),
+            os.getenv("OPENFOAM_CASE_ROOT", ""),
+            "/shared_jobs",
+            "/app/jobs",
+            str(Path.cwd() / "jobs"),
+        )
+        if p
     ]
     archive_info = object_storage.archive_case_directory(
         task_id=task_id,

@@ -18,6 +18,7 @@ import {
 } from 'lucide-react';
 import { ThesisProject, VtkFieldPayload } from '../types/thesis';
 import { SimulationInputs } from '../types/studio';
+import { withEnterpriseAuthHeaders } from '../utils/enterpriseAuth';
 
 interface GmshHistogramBin {
   bin: string;
@@ -300,7 +301,7 @@ export const MeshGenerativeTool: React.FC<MeshGenerativeToolProps> = ({
 
       const res = await fetch('/api/mesh-generate', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: withEnterpriseAuthHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify(bodyPayload),
       });
       const payload = await res.json();
@@ -323,7 +324,9 @@ export const MeshGenerativeTool: React.FC<MeshGenerativeToolProps> = ({
       const started = Date.now();
       while (Date.now() - started < 120_000) {
         await new Promise((r) => setTimeout(r, 1000));
-        const jobRes = await fetch(`/api/jobs/${encodeURIComponent(taskId)}`);
+        const jobRes = await fetch(`/api/jobs/${encodeURIComponent(taskId)}`, {
+          headers: withEnterpriseAuthHeaders(),
+        });
         if (!jobRes.ok) continue;
         const job = await jobRes.json();
         const st = String(job.status || '').toUpperCase();

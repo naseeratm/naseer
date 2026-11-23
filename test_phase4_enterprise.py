@@ -200,6 +200,29 @@ class TestPhase4Enterprise(unittest.TestCase):
         self.assertIn("enterprise_security.py", worker_df)
         self.assertIn("object_storage.py", worker_df)
 
+    def test_security_hardening_rbac_manifests_and_in_memory_auth(self):
+        root = Path(__file__).resolve().parent
+
+        # 1. Manifests must expose unified Redis broker + shared job root vars
+        for manifest_rel in ("docker-compose.enterprise.yml", "deploy/k8s/naseer-cae-stack.yaml"):
+            text = (root / manifest_rel).read_text(encoding="utf-8")
+            self.assertIn("CELERY_BROKER_URL", text, f"Missing CELERY_BROKER_URL in {manifest_rel}")
+            self.assertIn("CELERY_RESULT_BACKEND", text, f"Missing CELERY_RESULT_BACKEND in {manifest_rel}")
+            self.assertIn("NASEER_JOB_DIR", text, f"Missing NASEER_JOB_DIR in {manifest_rel}")
+            self.assertIn("OPENFOAM_CASE_ROOT", text, f"Missing OPENFOAM_CASE_ROOT in {manifest_rel}")
+
+        # 2. main.py must enforce resolve_actor across protected simulation/job/CAD routes
+        main_src = (root / "main.py").read_text(encoding="utf-8")
+        self.assertGreaterEqual(main_src.count("security_service.resolve_actor("), 15)
+        self.assertIn('res.get("case_directory")', main_src)
+        self.assertNotIn('Path("/tmp")', main_src)
+
+        # 3. Frontend auth modules must stay strictly in-memory (zero web storage API calls)
+        for rel_ts in ("src/utils/enterpriseAuth.ts", "src/components/EnterpriseAdminModal.tsx"):
+            ts_src = (root / rel_ts).read_text(encoding="utf-8")
+            self.assertNotIn("localStorage.", ts_src)
+            self.assertNotIn("sessionStorage.", ts_src)
+
 
 if __name__ == "__main__":
     unittest.main()

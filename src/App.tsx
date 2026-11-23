@@ -55,6 +55,7 @@ import {
   getMissingSimulationInputs,
 } from './types/studio';
 import { exportToWordDocument, exportToCSV, exportToLatex, exportToJournalHTML, hasRealSimulationRun } from './utils/exporter';
+import { setEnterpriseAuthToken as syncEnterpriseAuthToken, withEnterpriseAuthHeaders } from './utils/enterpriseAuth';
 import { CleanWorkspaceHome } from './components/CleanWorkspaceHome';
 import { OverviewTab } from './components/OverviewTab';
 import { MeshStudyTab } from './components/MeshStudyTab';
@@ -224,10 +225,7 @@ export default function App() {
 
   const submitResponse = await fetch('/api/run-simulation', {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      ...(enterpriseAuthToken ? { Authorization: `Bearer ${enterpriseAuthToken}` } : {}),
-    },
+    headers: withEnterpriseAuthHeaders({ 'Content-Type': 'application/json' }),
     body: JSON.stringify(requestBody),
   });
   const submitPayload = await readJson(submitResponse);
@@ -257,7 +255,9 @@ export default function App() {
       setJobWallClockSec(0);
 
       for (;;) {
-        const statusResponse = await fetch(`/api/jobs/${encodeURIComponent(taskId)}`);
+        const statusResponse = await fetch(`/api/jobs/${encodeURIComponent(taskId)}`, {
+          headers: withEnterpriseAuthHeaders(),
+        });
         const statusPayload = await readJson(statusResponse);
         assertActive();
         if (!statusResponse.ok) {
@@ -492,10 +492,7 @@ export default function App() {
 
         const response = await fetch('/api/run-simulation', {
           method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            ...(enterpriseAuthToken ? { Authorization: `Bearer ${enterpriseAuthToken}` } : {}),
-          },
+          headers: withEnterpriseAuthHeaders({ 'Content-Type': 'application/json' }),
           body: JSON.stringify(payload),
         });
         const data = await readJson(response);
@@ -507,7 +504,9 @@ export default function App() {
         if (data?.task_id) {
           for (;;) {
             await new Promise((resolve) => setTimeout(resolve, 1200));
-            const statusResp = await fetch(`/api/jobs/${encodeURIComponent(data.task_id)}`);
+            const statusResp = await fetch(`/api/jobs/${encodeURIComponent(data.task_id)}`, {
+              headers: withEnterpriseAuthHeaders(),
+            });
             const jobBody = await readJson(statusResp);
             if (!statusResp.ok) throw new Error(extractApiError(jobBody, `Job ${data.task_id} failed`));
             const st = String(jobBody?.status || '').toUpperCase();
@@ -576,7 +575,10 @@ export default function App() {
     setSolverProgress(null);
     setSolverLogs((prev) => [...prev, `[${new Date().toISOString()}] Simulation cancelled by user.`]);
     if (taskId) {
-      fetch(`/api/jobs/${encodeURIComponent(taskId)}/cancel`, { method: 'POST' }).catch(() => {});
+      fetch(`/api/jobs/${encodeURIComponent(taskId)}/cancel`, {
+        method: 'POST',
+        headers: withEnterpriseAuthHeaders(),
+      }).catch(() => {});
     }
   };
 
@@ -620,7 +622,7 @@ export default function App() {
       };
       const response = await fetch('/api/mesh-study', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: withEnterpriseAuthHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify(requestBody),
       });
       const payload = await readJson(response);
@@ -1011,7 +1013,7 @@ export default function App() {
     try {
       const response = await fetch('/api/cad-preview', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: withEnterpriseAuthHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify({ cad_file_b64: base64, cad_filename: name }),
       });
       const data = await readJson(response);
@@ -1086,7 +1088,7 @@ export default function App() {
 
       const res = await fetch('/api/mesh-generate', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: withEnterpriseAuthHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify(bodyPayload),
       });
       const payload = await readJson(res);
@@ -1099,7 +1101,9 @@ export default function App() {
         const started = Date.now();
         while (Date.now() - started < 120_000) {
           await new Promise((r) => setTimeout(r, 1000));
-          const jobRes = await fetch(`/api/jobs/${encodeURIComponent(payload.task_id)}`);
+          const jobRes = await fetch(`/api/jobs/${encodeURIComponent(payload.task_id)}`, {
+            headers: withEnterpriseAuthHeaders(),
+          });
           if (!jobRes.ok) continue;
           const job = await readJson(jobRes);
           const st = String(job?.status || '').toUpperCase();
@@ -1253,7 +1257,9 @@ export default function App() {
   const handleDownloadSolverCase = async (taskId: string) => {
     try {
       setSaveToast(`Packaging solver deck & VTK archive (${taskId.slice(0, 8)})…`);
-      const res = await fetch(`/api/jobs/${encodeURIComponent(taskId)}/export-case`);
+      const res = await fetch(`/api/jobs/${encodeURIComponent(taskId)}/export-case`, {
+        headers: withEnterpriseAuthHeaders(),
+      });
       if (!res.ok) {
         const errBody = await readJson(res);
         throw new Error(extractApiError(errBody, `Case export failed (${res.status})`));
@@ -1772,7 +1778,10 @@ export default function App() {
         isOpen={isEnterpriseModalOpen}
         onClose={() => setIsEnterpriseModalOpen(false)}
         authToken={enterpriseAuthToken}
-        onAuthTokenChange={setEnterpriseAuthToken}
+        onAuthTokenChange={(token) => {
+          syncEnterpriseAuthToken(token);
+          setEnterpriseAuthToken(token);
+        }}
         lastTaskId={activeSolverTaskId}
       />
 

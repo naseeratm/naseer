@@ -21,6 +21,7 @@ import {
   MinusCircle,
   FileJson,
 } from 'lucide-react';
+import { withEnterpriseAuthHeaders } from '../utils/enterpriseAuth';
 
 interface AuditReportModalProps {
   isOpen: boolean;
@@ -185,7 +186,7 @@ export const AuditReportModal: React.FC<AuditReportModalProps> = ({ isOpen, onCl
     try {
       const res = await fetch('/api/vv/run', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: withEnterpriseAuthHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify({ benchmark_id: benchmarkId, execution_mode: 'celery' }),
       });
       const data = await res.json();

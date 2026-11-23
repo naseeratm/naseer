@@ -21,8 +21,12 @@ metadata:
   name: naseer-cae-config
   namespace: naseer-cae
 data:
+  CELERY_BROKER_URL: "redis://naseer-redis:6379/0"
+  CELERY_RESULT_BACKEND: "redis://naseer-redis:6379/0"
   REDIS_URL: "redis://naseer-redis:6379/0"
   CAE_WORK_DIR: "/shared_jobs"
+  NASEER_JOB_DIR: "/shared_jobs"
+  OPENFOAM_CASE_ROOT: "/shared_jobs"
   NASEER_AUTH_MODE: "enforced"
   NASEER_ALLOWED_ORIGINS: "https://cae.example.com"
   NASEER_S3_ENDPOINT: "http://naseer-minio:9000"

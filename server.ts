@@ -347,12 +347,41 @@ app.get('/api/cluster/deploy-script', (_req: Request, res: Response) => {
   return res.send(fs.readFileSync(filePath, 'utf-8'));
 });
 
+function validateCloudBackendUrl(rawUrl: string): { valid: boolean; normalized?: string; error?: string } {
+  const trimmed = (rawUrl || '').trim().replace(/\/+$/, '');
+  if (!trimmed) return { valid: false, error: 'الرجاء توفير رابط الخادم السحابي' };
+  let parsed: URL;
+  try {
+    parsed = new URL(trimmed);
+  } catch {
+    return { valid: false, error: 'صيغة رابط الخادم غير صالحة (يجب أن يبدأ بـ http:// أو https://)' };
+  }
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+    return { valid: false, error: 'يُسمح فقط ببروتوكول http أو https لرابط الخادم' };
+  }
+  const host = parsed.hostname.toLowerCase();
+  if (
+    host === '169.254.169.254' ||
+    host.startsWith('169.254.') ||
+    host === 'metadata.google.internal' ||
+    host === 'metadata.goog' ||
+    host === '0.0.0.0' ||
+    host === '::' ||
+    host.startsWith('fe80:') ||
+    host.startsWith('fd00:ec2:')
+  ) {
+    return { valid: false, error: 'عنوان الخادم محظور لأسباب أمنية (نطاق بيانات سحابية داخلية غير مسموح)' };
+  }
+  return { valid: true, normalized: `${parsed.protocol}//${parsed.host}` };
+}
+
 // Test Connection to a specified Cloud Backend URL
 app.post('/api/cloud/test-connection', async (req: Request, res: Response) => {
-  const testUrl = (req.body?.backendUrl || activeCloudUrl || '').trim().replace(/\/+$/, '');
-  if (!testUrl) {
-    return res.status(400).json({ success: false, error: 'الرجاء توفير رابط الخادم السحابي' });
+  const check = validateCloudBackendUrl(req.body?.backendUrl || activeCloudUrl || '');
+  if (!check.valid || !check.normalized) {
+    return res.status(400).json({ success: false, error: check.error || 'رابط غير صالح' });
   }
+  const testUrl = check.normalized;
 
   const startTime = Date.now();
   try {
@@ -401,7 +430,11 @@ app.post('/api/cloud/config', async (req: Request, res: Response) => {
     } = req.body || {};
 
     if (backendUrl && typeof backendUrl === 'string') {
-      activeCloudUrl = backendUrl.trim().replace(/\/+$/, '');
+      const check = validateCloudBackendUrl(backendUrl);
+      if (!check.valid || !check.normalized) {
+        return res.status(400).json({ success: false, error: check.error || 'رابط غير صالح' });
+      }
+      activeCloudUrl = check.normalized;
     }
 
     activeLicenseConfig = {
@@ -430,8 +463,25 @@ app.post('/api/license/test', async (req: Request, res: Response) => {
   const cleanHost = (host || activeLicenseConfig.licenseServerHost || '127.0.0.1')
     .replace(/^https?:\/\//, '')
     .split(':')[0]
-    .trim();
+    .trim()
+    .toLowerCase();
   const testPort = Number(port) || 1055;
+  if (
+    !cleanHost ||
+    !/^[a-z0-9.\-]+$/.test(cleanHost) ||
+    cleanHost === '169.254.169.254' ||
+    cleanHost.startsWith('169.254.') ||
+    cleanHost === 'metadata.google.internal' ||
+    !Number.isInteger(testPort) ||
+    testPort < 1 ||
+    testPort > 65535
+  ) {
+    return res.status(400).json({
+      success: false,
+      reachable: false,
+      error: 'عنوان أو منفذ خادم الترخيص غير صالح أو محظور أمنياً',
+    });
+  }
 
   if (cleanHost === 'localhost' || cleanHost === '127.0.0.1') {
     try {
@@ -574,8 +624,14 @@ app.post('/api/upload-model', async (req: Request, res: Response) => {
       formData.append('file', blob, filename);
       if (directives) formData.append('directives', directives);
 
+      const forwardHeaders: Record<string, string> = {};
+      if (typeof req.headers.authorization === 'string' && req.headers.authorization.trim()) {
+        forwardHeaders.Authorization = req.headers.authorization;
+      }
+
       const pyRes = await fetch(`${activeCloudUrl}/api/upload-model`, {
         method: 'POST',
+        headers: forwardHeaders,
         body: formData,
         signal: AbortSignal.timeout(420000),
       });
