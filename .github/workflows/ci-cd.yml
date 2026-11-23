@@ -34,17 +34,32 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
-      - name: Install dependencies
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      - name: Install dependencies (deterministic lockfile)
         run: |
-          if [ -f package-lock.json ]; then
+          if [ -f bun.lock ]; then
+            bun install --frozen-lockfile
+          elif [ -f package-lock.json ]; then
             npm ci --no-audit --no-fund
           else
             npm install --no-audit --no-fund --legacy-peer-deps
           fi
       - name: TypeScript typecheck
-        run: npm run lint
+        run: |
+          if [ -f bun.lock ]; then
+            bun run lint
+          else
+            npm run lint
+          fi
       - name: Production Vite bundle
-        run: npm run build
+        run: |
+          if [ -f bun.lock ]; then
+            bun run build
+          else
+            npm run build
+          fi
 
   docker-packaging-check:
     name: Docker API & Script Packaging Verification
