@@ -1,7 +1,12 @@
 import { MeshStudyResult, ProfileSpec, ReferenceDataSet, SimulationRunRecord, ThesisProject, isCurrentMeshStudy } from '../types/thesis';
 import { normalizeSolverResponse } from './normalizedSolverResults';
 import { formatNumber } from './numberFormat';
-import { meshStudyVerdict } from './meshStudyVerdict';
+import {
+  MeshQualityComplianceReport,
+  evaluateMeshQualityCompliance,
+  extractMeshQualityFromRows,
+  meshStudyVerdict,
+} from './meshStudyVerdict';
 import { Comparison, SampledProfile, evaluateValidation, vtkToFieldGrids } from './validationMetrics';
 
 export const PLATFORM_NAME = 'NASEER Universal CAE Studio';
@@ -69,6 +74,8 @@ export interface RealReport {
   notes: string[];
   // Present only when the user ran a real mesh-independence study with the current method.
   meshStudy?: MeshStudyResult;
+  // Auto-generated ASME V&V 20 compliance scorecard & recommendation derived strictly from meshStudy + real mesh metrics.
+  meshCompliance?: MeshQualityComplianceReport;
   // Present only when the user ingested reference data; carries either the comparison or the reason it failed.
   validation?: {
     reference: ReferenceDataSet;
@@ -393,6 +400,12 @@ export function buildRealReport(project: ThesisProject): RealReport {
       ],
       notes: ['Draft Monograph: Click "Run Simulation" in the header to append computed field matrices and residual plots.'],
       meshStudy: isCurrentMeshStudy(project.meshStudyResult) ? project.meshStudyResult : undefined,
+      meshCompliance: isCurrentMeshStudy(project.meshStudyResult)
+        ? evaluateMeshQualityCompliance(project.meshStudyResult, {
+            minOrthogonalQuality: project.meshStudy?.minOrthogonalQuality,
+            maxSkewness: project.meshStudy?.maxSkewness,
+          })
+        : undefined,
       simulationTypeLabel: project.field,
       jobId: 'draft-monograph',
       isPreRunDraft: true,
@@ -706,10 +719,19 @@ export function buildRealReport(project: ThesisProject): RealReport {
 
   // --- Verification: real mesh-independence (GCI) study -----------------------------------------
   const meshStudy = isCurrentMeshStudy(project.meshStudyResult) && project.meshStudyResult.levels.length >= 3 ? project.meshStudyResult : undefined;
-  if (meshStudy) {
+  const extractedMeshQuality = extractMeshQualityFromRows(mesh);
+  const meshCompliance = meshStudy
+    ? evaluateMeshQualityCompliance(meshStudy, {
+        minOrthogonalQuality: extractedMeshQuality.minOrthogonalQuality ?? project.meshStudy?.minOrthogonalQuality,
+        maxSkewness: extractedMeshQuality.maxSkewness ?? project.meshStudy?.maxSkewness,
+        maxNonOrthogonality: extractedMeshQuality.maxNonOrthogonality,
+        elementsCount: extractedMeshQuality.elementsCount,
+      })
+    : undefined;
+  if (meshStudy && meshCompliance) {
     const unitText = meshStudy.key_result.unit ? ` (${meshStudy.key_result.unit})` : '';
     summary.push(
-      `Mesh-independence study of ${meshStudy.key_result.label}${unitText} on ${meshStudy.levels.length} grids: ${meshStudyVerdict(meshStudy).text}`,
+      `Mesh-independence study of ${meshStudy.key_result.label}${unitText} on ${meshStudy.levels.length} grids: ${meshStudyVerdict(meshStudy).text} Compliance status: ${meshCompliance.overallStatus}.`,
     );
   }
 
@@ -767,6 +789,7 @@ export function buildRealReport(project: ThesisProject): RealReport {
     summary,
     notes,
     meshStudy,
+    meshCompliance,
     validation,
     simulationTypeLabel: typeLabel,
     jobId,

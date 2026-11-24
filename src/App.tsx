@@ -1352,6 +1352,13 @@ export default function App() {
         { id: 'import', label: 'Import Files…', icon: <Upload className="h-3.5 w-3.5" />, onClick: () => setIsUploadModalOpen(true), title: 'استيراد ورفع ملفات CAD أو شبيكة Mesh أو ملفات الحالات' },
         { id: 'save', label: 'Save to Library', icon: <Save className="h-3.5 w-3.5" />, onClick: handleSaveCurrentProject, disabled: !hasProject, title: hasProject ? 'حفظ التعديلات في مكتبة المشاريع' : 'يتطلب فتح أو إنشاء مشروع أولاً ليتم حفظه' },
         {
+          id: 'workflow',
+          label: 'Workflow Guide (دورة العمل)',
+          icon: <Layers className="h-3.5 w-3.5 text-sky-400" />,
+          onClick: () => setCurrentProject(null),
+          title: 'عرض الصفحة التعليمية لدورة حياة المشروع وترتيب استخدام الأزرار',
+        },
+        {
           id: 'close',
           label: 'Close Project',
           icon: <RotateCcw className="h-3.5 w-3.5" />,
@@ -1464,6 +1471,7 @@ export default function App() {
             onStartProject={handleStartProject}
             onOpenNewProjectWizard={() => setIsNewProjectModalOpen(true)}
             onOpenProjectsLibrary={() => setIsProjectsLibraryOpen(true)}
+            onOpenUploadModal={() => setIsUploadModalOpen(true)}
             onOpenCloudSettings={() => setIsCloudModalOpen(true)}
             onOpenAuditModal={() => setIsAuditModalOpen(true)}
             onOpenMeshGenerator={() => setIsMeshGeneratorOpen(true)}

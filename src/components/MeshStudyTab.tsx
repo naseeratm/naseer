@@ -1,8 +1,14 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { AlertTriangle, CheckCircle2, Grid3X3, Loader2, Play, XCircle } from 'lucide-react';
+import { AlertTriangle, CheckCircle2, FileCheck2, Grid3X3, Loader2, Play, XCircle } from 'lucide-react';
 import { MeshStudyKeyResult, MeshStudyResult, ThesisProject, isCurrentMeshStudy } from '../types/thesis';
 import { buildRealReport, hasRealSimulationRun } from '../utils/exporter';
-import { VerdictTone, meshStudyVerdict } from '../utils/meshStudyVerdict';
+import {
+  ComplianceCheckStatus,
+  VerdictTone,
+  evaluateMeshQualityCompliance,
+  extractMeshQualityFromRows,
+  meshStudyVerdict,
+} from '../utils/meshStudyVerdict';
 import { formatNumber } from '../utils/numberFormat';
 import { meshConvergenceSvg } from '../utils/vvPlots';
 import { EmptyState } from './EmptyState';
@@ -70,7 +76,30 @@ export const MeshStudyTab: React.FC<MeshStudyTabProps> = ({
   const current = keyResults.find((k) => k.id === selected);
   const svg = useMemo(() => (study ? meshConvergenceSvg(study, 'dark') : ''), [study]);
   const verdict = study ? meshStudyVerdict(study) : null;
+  const compliance = useMemo(() => {
+    if (!study) return null;
+    const extracted = report ? extractMeshQualityFromRows(report.mesh) : {};
+    return evaluateMeshQualityCompliance(study, {
+      minOrthogonalQuality: extracted.minOrthogonalQuality ?? project.meshStudy?.minOrthogonalQuality,
+      maxSkewness: extracted.maxSkewness ?? project.meshStudy?.maxSkewness,
+      maxNonOrthogonality: extracted.maxNonOrthogonality,
+      elementsCount: extracted.elementsCount,
+    });
+  }, [study, report, project.meshStudy]);
   const Icon = verdict?.tone === 'good' ? CheckCircle2 : verdict?.tone === 'bad' ? XCircle : AlertTriangle;
+
+  const statusTextClass: Record<ComplianceCheckStatus, string> = {
+    pass: 'text-emerald-400 font-semibold',
+    warn: 'text-amber-300 font-semibold',
+    fail: 'text-red-400 font-semibold',
+    na: 'text-slate-500',
+  };
+  const statusTextLabel: Record<ComplianceCheckStatus, string> = {
+    pass: 'PASS',
+    warn: 'REVIEW',
+    fail: 'FAIL',
+    na: 'N/A',
+  };
 
   return (
     <div className="mx-auto max-w-4xl space-y-4">
@@ -212,6 +241,73 @@ export const MeshStudyTab: React.FC<MeshStudyTabProps> = ({
           {svg && (
             <section className="overflow-hidden rounded-lg border border-slate-800 bg-slate-900/60">
               <div className="p-3 [&>svg]:h-auto [&>svg]:w-full" dangerouslySetInnerHTML={{ __html: svg }} />
+            </section>
+          )}
+
+          {compliance && (
+            <section className="overflow-hidden rounded-lg border border-slate-800 bg-slate-900/70">
+              <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-800 px-4 py-3">
+                <div className="flex items-center gap-2">
+                  <FileCheck2 className="h-4 w-4 text-sky-400 shrink-0" />
+                  <h3 className="text-[12.5px] font-semibold text-slate-100">
+                    Mesh Quality Compliance Report ({compliance.standard})
+                  </h3>
+                </div>
+                <span className="text-[11px] font-mono text-slate-400">
+                  Auto-embedded in Word / HTML / LaTeX Engineering Report
+                </span>
+              </div>
+
+              <div className="space-y-3 p-4">
+                <div className={`rounded-md border px-3.5 py-2.5 text-[12px] ${TONES[compliance.tone]}`}>
+                  <div className="font-semibold">{compliance.headlineEn}</div>
+                  <div dir="rtl" className="mt-1 text-[12px] font-normal opacity-95">
+                    {compliance.headlineAr}
+                  </div>
+                </div>
+
+                <div className="overflow-x-auto">
+                  <table className="w-full text-[12px]">
+                    <thead>
+                      <tr className="border-b border-slate-800 text-left text-[10.5px] text-slate-400">
+                        <th className="py-2 pr-3 font-medium">Criterion</th>
+                        <th className="py-2 px-3 font-medium">Measured</th>
+                        <th className="py-2 px-3 font-medium">Threshold</th>
+                        <th className="py-2 px-3 font-medium">Status</th>
+                        <th className="py-2 pl-3 font-medium">Basis</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-800/70">
+                      {compliance.criteria.map((c) => (
+                        <tr key={c.id}>
+                          <td className="py-2 pr-3 text-slate-200">{c.label}</td>
+                          <td className="py-2 px-3 font-mono tabular-nums text-slate-100 whitespace-nowrap">{c.measured}</td>
+                          <td className="py-2 px-3 font-mono tabular-nums text-slate-400 whitespace-nowrap">{c.requirement}</td>
+                          <td className={`py-2 px-3 font-mono text-[11px] whitespace-nowrap ${statusTextClass[c.status]}`}>
+                            {statusTextLabel[c.status]}
+                          </td>
+                          <td className="py-2 pl-3 text-[11.5px] text-slate-400">{c.detail}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+
+                <div className="rounded-md border border-slate-800 bg-slate-950/70 p-3.5 space-y-2">
+                  <div className="text-[11px] font-medium text-slate-400">
+                    Final Engineering Recommendation ({compliance.overallStatus})
+                  </div>
+                  <p className="text-[12px] leading-relaxed text-slate-200">{compliance.recommendationEn}</p>
+                  {compliance.recommendedMeshSizeM !== null && compliance.requiredRefinementFactor !== null && (
+                    <div className="pt-1 font-mono text-[11.5px] tabular-nums text-sky-300">
+                      Target cell size h_target = {formatNumber(compliance.recommendedMeshSizeM)} m ({formatNumber(compliance.recommendedMeshSizeM * 1000)} mm) · Required linear refinement = {formatNumber(compliance.requiredRefinementFactor)}×
+                    </div>
+                  )}
+                  <p dir="rtl" className="border-t border-slate-800/80 pt-2 text-[12px] leading-relaxed text-slate-200">
+                    {compliance.recommendationAr}
+                  </p>
+                </div>
+              </div>
             </section>
           )}
         </>

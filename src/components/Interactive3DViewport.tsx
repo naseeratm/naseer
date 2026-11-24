@@ -27,9 +27,14 @@ import {
   Pause,
   RotateCcw,
   LineChart,
+  Camera,
 } from 'lucide-react';
 import { VtkFieldPayload } from '../types/thesis';
 import { ColormapType, getColorFromColormap } from '../utils/physicsEngine';
+import {
+  computeVtkSurfaceGradientMagnitude,
+  exportWebGLSnapshotPng,
+} from '../utils/postProcessingMaps';
 
 export type ShadingMode = 'shaded' | 'contour' | 'wireframe';
 export type ViewPreset = 'iso' | 'front' | 'top' | 'right';
@@ -215,6 +220,8 @@ export const Interactive3DViewport: React.FC<Interactive3DViewportProps> = ({
   const [linePlotSlicePct, setLinePlotSlicePct] = useState<number>(50);
   const [frameIndex, setFrameIndex] = useState<number>(0);
   const [isPlaying, setIsPlaying] = useState<boolean>(false);
+  const [showSurfaceGradient, setShowSurfaceGradient] = useState<boolean>(false);
+  const [isExportingPng, setIsExportingPng] = useState<boolean>(false);
 
   const [regionBox, setRegionBox] = useState<RegionBoxState>({
     enabled: false,
@@ -294,38 +301,70 @@ export const Interactive3DViewport: React.FC<Interactive3DViewportProps> = ({
 
   const scalarRange = useMemo(() => {
     const activeKey = selectedScalarKey || availableScalars[0] || '';
-    const arr = activeKey && effectiveVtkData?.scalars ? effectiveVtkData.scalars[activeKey] : undefined;
-    if (!arr || arr.length === 0) {
+    const rawArr = activeKey && effectiveVtkData?.scalars ? effectiveVtkData.scalars[activeKey] : undefined;
+    const rawUnit = (effectiveVtkData?.units && effectiveVtkData.units[activeKey]) || fieldUnit || '';
+    if (!rawArr || rawArr.length === 0) {
       return {
         key: activeKey,
+        displayKey: activeKey,
+        values: undefined as number[] | undefined,
         min: fieldMin,
         max: fieldMax,
         unit: fieldUnit,
+        isGradient: false,
       };
     }
+
+    if (
+      showSurfaceGradient &&
+      effectiveVtkData &&
+      Array.isArray(effectiveVtkData.points) &&
+      Array.isArray(effectiveVtkData.triangles)
+    ) {
+      const grad = computeVtkSurfaceGradientMagnitude(
+        effectiveVtkData.points,
+        effectiveVtkData.triangles,
+        rawArr,
+      );
+      if (grad) {
+        const gradUnit = rawUnit ? `${rawUnit === '°C' ? 'K' : rawUnit}/m` : '1/m';
+        return {
+          key: activeKey,
+          displayKey: `|∇${activeKey}|`,
+          values: grad.values,
+          min: grad.min,
+          max: grad.max,
+          unit: gradUnit,
+          isGradient: true,
+        };
+      }
+    }
+
     let minV = Infinity;
     let maxV = -Infinity;
-    for (let i = 0; i < arr.length; i++) {
-      const v = arr[i];
+    for (let i = 0; i < rawArr.length; i++) {
+      const v = rawArr[i];
       if (Number.isFinite(v)) {
         if (v < minV) minV = v;
         if (v > maxV) maxV = v;
       }
     }
-    const unit = (effectiveVtkData?.units && effectiveVtkData.units[activeKey]) || fieldUnit || '';
     return {
       key: activeKey,
+      displayKey: activeKey,
+      values: rawArr,
       min: Number.isFinite(minV) ? minV : fieldMin,
       max: Number.isFinite(maxV) ? maxV : fieldMax,
-      unit,
+      unit: rawUnit,
+      isGradient: false,
     };
-  }, [effectiveVtkData, selectedScalarKey, availableScalars, fieldMin, fieldMax, fieldUnit]);
+  }, [effectiveVtkData, selectedScalarKey, availableScalars, fieldMin, fieldMax, fieldUnit, showSurfaceGradient]);
 
   // Real 3D Plot Over Line sampler directly on solved VTK nodal coordinates & scalars (zero fabrication)
   const lineProfileData = useMemo(() => {
     if (!showLinePlot || !effectiveVtkData?.points || !scalarRange.key) return [];
     const pts = effectiveVtkData.points;
-    const scalars = effectiveVtkData.scalars?.[scalarRange.key];
+    const scalars = scalarRange.values ?? effectiveVtkData.scalars?.[scalarRange.key];
     if (!Array.isArray(scalars) || scalars.length === 0 || pts.length < 6) return [];
 
     const nNodes = Math.min(Math.floor(pts.length / 3), scalars.length);
@@ -874,8 +913,8 @@ export const Interactive3DViewport: React.FC<Interactive3DViewportProps> = ({
     geom.computeVertexNormals();
 
     const baseNormPos = new Float32Array((geom.attributes.position as THREE.BufferAttribute).array);
-    const activeKey = selectedScalarKey || availableScalars[0] || '';
-    const scalarArr = activeKey && effectiveVtkData.scalars ? effectiveVtkData.scalars[activeKey] : undefined;
+    const activeKey = scalarRange.displayKey || selectedScalarKey || availableScalars[0] || '';
+    const scalarArr = scalarRange.values;
     const dispArr = effectiveVtkData.vectors?.displacement;
     const minV = scalarRange.min ?? 0;
     const maxV = scalarRange.max ?? 1;
@@ -1013,7 +1052,16 @@ export const Interactive3DViewport: React.FC<Interactive3DViewportProps> = ({
       selectedScalarKey && frame.scalars[selectedScalarKey]
         ? selectedScalarKey
         : Object.keys(frame.scalars)[0] || '';
-    const frameScalars = activeKey ? frame.scalars[activeKey] : undefined;
+    const rawFrameScalars = activeKey ? frame.scalars[activeKey] : undefined;
+    const frameGrad =
+      showSurfaceGradient && rawFrameScalars && effectiveVtkData
+        ? computeVtkSurfaceGradientMagnitude(
+            effectiveVtkData.points,
+            effectiveVtkData.triangles,
+            rawFrameScalars,
+          )
+        : null;
+    const frameScalars = frameGrad ? frameGrad.values : rawFrameScalars;
     const geom = mesh.geometry;
     const vertexCount = base.normalizedPositions.length / 3;
 
@@ -1067,7 +1115,7 @@ export const Interactive3DViewport: React.FC<Interactive3DViewportProps> = ({
       posAttr.needsUpdate = true;
       geom.computeVertexNormals();
     }
-  }, [frameIndex, timeFrames, selectedScalarKey, colormap, deformationScale, scalarRange.min, scalarRange.max]);
+  }, [frameIndex, timeFrames, selectedScalarKey, colormap, deformationScale, scalarRange.min, scalarRange.max, showSurfaceGradient, effectiveVtkData]);
 
   // Render CAD Named Face Highlight Overlay when a patch or marker with patchName is selected
   useEffect(() => {
@@ -1317,6 +1365,54 @@ export const Interactive3DViewport: React.FC<Interactive3DViewportProps> = ({
   const hasDisplacementVector = Boolean(effectiveVtkData?.vectors?.displacement && effectiveVtkData.vectors.displacement.length > 0);
   const integralEntries = integrals ? Object.entries(integrals) : [];
 
+  const handleExport3DPng = async () => {
+    const renderer = rendererRef.current;
+    const scene = sceneRef.current;
+    const camera = cameraRef.current;
+    if (!renderer || !scene || !camera || isExportingPng) return;
+
+    setIsExportingPng(true);
+    try {
+      // Render synchronously right before reading the WebGL drawing buffer (never blank)
+      renderer.render(scene, camera);
+      const displayFieldName =
+        scalarRange.displayKey ||
+        fieldLabel ||
+        (isFEA ? 'Von Mises Stress' : isThermal ? 'Temperature' : 'Velocity Magnitude');
+      const modeTag = scalarRange.isGradient
+        ? '3D Surface Gradient Magnitude'
+        : isShowingSolvedVtk
+          ? '3D Solved VTK Contour'
+          : meshPreviewVtk
+            ? '3D Mesh Surface Preview'
+            : '3D CAD Viewport';
+      const safeName = displayFieldName.replace(/[^a-zA-Z0-9_-]+/g, '_').replace(/^_+|_+$/g, '') || 'viewport';
+      const filename = `naseer_${safeName}_${scalarRange.isGradient ? '3d_gradient' : '3d_view'}.png`;
+
+      await exportWebGLSnapshotPng({
+        webglCanvas: renderer.domElement,
+        title: `${displayFieldName} — ${modeTag}`,
+        subtitle: `Field: ${field} · Colormap: ${colormap.toUpperCase()}${
+          effectiveVtkData ? ` · Nodes: ${Math.floor(effectiveVtkData.points.length / 3).toLocaleString()} · Triangles: ${Math.floor(effectiveVtkData.triangles.length / 3).toLocaleString()}` : ''
+        }`,
+        filename,
+        legend: showLegend
+          ? {
+              label: displayFieldName,
+              min: scalarRange.min!,
+              max: scalarRange.max!,
+              unit: scalarRange.unit,
+              sampleColor: (t: number) => getColorFromColormap(t, colormap),
+            }
+          : undefined,
+      });
+    } catch (err) {
+      console.error('Failed to export 3D PNG snapshot:', err);
+    } finally {
+      setIsExportingPng(false);
+    }
+  };
+
   return (
     <div className="relative h-full w-full select-none overflow-hidden bg-[#070b16]">
       <input
@@ -1482,19 +1578,45 @@ export const Interactive3DViewport: React.FC<Interactive3DViewportProps> = ({
         )}
 
         {availableScalars.length > 0 && (
-          <select
-            aria-label="VTK Scalar Field"
-            value={scalarRange.key}
-            onChange={(e) => setSelectedScalarKey(e.target.value)}
-            className="h-7 shrink-0 rounded-lg border border-slate-700 bg-slate-950 px-2 font-mono text-[11px] text-sky-300 outline-none focus:border-sky-500"
-          >
-            {availableScalars.map((k) => (
-              <option key={k} value={k}>
-                {k}
-              </option>
-            ))}
-          </select>
+          <>
+            <select
+              aria-label="VTK Scalar Field"
+              value={scalarRange.key}
+              onChange={(e) => setSelectedScalarKey(e.target.value)}
+              className="h-7 shrink-0 rounded-lg border border-slate-700 bg-slate-950 px-2 font-mono text-[11px] text-sky-300 outline-none focus:border-sky-500"
+            >
+              {availableScalars.map((k) => (
+                <option key={k} value={k}>
+                  {k}
+                </option>
+              ))}
+            </select>
+
+            <button
+              type="button"
+              title="Toggle 3D Surface Gradient Magnitude |∇φ| computed directly on solved VTK triangles (Zero-Mock)"
+              onClick={() => setShowSurfaceGradient((v) => !v)}
+              className={`flex h-7 shrink-0 items-center gap-1 px-2 rounded-lg font-mono text-[11px] font-semibold transition-colors ${
+                showSurfaceGradient
+                  ? 'bg-amber-500/25 text-amber-300 ring-1 ring-amber-500/60'
+                  : 'text-slate-300 hover:bg-slate-800 hover:text-white'
+              }`}
+            >
+              <span>|∇{scalarRange.key || 'φ'}|</span>
+            </button>
+          </>
         )}
+
+        <button
+          type="button"
+          disabled={isExportingPng}
+          title="Export High-Resolution 3D PNG Snapshot (2400×1500) with Calibrated Colorbar Legend"
+          onClick={handleExport3DPng}
+          className="flex h-7 shrink-0 items-center gap-1 px-2 rounded-lg bg-emerald-600/20 border border-emerald-500/40 text-emerald-300 hover:bg-emerald-500/30 text-[11px] font-semibold transition-colors disabled:opacity-60"
+        >
+          {isExportingPng ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Camera className="h-3.5 w-3.5" />}
+          <span>PNG</span>
+        </button>
 
         <button
           title="Reset Camera (Fit to Screen)"
@@ -1805,7 +1927,7 @@ export const Interactive3DViewport: React.FC<Interactive3DViewportProps> = ({
           <div className="mb-2 flex items-center justify-between gap-2">
             <div className="flex items-center gap-1.5 text-[11px] font-semibold text-sky-300">
               <LineChart className="h-3.5 w-3.5" />
-              <span>Plot Over Line · {scalarRange.key}</span>
+              <span>Plot Over Line · {scalarRange.displayKey || scalarRange.key}</span>
             </div>
             <div className="flex items-center gap-1">
               {(['x', 'y', 'z'] as const).map((ax) => (
@@ -1940,8 +2062,13 @@ export const Interactive3DViewport: React.FC<Interactive3DViewportProps> = ({
       {showLegend && (
         <div className="absolute bottom-8 right-4 z-20 flex flex-col items-end gap-1.5 rounded-xl border border-slate-800 bg-slate-950/95 p-3 shadow-2xl">
           <div className="text-[11px] font-semibold text-slate-200">
-            {scalarRange.key || fieldLabel || (isFEA ? 'Von Mises Stress' : isThermal ? 'Static Temperature' : 'Velocity Magnitude')}
+            {scalarRange.displayKey || fieldLabel || (isFEA ? 'Von Mises Stress' : isThermal ? 'Static Temperature' : 'Velocity Magnitude')}
           </div>
+          {scalarRange.isGradient && (
+            <div className="font-mono text-[9.5px] text-amber-300">
+              Surface Gradient (P1 FEM)
+            </div>
+          )}
           <div className="flex items-center gap-2">
             <div
               className="h-28 w-3 rounded-md border border-slate-700/80"
@@ -2002,7 +2129,7 @@ export const Interactive3DViewport: React.FC<Interactive3DViewportProps> = ({
           <span>Field: <strong className="text-slate-200">{field}</strong></span>
           <span>·</span>
           <span>
-            View: {showWireframe ? 'Mesh Wireframe' : isShowingSolvedVtk ? 'VTK Contours' : meshPreviewVtk ? 'Pre-Solve CAD/Mesh' : 'Solid CAD'}
+            View: {showWireframe ? 'Mesh Wireframe' : isShowingSolvedVtk ? (scalarRange.isGradient ? 'VTK Surface Gradient |∇|' : 'VTK Contours') : meshPreviewVtk ? 'Pre-Solve CAD/Mesh' : 'Solid CAD'}
           </span>
           {activeTool.startsWith('tag_') && (
             <span className="text-amber-300 font-bold">

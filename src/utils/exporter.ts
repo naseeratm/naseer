@@ -330,6 +330,10 @@ export const REPORT_CSS = `
 .naseer-report .rp-verdict-good { border-left-color: #047857; background: #ecfdf5; color: #064e3b; }
 .naseer-report .rp-verdict-warn { border-left-color: #b45309; background: #fffbeb; color: #78350f; }
 .naseer-report .rp-verdict-bad { border-left-color: #b91c1c; background: #fef2f2; color: #7f1d1d; }
+.naseer-report .rp-warn { color: #b45309; font-weight: 700; }
+.naseer-report .rp-na { color: #64748b; font-weight: 600; }
+.naseer-report .rp-compliance-rec { border: 1px solid #cbd5e1; background: #f8fafc; padding: 10px 14px; margin: 10px 0 16px; border-radius: 4px; font-size: 10pt; }
+.naseer-report .rp-compliance-rec-ar { direction: rtl; text-align: right; margin-top: 8px; padding-top: 8px; border-top: 1px solid #e2e8f0; color: #1e293b; font-family: 'Segoe UI', Tahoma, Arial, sans-serif; }
 .naseer-report ul.rp-list { margin: 4px 0 10px 18px; padding: 0; font-size: 10pt; }
 .naseer-report .rp-math-box { background: #f8fafc; border: 1px solid #e2e8f0; border-left: 4px solid #0284c7; padding: 10px 14px; margin: 10px 0; border-radius: 4px; }
 .naseer-report .rp-math-formula { font-family: 'Cambria Math', 'Times New Roman', serif; font-size: 11pt; color: #0369a1; margin: 4px 0 6px; direction: ltr; text-align: left; font-weight: 600; }
@@ -574,7 +578,33 @@ export function renderReportBody(report: RealReport, assets: ReportAssets): stri
         `</tr></tbody></table>` +
         (study.warnings.length ? `<ul class="rp-list">${study.warnings.map((w) => `<li>${esc(w)}</li>`).join('')}</ul>` : '') +
         (study.basis_note ? `<p class="rp-note">${esc(study.basis_note)}</p>` : '') +
-        (assets.meshStudyHtml ? `<div class="rp-figure">${assets.meshStudyHtml}</div><p class="rp-caption">Figure ${++figure}: ${esc(study.key_result.label)} against relative cell size; the hollow marker is the Richardson-extrapolated value and the bar is the fine-grid uncertainty.</p>` : ''),
+        (assets.meshStudyHtml ? `<div class="rp-figure">${assets.meshStudyHtml}</div><p class="rp-caption">Figure ${++figure}: ${esc(study.key_result.label)} against relative cell size; the hollow marker is the Richardson-extrapolated value and the bar is the fine-grid uncertainty.</p>` : '') +
+        (report.meshCompliance
+          ? (() => {
+              const comp = report.meshCompliance;
+              const statusClass = (s: string) =>
+                s === 'pass' ? 'rp-pass' : s === 'fail' ? 'rp-fail' : s === 'warn' ? 'rp-warn' : 'rp-na';
+              const statusLabel = (s: string) =>
+                s === 'pass' ? 'PASS' : s === 'fail' ? 'FAIL' : s === 'warn' ? 'REVIEW' : 'N/A';
+              return (
+                `<h3>Mesh Quality Compliance Assessment (${esc(comp.standard)}) <span style="font-weight:400;color:#64748b;font-size:10pt;">تقرير توافق جودة الشبكة والتوصية النهائية</span></h3>` +
+                `<div class="rp-verdict rp-verdict-${comp.tone}">${esc(comp.headlineEn)}</div>` +
+                `<table class="rp-table"><thead><tr><th>Compliance Criterion</th><th>Measured</th><th>Standard Threshold</th><th>Status</th><th>Engineering Basis</th></tr></thead><tbody>${comp.criteria
+                  .map(
+                    (c) =>
+                      `<tr><td>${esc(c.label)}</td><td class="rp-num">${esc(c.measured)}</td><td class="rp-num">${esc(c.requirement)}</td><td class="${statusClass(c.status)}">${statusLabel(c.status)}</td><td class="rp-note">${esc(c.detail)}</td></tr>`,
+                  )
+                  .join('')}</tbody></table>` +
+                `<div class="rp-compliance-rec">` +
+                `<div><strong>Final Engineering Recommendation (${esc(comp.overallStatus)}):</strong> ${esc(comp.recommendationEn)}</div>` +
+                (comp.recommendedMeshSizeM !== null && comp.requiredRefinementFactor !== null
+                  ? `<div style="margin-top:6px;font-family:Consolas,'Courier New',monospace;font-size:9.5pt;color:#0f4c81;">Computed Target Element Size: h<sub>target</sub> = ${esc(formatNumber(comp.recommendedMeshSizeM))} m (${esc(formatNumber(comp.recommendedMeshSizeM * 1000))} mm) · Required Linear Refinement Factor: ${esc(formatNumber(comp.requiredRefinementFactor))}×</div>`
+                  : '') +
+                `<div class="rp-compliance-rec-ar">${esc(comp.recommendationAr)}</div>` +
+                `</div>`
+              );
+            })()
+          : ''),
     );
   }
 
@@ -717,7 +747,10 @@ export function renderReportBody(report: RealReport, assets: ReportAssets): stri
     heading('Scope and Limitations', AR_TITLES.scope) +
       `<p>This document records a single backend execution${report.jobId ? ` (job ${esc(report.jobId)})` : ''}. Every number was read from the stored solver result and the submitted parameters; nothing was estimated, defaulted or back-filled.</p>` +
       (report.meshStudy
-        ? `<p>A mesh-independence (GCI) study of ${esc(report.meshStudy.key_result.label)} was performed and is reported above. Its outcome: ${esc(meshStudyVerdict(report.meshStudy).text)}</p>`
+        ? `<p>A mesh-independence (GCI) study of ${esc(report.meshStudy.key_result.label)} was performed and is reported above. Its outcome: ${esc(meshStudyVerdict(report.meshStudy).text)}</p>` +
+          (report.meshCompliance
+            ? `<p><strong>Mesh Quality Compliance Sign-Off (${esc(report.meshCompliance.overallStatus)}):</strong> ${esc(report.meshCompliance.recommendationEn)}</p>`
+            : '')
         : `<p>This run did not include a grid-convergence (GCI) study, and none is claimed here.</p>`) +
       (report.validation
         ? report.validation.comparison && report.validation.comparison.compared > 0
@@ -873,6 +906,18 @@ export function buildLatexSource(project: ThesisProject): string {
               `\\addplot[mark=*] coordinates {${points}};\n\\addlegendentry{Solver results}\n` +
               (study.extrapolated_value !== null ? `\\addplot[only marks,mark=o] coordinates {(0,${study.extrapolated_value})};\n\\addlegendentry{Extrapolated ($h\\to 0$)}\n` : '') +
               `\\end{axis}\n\\end{tikzpicture}\n\\caption{${latexEscape(study.key_result.label)} against relative cell size.}\n\\end{figure}\n`
+            : '') +
+          (report.meshCompliance
+            ? `\n\\subsection{Mesh Quality Compliance Assessment (${latexEscape(report.meshCompliance.standard)})}\n` +
+              `\\noindent\\textbf{Compliance Status: ${latexEscape(report.meshCompliance.overallStatus)}} --- ${latexEscape(report.meshCompliance.headlineEn)}\n\n` +
+              `\\begin{tabular}{lllr}\n\\toprule\nCriterion & Measured & Requirement & Status \\\\\n\\midrule\n` +
+              report.meshCompliance.criteria
+                .map(
+                  (c) =>
+                    `${latexEscape(c.label)} & ${latexEscape(c.measured)} & ${latexEscape(c.requirement)} & ${latexEscape(c.status.toUpperCase())} \\\\`,
+                )
+                .join('\n') +
+              `\n\\bottomrule\n\\end{tabular}\n\n\\medskip\n\\noindent\\textbf{Final Engineering Recommendation:} ${latexEscape(report.meshCompliance.recommendationEn)}\n`
             : '')
         );
       })()
@@ -919,7 +964,10 @@ export function buildLatexSource(project: ThesisProject): string {
       })()
     : '';
   const scopeTex =
-    (study ? `A mesh-independence (GCI) study of ${latexEscape(study.key_result.label)} was performed: ${latexEscape(meshStudyVerdict(study).text)} ` : 'No grid-convergence study was part of this run. ') +
+    (study
+      ? `A mesh-independence (GCI) study of ${latexEscape(study.key_result.label)} was performed: ${latexEscape(meshStudyVerdict(study).text)} ` +
+        (report.meshCompliance ? `Mesh Quality Compliance (${latexEscape(report.meshCompliance.overallStatus)}): ${latexEscape(report.meshCompliance.recommendationEn)} ` : '')
+      : 'No grid-convergence study was part of this run. ') +
     (val ? (val.comparison && val.comparison.compared > 0 ? 'A validation against user-supplied reference data, which has not been independently checked, was performed. ' : 'Reference data was supplied but no point could be compared. ') : 'No experimental or benchmark validation was part of this run. ');
 
   return String.raw`\documentclass[a4paper,11pt]{article}
