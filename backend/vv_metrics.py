@@ -634,6 +634,9 @@ def run_mesh_study(
     physics_type: str,
     key_result_id: str | None,
     execute: Callable[[dict[str, Any]], Mapping[str, Any]],
+    *,
+    on_level_start: Callable[[int, int, str, dict[str, Any]], None] | None = None,
+    on_level_complete: Callable[[int, int, dict[str, Any], list[dict[str, Any]]], None] | None = None,
 ) -> dict[str, Any]:
     """Run the solver on coarse/medium/fine meshes and compute the GCI of the chosen key result."""
     spec = resolve_key_result(physics_type, key_result_id)
@@ -645,8 +648,11 @@ def run_mesh_study(
     unit = spec.unit
     offset = 0.0
     dimension = 2
-    for name, factor in LEVELS:
+    total_levels = len(LEVELS)
+    for idx, (name, factor) in enumerate(LEVELS, start=1):
         payload = refine_payload(physics_type, base_payload, factor)
+        if on_level_start is not None:
+            on_level_start(idx, total_levels, name, payload)
         outcome = execute(payload)
         if outcome.get("status") == "error" or outcome.get("error"):
             raise MeshStudyError("SOLVER_ERROR", f"Mesh level '{name}' failed: {outcome.get('error', 'solver error')}")
@@ -658,14 +664,17 @@ def run_mesh_study(
             raise MeshStudyError("KEY_RESULT_UNAVAILABLE", f"Mesh level '{name}': {exc}") from exc
         solver_name = solver_name or outcome.get("solver") or data.get("solver") or data.get("solver_type")
         unit, offset, dimension = value.unit or unit, value.offset, stats.dimension
-        levels.append({
+        level_entry = {
             "level": name,
             "mesh_size": None if uses_divisions else payload.get("mesh_size"),
             "divisions": payload["mesh"]["divisions"] if uses_divisions else None,
             "cells": stats.cells,
             "nodes": stats.nodes,
             "key_result": value.value,
-        })
+        }
+        levels.append(level_entry)
+        if on_level_complete is not None:
+            on_level_complete(idx, total_levels, dict(level_entry), [dict(l) for l in levels])
 
     cells = [level["cells"] for level in levels]
     if not (cells[0] < cells[1] < cells[2]):

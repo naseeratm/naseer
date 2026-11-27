@@ -1,4 +1,6 @@
+import asyncio
 import io
+import json
 import math
 import os
 import shutil
@@ -10,19 +12,26 @@ from json import JSONDecodeError
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+try:
+    import redis as redis_lib
+except ImportError:
+    redis_lib = None  # type: ignore[assignment]
+
 import uvicorn
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, Response
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator, model_validator
 
 from backend.file_parser import parse_engineering_file
-from backend.vv_metrics import KeyResultUnavailable, MeshStudyError, key_result_specs, run_mesh_study
+from backend.vv_metrics import KeyResultUnavailable, MeshStudyError, key_result_specs, resolve_key_result, run_mesh_study
 from cae_repository import JobRepository
 from enterprise_security import EnterpriseSecurityService, SecurityError
 from object_storage import ObjectStorageError, ObjectStorageService
 from universal_dispatcher import (
+    REDIS_URL,
+    WORKER_HEARTBEAT_PREFIX,
     call_gmsh_mesher,
     celery_app,
     classify_physics,
@@ -372,8 +381,43 @@ async def object_storage_error_handler(request: Request, exc: ObjectStorageError
 # ---------------------------------------------------------
 # 3. API Routes (Unified Port 8000 Authority)
 # ---------------------------------------------------------
+def _get_redis_client() -> Optional[Any]:
+    """Create a short-timeout Redis client for non-blocking worker heartbeat reads."""
+    if redis_lib is None:
+        return None
+    try:
+        return redis_lib.Redis.from_url(
+            REDIS_URL,
+            socket_connect_timeout=1.0,
+            socket_timeout=1.0,
+            decode_responses=True,
+        )
+    except Exception:
+        return None
+
+
+def _merge_worker_solvers(
+    heartbeat_solvers_list: List[Dict[str, Any]],
+    fallback_solvers: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Merge solver capability maps from live worker heartbeats without fabricating missing binaries."""
+    if not heartbeat_solvers_list:
+        return fallback_solvers
+    merged: Dict[str, Any] = {}
+    for solvers_map in heartbeat_solvers_list:
+        if not isinstance(solvers_map, dict):
+            continue
+        for key, entry in solvers_map.items():
+            prev = merged.get(key)
+            entry_avail = bool(entry.get("available")) if isinstance(entry, dict) else bool(entry)
+            prev_avail = bool(prev.get("available")) if isinstance(prev, dict) else bool(prev)
+            if key not in merged or (entry_avail and not prev_avail):
+                merged[key] = entry
+    return merged or fallback_solvers
+
+
 def _inspect_celery_cluster() -> Dict[str, Any]:
-    """Query live Redis broker and Celery control plane for worker nodes, cores, and active/queued tasks."""
+    """Read live worker heartbeats directly from Redis (<20ms) with fast inspect fallback only when empty."""
     local_solvers = probe_worker_capabilities()
     host_cores = os.cpu_count() or 1
     mpi_cores_per_worker = max(1, int(os.getenv("NASEER_MPI_CORES_PER_WORKER", str(min(host_cores, 4)))))
@@ -385,52 +429,107 @@ def _inspect_celery_cluster() -> Dict[str, Any]:
     queued_tasks_count = 0
     total_cluster_cores = 0
     worker_solvers = local_solvers
+    heartbeat_solvers_list: List[Dict[str, Any]] = []
 
-    try:
-        conn = celery_app.connection_for_read()
-        conn.ensure_connection(max_retries=1)
-        conn.close()
-        redis_ok = True
-        inspector = celery_app.control.inspect(timeout=1.5)
-        ping_res = inspector.ping() or {}
-        if isinstance(ping_res, dict) and ping_res:
-            worker_names = sorted(ping_res.keys())
-            workers_online = len(worker_names)
-            stats_res = inspector.stats() or {}
-            active_res = inspector.active() or {}
-            reserved_res = inspector.reserved() or {}
+    # 1. Fast non-blocking path: read naseer:worker:heartbeat:* keys directly from Redis
+    client = _get_redis_client()
+    if client is not None:
+        try:
+            client.ping()
+            redis_ok = True
+            pattern = f"{WORKER_HEARTBEAT_PREFIX}*"
+            raw_keys = list(client.scan_iter(match=pattern)) if hasattr(client, "scan_iter") else list(client.keys(pattern))
+            raw_keys = sorted(str(k) for k in raw_keys)
+            raw_values: List[Optional[str]] = []
+            if raw_keys:
+                if hasattr(client, "mget"):
+                    raw_values = list(client.mget(raw_keys))
+                else:
+                    raw_values = [client.get(k) for k in raw_keys]
 
-            for w_name in worker_names:
-                w_stats = stats_res.get(w_name, {}) if isinstance(stats_res, dict) else {}
-                pool_info = w_stats.get("pool", {}) if isinstance(w_stats, dict) else {}
-                concurrency = int(pool_info.get("max-concurrency") or 1)
-                w_active = active_res.get(w_name, []) if isinstance(active_res, dict) else []
-                w_reserved = reserved_res.get(w_name, []) if isinstance(reserved_res, dict) else []
-                n_active = len(w_active) if isinstance(w_active, list) else 0
-                n_queued = len(w_reserved) if isinstance(w_reserved, list) else 0
+            for key_name, raw_val in zip(raw_keys, raw_values):
+                if not raw_val:
+                    continue
+                try:
+                    hb = json.loads(raw_val) if isinstance(raw_val, str) else raw_val
+                except Exception:
+                    continue
+                if not isinstance(hb, dict):
+                    continue
+                w_name = str(hb.get("name") or key_name[len(WORKER_HEARTBEAT_PREFIX):])
+                concurrency = max(1, int(hb.get("concurrency") or 1))
+                node_cores = max(concurrency, int(hb.get("mpi_cores") or mpi_cores_per_worker))
+                n_active = max(0, int(hb.get("active_tasks") or 0))
+                n_queued = max(0, int(hb.get("queued_tasks") or 0))
+                worker_names.append(w_name)
                 active_tasks_count += n_active
                 queued_tasks_count += n_queued
-                node_cores = max(concurrency, mpi_cores_per_worker)
                 total_cluster_cores += node_cores
                 workers_detail.append({
                     "name": w_name,
-                    "status": "ONLINE",
-                    "pid": w_stats.get("pid"),
+                    "status": str(hb.get("status") or "ONLINE"),
+                    "pid": hb.get("pid"),
                     "concurrency": concurrency,
                     "mpi_cores": node_cores,
                     "active_tasks": n_active,
                     "queued_tasks": n_queued,
+                    "updated_at_utc": hb.get("updated_at_utc"),
                 })
+                if isinstance(hb.get("solvers"), dict) and hb["solvers"]:
+                    heartbeat_solvers_list.append(hb["solvers"])
 
+            workers_online = len(workers_detail)
+            if heartbeat_solvers_list:
+                worker_solvers = _merge_worker_solvers(heartbeat_solvers_list, local_solvers)
+        except Exception:
+            redis_ok = False
+        finally:
             try:
-                async_probe = celery_app.send_task("universal_dispatcher.probe_capabilities")
-                probed = async_probe.get(timeout=4.0)
-                if isinstance(probed, dict):
-                    worker_solvers = probed
+                client.close()
             except Exception:
-                worker_solvers = local_solvers
-    except Exception:
-        redis_ok = False
+                pass
+
+    # 2. Fast fallback ONLY when no Redis worker heartbeat keys exist yet
+    if workers_online == 0:
+        try:
+            if not redis_ok:
+                conn = celery_app.connection_for_read()
+                conn.ensure_connection(max_retries=1)
+                conn.close()
+                redis_ok = True
+            inspector = celery_app.control.inspect(timeout=1.0)
+            ping_res = inspector.ping() or {}
+            if isinstance(ping_res, dict) and ping_res:
+                worker_names = sorted(ping_res.keys())
+                workers_online = len(worker_names)
+                stats_res = inspector.stats() or {}
+                active_res = inspector.active() or {}
+                reserved_res = inspector.reserved() or {}
+
+                for w_name in worker_names:
+                    w_stats = stats_res.get(w_name, {}) if isinstance(stats_res, dict) else {}
+                    pool_info = w_stats.get("pool", {}) if isinstance(w_stats, dict) else {}
+                    concurrency = int(pool_info.get("max-concurrency") or 1)
+                    w_active = active_res.get(w_name, []) if isinstance(active_res, dict) else []
+                    w_reserved = reserved_res.get(w_name, []) if isinstance(reserved_res, dict) else []
+                    n_active = len(w_active) if isinstance(w_active, list) else 0
+                    n_queued = len(w_reserved) if isinstance(w_reserved, list) else 0
+                    active_tasks_count += n_active
+                    queued_tasks_count += n_queued
+                    node_cores = max(concurrency, mpi_cores_per_worker)
+                    total_cluster_cores += node_cores
+                    workers_detail.append({
+                        "name": w_name,
+                        "status": "ONLINE",
+                        "pid": w_stats.get("pid"),
+                        "concurrency": concurrency,
+                        "mpi_cores": node_cores,
+                        "active_tasks": n_active,
+                        "queued_tasks": n_queued,
+                    })
+        except Exception:
+            if not redis_ok:
+                redis_ok = False
 
     if total_cluster_cores == 0:
         total_cluster_cores = host_cores
@@ -553,15 +652,11 @@ async def run_simulation(request: SimulationRequest, http_request: Request):
 _compute_wall_clock_sec = compute_wall_clock_sec
 
 
-@app.get("/api/jobs/{task_id}")
-async def get_job_status(task_id: str, http_request: Request):
-    security_service.resolve_actor(http_request.headers.get("authorization"), require_role="viewer")
+def _build_live_job_snapshot(task_id: str) -> Optional[Dict[str, Any]]:
+    """Build a unified job snapshot merging persistent JobRepository state and live Celery task meta."""
     job = job_repository.get(task_id)
     if not job:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail={"success": False, "code": "JOB_NOT_FOUND", "error": f"Job {task_id} does not exist."},
-        )
+        return None
     status_upper = str(job.get("status", "")).upper()
     job_wall = _compute_wall_clock_sec(
         job.get("created_at"),
@@ -569,6 +664,21 @@ async def get_job_status(task_id: str, http_request: Request):
     )
     if job_wall is not None:
         job["wall_clock_sec"] = job_wall
+
+    # Surface partial mesh-study levels / V&V results stored in JobRepository during RUNNING
+    raw_res = job.get("result")
+    if isinstance(raw_res, dict) and raw_res.get("partial"):
+        if isinstance(raw_res.get("levels"), list):
+            job["levels"] = raw_res["levels"]
+        if isinstance(raw_res.get("results"), list):
+            job["results"] = raw_res["results"]
+        if isinstance(raw_res.get("status_message"), str):
+            job["status_message"] = raw_res["status_message"]
+        if isinstance(raw_res.get("completed_count"), int):
+            job["completed_count"] = raw_res["completed_count"]
+        if isinstance(raw_res.get("total_count"), int):
+            job["total_count"] = raw_res["total_count"]
+
     if status_upper in {"QUEUED", "RUNNING"}:
         try:
             async_res = celery_app.AsyncResult(task_id)
@@ -584,6 +694,14 @@ async def get_job_status(task_id: str, http_request: Request):
                     job["current_iteration"] = meta["current_iteration"]
                 if isinstance(meta.get("status_message"), str):
                     job["status_message"] = meta["status_message"]
+                if isinstance(meta.get("levels"), list):
+                    job["levels"] = meta["levels"]
+                if isinstance(meta.get("results"), list):
+                    job["results"] = meta["results"]
+                if isinstance(meta.get("completed_count"), int):
+                    job["completed_count"] = meta["completed_count"]
+                if isinstance(meta.get("total_count"), int):
+                    job["total_count"] = meta["total_count"]
                 if isinstance(meta.get("telemetry"), dict) and meta["telemetry"]:
                     tel = dict(meta["telemetry"])
                     if job_wall is not None:
@@ -592,6 +710,247 @@ async def get_job_status(task_id: str, http_request: Request):
         except Exception:
             pass
     return job
+
+
+def _summarize_job_record(raw_job: Dict[str, Any]) -> Dict[str, Any]:
+    """Build a lightweight, zero-mock summary row from a persistent JobRepository record."""
+    task_id = str(raw_job.get("task_id") or "")
+    status_upper = str(raw_job.get("status") or "QUEUED").upper()
+    job = _build_live_job_snapshot(task_id) if status_upper in {"QUEUED", "RUNNING"} and task_id else dict(raw_job)
+    if job is None:
+        job = dict(raw_job)
+
+    status_upper = str(job.get("status") or "QUEUED").upper()
+    payload = job.get("payload") if isinstance(job.get("payload"), dict) else {}
+    res = job.get("result") if isinstance(job.get("result"), dict) else {}
+    nested = res.get("data") if isinstance(res.get("data"), dict) else {}
+    artifacts = res.get("artifacts") if isinstance(res.get("artifacts"), dict) else {}
+
+    action = str(payload.get("action") or "simulation")
+    physics_type = (
+        res.get("physics_type")
+        or payload.get("physics_type")
+        or payload.get("simulation_type")
+        or ("V&V_Suite" if action == "vv_suite" else ("Gmsh_3D" if action == "mesh_generate" else None))
+    )
+    solver = (
+        job.get("solver")
+        or res.get("solver")
+        or res.get("recommended_solver")
+        or nested.get("solver")
+        or (res.get("study", {}).get("solver") if isinstance(res.get("study"), dict) else None)
+        or ("Gmsh" if action == "mesh_generate" else ("V&V Suite" if action == "vv_suite" else ""))
+    )
+
+    wall_clock = job.get("wall_clock_sec")
+    if wall_clock is None:
+        wall_clock = _compute_wall_clock_sec(
+            job.get("created_at"),
+            job.get("completed_at") if status_upper not in {"QUEUED", "RUNNING"} else None,
+        )
+
+    summary_metrics: Dict[str, Any] = {}
+    if action == "mesh_study":
+        study = res.get("study") if isinstance(res.get("study"), dict) else None
+        if study:
+            kr = study.get("key_result") if isinstance(study.get("key_result"), dict) else {}
+            summary_metrics = {
+                "kind": "mesh_study",
+                "key_result_label": kr.get("label") or kr.get("id"),
+                "key_result_unit": kr.get("unit") or "",
+                "gci_fine_percent": study.get("gci_fine_percent"),
+                "observed_order": study.get("observed_order"),
+                "convergence_type": study.get("convergence_type"),
+                "grid_independent": study.get("grid_independent"),
+                "levels_completed": len(study.get("levels") or []),
+            }
+        elif isinstance(job.get("levels"), list):
+            summary_metrics = {
+                "kind": "mesh_study",
+                "levels_completed": len(job["levels"]),
+                "total_levels": 3,
+            }
+    elif action == "vv_suite":
+        report = res.get("report") if isinstance(res.get("report"), dict) else None
+        if report:
+            rep_sum = report.get("summary") if isinstance(report.get("summary"), dict) else {}
+            summary_metrics = {
+                "kind": "vv_suite",
+                "overall_status": report.get("overall_status"),
+                "passed": rep_sum.get("passed", 0),
+                "failed": rep_sum.get("failed", 0),
+                "skipped": rep_sum.get("skipped", 0),
+                "total": rep_sum.get("total", 0),
+            }
+        elif isinstance(job.get("results"), list):
+            partial = job["results"]
+            summary_metrics = {
+                "kind": "vv_suite",
+                "passed": sum(1 for r in partial if isinstance(r, dict) and r.get("status") == "PASS"),
+                "failed": sum(1 for r in partial if isinstance(r, dict) and r.get("status") == "FAIL"),
+                "skipped": sum(1 for r in partial if isinstance(r, dict) and r.get("status") == "SKIPPED_NO_BINARY"),
+                "completed_count": len(partial),
+                "total": job.get("total_count") or len(partial),
+            }
+    elif action == "mesh_generate":
+        if res:
+            summary_metrics = {
+                "kind": "mesh_generate",
+                "nodes_count": res.get("nodes_count") or nested.get("nodes_count"),
+                "elements_count": res.get("elements_count") or nested.get("elements_count"),
+            }
+    else:
+        integrals = nested.get("integrals") if isinstance(nested.get("integrals"), dict) else {}
+        metrics = nested.get("metrics") if isinstance(nested.get("metrics"), dict) else {}
+        conv = res.get("convergence") if isinstance(res.get("convergence"), dict) else {}
+        field_summary = nested.get("field_summary") if isinstance(nested.get("field_summary"), dict) else {}
+        max_vel = (
+            integrals.get("max_velocity_mps")
+            or (metrics.get("max_velocity", {}).get("value") if isinstance(metrics.get("max_velocity"), dict) else None)
+            or nested.get("max_velocity")
+        )
+        dp_val = (
+            integrals.get("pressure_drop_pa")
+            or (metrics.get("pressure_drop", {}).get("value") if isinstance(metrics.get("pressure_drop"), dict) else None)
+            or nested.get("pressure_drop_pa")
+        )
+        vm_pa = integrals.get("max_von_mises_pa") or nested.get("max_von_mises_pa")
+        disp_m = integrals.get("max_displacement_m") or nested.get("max_displacement_m")
+        t_center = nested.get("center_temperature")
+        t_max = nested.get("max_temperature") or nested.get("temperature_max") or integrals.get("max_temperature_k")
+        nu_val = integrals.get("nusselt_number") or nested.get("nusselt_number")
+        em_max = field_summary.get("max")
+        em_unit = field_summary.get("unit")
+        if any(v is not None for v in (max_vel, dp_val, vm_pa, disp_m, t_center, t_max, nu_val, em_max)):
+            summary_metrics = {
+                "kind": "simulation",
+                "max_velocity_mps": max_vel,
+                "pressure_drop_pa": dp_val,
+                "max_von_mises_pa": vm_pa,
+                "max_displacement_m": disp_m,
+                "center_temperature": t_center,
+                "max_temperature": t_max,
+                "nusselt_number": nu_val,
+                "em_peak": em_max,
+                "em_unit": em_unit,
+                "converged": conv.get("converged"),
+            }
+
+    case_dir = (
+        res.get("case_directory")
+        or artifacts.get("case_directory")
+        or nested.get("case_directory")
+    )
+
+    return {
+        "task_id": task_id,
+        "project_id": str(job.get("project_id") or payload.get("project_id") or ""),
+        "action": action,
+        "physics_type": physics_type,
+        "solver": solver,
+        "status": status_upper,
+        "progress": int(job.get("progress") or 0),
+        "status_message": job.get("status_message"),
+        "current_iteration": job.get("current_iteration"),
+        "wall_clock_sec": wall_clock,
+        "sweep_parameter": payload.get("sweep_parameter"),
+        "sweep_value": payload.get("sweep_value"),
+        "summary_metrics": summary_metrics,
+        "has_case_archive": bool(isinstance(case_dir, str) and case_dir.strip()),
+        "error": job.get("error"),
+        "created_at": job.get("created_at"),
+        "updated_at": job.get("updated_at"),
+        "started_at": job.get("started_at"),
+        "completed_at": job.get("completed_at"),
+    }
+
+
+@app.get("/api/jobs")
+async def list_jobs(
+    http_request: Request,
+    project_id: Optional[str] = None,
+    limit: int = 50,
+):
+    """List current and historical CAE jobs with live status, progress, and concise real metrics."""
+    security_service.resolve_actor(http_request.headers.get("authorization"), require_role="viewer")
+    safe_limit = max(1, min(int(limit), 200))
+    clean_project_id = (project_id or "").strip() or None
+    try:
+        rows = job_repository.list(project_id=clean_project_id)
+    except TypeError:
+        rows = job_repository.list()
+        if clean_project_id:
+            rows = [
+                r for r in rows
+                if str(r.get("project_id") or (r.get("payload") or {}).get("project_id") or "") == clean_project_id
+            ]
+    summarized = [_summarize_job_record(r) for r in rows[:safe_limit]]
+    return {
+        "success": True,
+        "count": len(summarized),
+        "project_id": clean_project_id,
+        "jobs": summarized,
+    }
+
+
+@app.get("/api/jobs/{task_id}")
+async def get_job_status(task_id: str, http_request: Request):
+    security_service.resolve_actor(http_request.headers.get("authorization"), require_role="viewer")
+    job = _build_live_job_snapshot(task_id)
+    if not job:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"success": False, "code": "JOB_NOT_FOUND", "error": f"Job {task_id} does not exist."},
+        )
+    return job
+
+
+@app.get("/api/jobs/{task_id}/stream")
+async def stream_job_status(task_id: str, http_request: Request, token: Optional[str] = None):
+    """Server-Sent Events (SSE) live stream for simulation, mesh-study, and V&V Celery jobs."""
+    auth_header = http_request.headers.get("authorization")
+    if not auth_header and token and token.strip():
+        auth_header = f"Bearer {token.strip()}"
+    security_service.resolve_actor(auth_header, require_role="viewer")
+
+    initial_snapshot = _build_live_job_snapshot(task_id)
+    if not initial_snapshot:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"success": False, "code": "JOB_NOT_FOUND", "error": f"Job {task_id} does not exist."},
+        )
+
+    terminal_states = {"COMPLETED", "FAILED", "CANCELLED"}
+
+    async def _event_generator():
+        first = True
+        while True:
+            if await http_request.is_disconnected():
+                break
+            snapshot = initial_snapshot if first else _build_live_job_snapshot(task_id)
+            first = False
+            if not snapshot:
+                done_payload = json.dumps({"task_id": task_id, "status": "FAILED", "error": "Job no longer exists."})
+                yield f"event: done\ndata: {done_payload}\n\n"
+                break
+
+            st = str(snapshot.get("status", "QUEUED")).upper()
+            serialized = json.dumps(snapshot, ensure_ascii=False, default=str)
+            if st in terminal_states:
+                yield f"event: done\ndata: {serialized}\n\n"
+                break
+            yield f"event: progress\ndata: {serialized}\n\n"
+            await asyncio.sleep(0.6)
+
+    return StreamingResponse(
+        _event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 @app.get("/api/telemetry/live")
@@ -900,6 +1259,56 @@ def mesh_independence_study(request: MeshStudyRequest, http_request: Request):
     payload = request.to_solver_payload()
     key_result = payload.pop("key_result", None)
     physics_type = classify_physics(payload)
+
+    try:
+        resolve_key_result(physics_type, key_result)
+    except KeyResultUnavailable as exc:
+        return _study_error("KEY_RESULT_UNAVAILABLE", str(exc))
+
+    if request.execution_mode == ExecutionMode.CELERY:
+        task_id = str(uuid.uuid4())
+        try:
+            job_repository.create(
+                task_id,
+                {
+                    "action": "mesh_study",
+                    "physics_type": physics_type,
+                    "key_result": key_result,
+                    **payload,
+                },
+            )
+            celery_app.send_task(
+                "universal_dispatcher.run_mesh_study_task",
+                args=[payload, physics_type, key_result],
+                kwargs={},
+                task_id=task_id,
+            )
+            security_service.record_audit(
+                actor_email=actor["email"],
+                actor_role=actor["role"],
+                workspace_id=actor.get("workspace_id", "ws-default"),
+                action="simulation.mesh_study",
+                resource=f"job:{task_id}",
+                status="allowed",
+                detail={"physics_type": physics_type, "key_result": key_result, "execution_mode": "celery"},
+                ip_address=client_ip,
+            )
+            return JSONResponse(
+                status_code=status.HTTP_202_ACCEPTED,
+                content={
+                    "success": True,
+                    "task_id": task_id,
+                    "status": "QUEUED",
+                    "physics_type": physics_type,
+                },
+            )
+        except Exception as exc:
+            job_repository.update(task_id, status="FAILED", error=str(exc))
+            return JSONResponse(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                content={"success": False, "code": "BROKER_UNAVAILABLE", "error": str(exc)},
+            )
+
     security_service.record_audit(
         actor_email=actor["email"],
         actor_role=actor["role"],
@@ -907,31 +1316,15 @@ def mesh_independence_study(request: MeshStudyRequest, http_request: Request):
         action="simulation.mesh_study",
         resource=f"physics:{physics_type}",
         status="allowed",
-        detail={"key_result": key_result},
+        detail={"key_result": key_result, "execution_mode": "direct"},
         ip_address=client_ip,
     )
 
-    local_caps = probe_worker_capabilities()
-    has_local_solvers = any(
-        bool(local_caps.get(k, {}).get("available"))
-        for k in ("openfoam", "calculix", "elmer")
-    )
-
-    def _run_level_via_worker_or_local(level_payload: dict) -> dict:
-        if has_local_solvers:
-            return execute_simulation({**level_payload, "execution_mode": "direct"})
-        try:
-            task = celery_app.send_task(
-                "universal_dispatcher.run_simulation",
-                args=[{**level_payload, "execution_mode": "celery"}],
-            )
-            res = task.get(timeout=180.0)
-            return res if isinstance(res, dict) else {"status": "error", "error": "Invalid worker response"}
-        except Exception as exc:
-            return {"status": "error", "error": f"Worker execution failed: {exc}"}
+    def _run_direct_level(level_payload: dict) -> dict:
+        return execute_simulation({**level_payload, "execution_mode": "direct"})
 
     try:
-        study = run_mesh_study(payload, physics_type, key_result, _run_level_via_worker_or_local)
+        study = run_mesh_study(payload, physics_type, key_result, _run_direct_level)
     except KeyResultUnavailable as exc:
         return _study_error("KEY_RESULT_UNAVAILABLE", str(exc))
     except MeshStudyError as exc:
@@ -983,34 +1376,68 @@ def run_vv_benchmarks_endpoint(request: VVRunRequest, http_request: Request):
             },
         )
 
-    cluster = _inspect_celery_cluster()
-    cluster_solvers = cluster.get("solvers") if isinstance(cluster, dict) else probe_worker_capabilities()
-    workers_online = int(cluster.get("workers_online", 0)) if isinstance(cluster, dict) else 0
+    if request.execution_mode == ExecutionMode.CELERY:
+        task_id = str(uuid.uuid4())
+        try:
+            job_repository.create(
+                task_id,
+                {
+                    "action": "vv_suite",
+                    "benchmark_id": bid,
+                    "selected_ids": selected,
+                    "execution_mode": "celery",
+                },
+            )
+            celery_app.send_task(
+                "universal_dispatcher.run_vv_suite_task",
+                args=[selected],
+                kwargs={},
+                task_id=task_id,
+            )
+            security_service.record_audit(
+                actor_email=actor["email"],
+                actor_role=actor["role"],
+                workspace_id=actor.get("workspace_id", "ws-default"),
+                action="vv.run_suite",
+                resource=f"job:{task_id}",
+                status="allowed",
+                detail={"benchmark_id": bid, "execution_mode": "celery"},
+                ip_address=client_ip,
+            )
+            return JSONResponse(
+                status_code=status.HTTP_202_ACCEPTED,
+                content={
+                    "success": True,
+                    "task_id": task_id,
+                    "status": "QUEUED",
+                    "benchmark_id": bid,
+                },
+            )
+        except Exception as exc:
+            job_repository.update(task_id, status="FAILED", error=str(exc))
+            return JSONResponse(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                content={"success": False, "code": "BROKER_UNAVAILABLE", "error": str(exc)},
+            )
+
     local_caps = probe_worker_capabilities()
     has_local_solvers = any(
         bool(local_caps.get(k, {}).get("available"))
         for k in ("openfoam", "calculix", "elmer")
     )
 
-    def _dispatch_vv_solver(level_payload: Dict[str, Any]) -> Dict[str, Any]:
-        if request.execution_mode == ExecutionMode.CELERY and workers_online > 0:
-            task = celery_app.send_task(
-                "universal_dispatcher.run_simulation",
-                args=[{**level_payload, "execution_mode": "celery"}],
-            )
-            res = task.get(timeout=240.0)
-            return res if isinstance(res, dict) else {"status": "ERROR", "error": "Invalid worker response"}
+    def _dispatch_direct_vv(level_payload: Dict[str, Any]) -> Dict[str, Any]:
         if has_local_solvers:
             return execute_simulation({**level_payload, "execution_mode": "direct"})
         return {
             "status": "ERROR",
-            "error": "No online Celery solver worker and no local solver binaries found on API container.",
+            "error": "No local solver binaries found on API container for direct execution.",
         }
 
     report = run_vv_suite(
         selected,
-        executor=_dispatch_vv_solver,
-        capabilities=cluster_solvers,
+        executor=_dispatch_direct_vv,
+        capabilities=local_caps,
     )
     security_service.record_audit(
         actor_email=actor["email"],
@@ -1019,7 +1446,11 @@ def run_vv_benchmarks_endpoint(request: VVRunRequest, http_request: Request):
         action="vv.run_suite",
         resource=f"benchmark:{bid}",
         status="allowed",
-        detail={"overall_status": report.get("overall_status"), "passed": report.get("summary", {}).get("passed")},
+        detail={
+            "overall_status": report.get("overall_status"),
+            "passed": report.get("summary", {}).get("passed"),
+            "execution_mode": "direct",
+        },
         ip_address=client_ip,
     )
     return {
@@ -1247,15 +1678,3 @@ def download_enterprise_deploy_pack(pack_name: str):
 
 if __name__ == "__main__":
     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
-# NASEER_CACHE
-import time as _nt, threading as _nth
-_CC=[0.0,None]
-_CL=_nth.Lock()
-_orig_icc=_inspect_celery_cluster
-def _inspect_celery_cluster(*a,**k):
-    d=_CC[1]; ttl=30.0 if (isinstance(d,dict) and d.get('workers_online',0)>0) else 3.0
-    if d is not None and _nt.time()-_CC[0]<ttl: return d
-    with _CL:
-        d=_CC[1]; ttl=30.0 if (isinstance(d,dict) and d.get('workers_online',0)>0) else 3.0
-        if d is not None and _nt.time()-_CC[0]<ttl: return d
-        r=_orig_icc(*a,**k); _CC[1]=r; _CC[0]=_nt.time(); return r

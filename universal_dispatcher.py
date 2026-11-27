@@ -20,18 +20,26 @@ import math
 import os
 import re
 import shutil
+import socket
 import struct
 import subprocess
 import threading
 import time
 import uuid
 import zipfile
+from datetime import datetime, timezone
 from pathlib import Path
 from time import perf_counter
 from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple
 
 try:
+    import redis as redis_lib
+except ImportError:  # Local test environment outside Docker container
+    redis_lib = None  # type: ignore[assignment]
+
+try:
     from celery import Celery
+    from celery.signals import task_postrun, task_prerun, worker_ready, worker_shutdown
 except ImportError:  # Local test environment outside Docker container
     class Celery:  # type: ignore[no-redef]
         def __init__(self, *args: Any, **kwargs: Any) -> None:
@@ -42,9 +50,20 @@ except ImportError:  # Local test environment outside Docker container
                 return fn
             return _decorator
 
+    worker_ready = None  # type: ignore[assignment]
+    worker_shutdown = None  # type: ignore[assignment]
+    task_prerun = None  # type: ignore[assignment]
+    task_postrun = None  # type: ignore[assignment]
+
 from backend.report_generator import generate_academic_report
 from backend.result_schema import canonicalize_result
-from backend.vv_metrics import compute_openfoam_metrics, parse_internal_field
+from backend.vv_metrics import (
+    KeyResultUnavailable,
+    MeshStudyError,
+    compute_openfoam_metrics,
+    parse_internal_field,
+    run_mesh_study,
+)
 try:
     from cae_repository import JobRepository
 except ImportError:
@@ -5496,4 +5515,431 @@ def probe_capabilities_task() -> Dict[str, Any]:
 def sample_telemetry_task() -> Dict[str, Any]:
     """Return real OS/Docker CPU load and RAM telemetry from the Celery worker container."""
     return sample_node_telemetry()
+
+
+# ---------------------------------------------------------------------------
+# Async Mesh-Independence Study (GCI) & International V&V Suite Celery Tasks
+# ---------------------------------------------------------------------------
+@celery_app.task(
+    name="universal_dispatcher.run_mesh_study_task",
+    bind=True,
+    soft_time_limit=int(os.getenv("CAE_MESH_STUDY_SOFT_TIME_LIMIT_SECONDS", "1200")),
+    time_limit=int(os.getenv("CAE_MESH_STUDY_TIME_LIMIT_SECONDS", "1260")),
+)
+def run_mesh_study_task(
+    self,
+    payload: Dict[str, Any],
+    physics_type: str,
+    key_result: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Execute 3-level Celik GCI mesh-independence study asynchronously inside the Celery worker."""
+    task_id = getattr(self.request, "id", None)
+    logs: List[str] = [
+        f"[{datetime.now(timezone.utc).isoformat()}] Starting 3-level mesh independence study ({physics_type}, key={key_result or 'default'})."
+    ]
+    completed_levels: List[Dict[str, Any]] = []
+
+    def _emit(progress: int, msg: str) -> None:
+        tel = sample_node_telemetry()
+        _task_progress(
+            self,
+            progress,
+            msg,
+            logs=list(logs),
+            levels=list(completed_levels),
+            physics_type=physics_type,
+            telemetry=tel,
+        )
+        _record_job_state(
+            task_id,
+            "RUNNING",
+            progress=progress,
+            logs=list(logs),
+            result={
+                "partial": True,
+                "levels": list(completed_levels),
+                "status_message": msg,
+            },
+        )
+
+    _emit(10, "Initializing 3-level mesh independence study (coarse / medium / fine)")
+    level_done_progress = {1: 35, 2: 65, 3: 95}
+
+    def _on_level_start(idx: int, total: int, name: str, level_payload: Dict[str, Any]) -> None:
+        size_note = (
+            f"h={level_payload.get('mesh_size')}"
+            if level_payload.get("mesh_size") is not None
+            else f"divisions={((level_payload.get('mesh') or {}).get('divisions'))}"
+        )
+        msg = f"[Level {idx}/{total}] Running '{name}' mesh ({size_note}) via local solver..."
+        logs.append(f"[{datetime.now(timezone.utc).isoformat()}] {msg}")
+        start_pct = 12 if idx == 1 else (38 if idx == 2 else 68)
+        _emit(start_pct, msg)
+
+    def _on_level_complete(
+        idx: int,
+        total: int,
+        entry: Dict[str, Any],
+        all_levels: List[Dict[str, Any]],
+    ) -> None:
+        completed_levels.clear()
+        completed_levels.extend(all_levels)
+        msg = (
+            f"[Level {idx}/{total}] Completed '{entry.get('level')}' mesh: "
+            f"cells={entry.get('cells')}, key_result={entry.get('key_result')}"
+        )
+        logs.append(f"[{datetime.now(timezone.utc).isoformat()}] {msg}")
+        _emit(level_done_progress.get(idx, 95), msg)
+
+    def _run_local_level(level_payload: Dict[str, Any]) -> Dict[str, Any]:
+        return execute_simulation({**level_payload, "execution_mode": "direct"})
+
+    try:
+        study = run_mesh_study(
+            payload,
+            physics_type,
+            key_result,
+            _run_local_level,
+            on_level_start=_on_level_start,
+            on_level_complete=_on_level_complete,
+        )
+        gci_val = study.get("gci_fine_percent")
+        summary_msg = (
+            f"Mesh study completed: convergence={study.get('convergence_type')}, "
+            + (f"GCI_fine={gci_val}%" if gci_val is not None else "no GCI")
+        )
+        logs.append(f"[{datetime.now(timezone.utc).isoformat()}] {summary_msg}")
+        final_payload = {"success": True, "study": study}
+        _task_progress(
+            self,
+            100,
+            summary_msg,
+            logs=list(logs),
+            levels=study.get("levels", []),
+            physics_type=physics_type,
+            telemetry=sample_node_telemetry(),
+        )
+        _record_job_state(
+            task_id,
+            "COMPLETED",
+            progress=100,
+            logs=list(logs),
+            result=final_payload,
+        )
+        return final_payload
+    except KeyResultUnavailable as exc:
+        err_msg = str(exc)
+        logs.append(f"[{datetime.now(timezone.utc).isoformat()}] ERROR [KEY_RESULT_UNAVAILABLE]: {err_msg}")
+        failure = {"success": False, "code": "KEY_RESULT_UNAVAILABLE", "error": err_msg}
+        _record_job_state(task_id, "FAILED", progress=100, logs=list(logs), result=failure, error=err_msg)
+        return failure
+    except MeshStudyError as exc:
+        err_msg = str(exc)
+        logs.append(f"[{datetime.now(timezone.utc).isoformat()}] ERROR [{exc.code}]: {err_msg}")
+        failure = {"success": False, "code": exc.code, "error": err_msg}
+        _record_job_state(task_id, "FAILED", progress=100, logs=list(logs), result=failure, error=err_msg)
+        return failure
+    except Exception as exc:
+        err_msg = str(exc)
+        logs.append(f"[{datetime.now(timezone.utc).isoformat()}] ERROR [MESH_STUDY_FAILED]: {err_msg}")
+        failure = {"success": False, "code": "MESH_STUDY_FAILED", "error": err_msg}
+        _record_job_state(task_id, "FAILED", progress=100, logs=list(logs), result=failure, error=err_msg)
+        return failure
+
+
+@celery_app.task(
+    name="universal_dispatcher.run_vv_suite_task",
+    bind=True,
+    soft_time_limit=int(os.getenv("CAE_VV_SOFT_TIME_LIMIT_SECONDS", "1500")),
+    time_limit=int(os.getenv("CAE_VV_TIME_LIMIT_SECONDS", "1560")),
+)
+def run_vv_suite_task(self, selected_ids: Optional[List[str]] = None) -> Dict[str, Any]:
+    """Execute international ASME/NAFEMS/NASA TMR V&V benchmarks asynchronously inside the worker."""
+    from vv_regression_suite import generate_vv_certificate_markdown, run_vv_suite
+
+    task_id = getattr(self.request, "id", None)
+    logs: List[str] = [
+        f"[{datetime.now(timezone.utc).isoformat()}] Starting V&V verification suite ({'all 6 benchmarks' if not selected_ids else ', '.join(selected_ids)})."
+    ]
+    partial_results: List[Dict[str, Any]] = []
+
+    def _emit(progress: int, msg: str, completed_count: int = 0, total_count: int = 0) -> None:
+        tel = sample_node_telemetry()
+        _task_progress(
+            self,
+            progress,
+            msg,
+            logs=list(logs),
+            results=list(partial_results),
+            completed_count=completed_count,
+            total_count=total_count,
+            telemetry=tel,
+        )
+        _record_job_state(
+            task_id,
+            "RUNNING",
+            progress=progress,
+            logs=list(logs),
+            result={
+                "partial": True,
+                "results": list(partial_results),
+                "completed_count": completed_count,
+                "total_count": total_count,
+                "status_message": msg,
+            },
+        )
+
+    _emit(5, "Probing real solver binaries on worker node...")
+    caps = probe_worker_capabilities()
+    total_expected = len(selected_ids) if selected_ids else 6
+
+    def _on_bench_start(idx: int, total: int, bid: str) -> None:
+        msg = f"[V&V {idx}/{total}] Executing benchmark {bid}..."
+        logs.append(f"[{datetime.now(timezone.utc).isoformat()}] {msg}")
+        pct = min(92, 8 + int(((idx - 1) / max(total, 1)) * 84))
+        _emit(pct, msg, completed_count=idx - 1, total_count=total)
+
+    def _on_bench_complete(
+        idx: int,
+        total: int,
+        bench_result: Dict[str, Any],
+        all_results: List[Dict[str, Any]],
+    ) -> None:
+        partial_results.clear()
+        partial_results.extend(all_results)
+        err_str = (
+            f"err={bench_result.get('relative_error_percent')}%"
+            if isinstance(bench_result.get("relative_error_percent"), (int, float))
+            else "no numeric error"
+        )
+        msg = (
+            f"[V&V {idx}/{total}] {bench_result.get('benchmark_id')}: "
+            f"{bench_result.get('status')} ({err_str})"
+        )
+        logs.append(f"[{datetime.now(timezone.utc).isoformat()}] {msg}")
+        pct = min(95, 10 + int(round((idx / max(total, 1)) * 85)))
+        _emit(pct, msg, completed_count=idx, total_count=total)
+
+    def _run_local_vv(level_payload: Dict[str, Any]) -> Dict[str, Any]:
+        return execute_simulation({**level_payload, "execution_mode": "direct"})
+
+    try:
+        report = run_vv_suite(
+            selected_ids,
+            executor=_run_local_vv,
+            capabilities=caps,
+            on_benchmark_start=_on_bench_start,
+            on_benchmark_complete=_on_bench_complete,
+        )
+        cert_md = generate_vv_certificate_markdown(report)
+        summary = report.get("summary") or {}
+        final_msg = (
+            f"V&V suite completed: {report.get('overall_status')} "
+            f"({summary.get('passed', 0)} PASS / {summary.get('failed', 0)} FAIL / {summary.get('skipped', 0)} SKIPPED)"
+        )
+        logs.append(f"[{datetime.now(timezone.utc).isoformat()}] {final_msg}")
+        final_payload = {
+            "success": True,
+            "report": report,
+            "certificate_markdown": cert_md,
+        }
+        _task_progress(
+            self,
+            100,
+            final_msg,
+            logs=list(logs),
+            results=report.get("results", []),
+            completed_count=total_expected,
+            total_count=total_expected,
+            telemetry=sample_node_telemetry(),
+        )
+        _record_job_state(
+            task_id,
+            "COMPLETED",
+            progress=100,
+            logs=list(logs),
+            result=final_payload,
+        )
+        return final_payload
+    except Exception as exc:
+        err_msg = str(exc)
+        logs.append(f"[{datetime.now(timezone.utc).isoformat()}] ERROR [VV_SUITE_FAILED]: {err_msg}")
+        failure = {"success": False, "code": "VV_SUITE_FAILED", "error": err_msg}
+        _record_job_state(task_id, "FAILED", progress=100, logs=list(logs), result=failure, error=err_msg)
+        return failure
+
+
+# ---------------------------------------------------------------------------
+# Lightweight Redis Worker Heartbeat (Replaces Blocking Health Probe)
+# ---------------------------------------------------------------------------
+WORKER_HEARTBEAT_PREFIX = "naseer:worker:heartbeat:"
+WORKER_HEARTBEAT_TTL_SEC = 25
+WORKER_HEARTBEAT_INTERVAL_SEC = 10.0
+WORKER_CAPABILITIES_REFRESH_SEC = 60.0
+
+_ACTIVE_TASKS_LOCK = threading.Lock()
+_ACTIVE_TASKS_COUNT = 0
+_HEARTBEAT_LOCK = threading.Lock()
+_HEARTBEAT_STOP_EVENT: Optional[threading.Event] = None
+_HEARTBEAT_THREAD: Optional[threading.Thread] = None
+_HEARTBEAT_KEY: Optional[str] = None
+
+
+def _get_heartbeat_redis_client() -> Optional[Any]:
+    if redis_lib is None:
+        return None
+    try:
+        return redis_lib.Redis.from_url(
+            REDIS_URL,
+            socket_connect_timeout=1.5,
+            socket_timeout=1.5,
+            decode_responses=True,
+        )
+    except Exception:
+        return None
+
+
+def _build_worker_heartbeat_payload(
+    *,
+    hostname: str,
+    concurrency: int,
+    solvers: Dict[str, Any],
+    queued_tasks: int = 0,
+) -> Dict[str, Any]:
+    host_cores = os.cpu_count() or 1
+    mpi_cores = max(concurrency, int(os.getenv("NASEER_MPI_CORES_PER_WORKER", str(min(host_cores, 4)))))
+    with _ACTIVE_TASKS_LOCK:
+        active_count = max(0, _ACTIVE_TASKS_COUNT)
+    return {
+        "name": hostname,
+        "status": "ONLINE",
+        "pid": os.getpid(),
+        "concurrency": concurrency,
+        "mpi_cores": mpi_cores,
+        "solvers": solvers,
+        "active_tasks": active_count,
+        "queued_tasks": max(0, int(queued_tasks)),
+        "updated_at_utc": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+def _heartbeat_loop(hostname: str, concurrency: int, stop_event: threading.Event) -> None:
+    logger = logging.getLogger(__name__)
+    key = f"{WORKER_HEARTBEAT_PREFIX}{hostname}"
+    cached_solvers: Dict[str, Any] = probe_worker_capabilities()
+    last_probe_mono = time.monotonic()
+
+    while not stop_event.is_set():
+        now_mono = time.monotonic()
+        if now_mono - last_probe_mono >= WORKER_CAPABILITIES_REFRESH_SEC:
+            try:
+                cached_solvers = probe_worker_capabilities()
+                last_probe_mono = now_mono
+            except Exception:
+                logger.debug("Worker capability refresh failed", exc_info=True)
+
+        client = _get_heartbeat_redis_client()
+        if client is not None:
+            try:
+                queued_len = 0
+                try:
+                    raw_len = client.llen("celery")
+                    queued_len = int(raw_len or 0)
+                except Exception:
+                    queued_len = 0
+                payload = _build_worker_heartbeat_payload(
+                    hostname=hostname,
+                    concurrency=concurrency,
+                    solvers=cached_solvers,
+                    queued_tasks=queued_len,
+                )
+                client.set(key, json.dumps(payload, ensure_ascii=False), ex=WORKER_HEARTBEAT_TTL_SEC)
+            except Exception:
+                logger.debug("Worker heartbeat write to Redis failed", exc_info=True)
+            finally:
+                try:
+                    client.close()
+                except Exception:
+                    pass
+
+        stop_event.wait(WORKER_HEARTBEAT_INTERVAL_SEC)
+
+
+def start_worker_heartbeat(hostname: Optional[str] = None, concurrency: Optional[int] = None) -> None:
+    global _HEARTBEAT_STOP_EVENT, _HEARTBEAT_THREAD, _HEARTBEAT_KEY
+    resolved_host = hostname or f"celery@{socket.gethostname()}"
+    resolved_conc = max(1, int(concurrency or os.getenv("CELERY_CONCURRENCY", "1")))
+    with _HEARTBEAT_LOCK:
+        if _HEARTBEAT_THREAD is not None and _HEARTBEAT_THREAD.is_alive():
+            return
+        _HEARTBEAT_STOP_EVENT = threading.Event()
+        _HEARTBEAT_KEY = f"{WORKER_HEARTBEAT_PREFIX}{resolved_host}"
+        _HEARTBEAT_THREAD = threading.Thread(
+            target=_heartbeat_loop,
+            args=(resolved_host, resolved_conc, _HEARTBEAT_STOP_EVENT),
+            name=f"naseer-heartbeat-{resolved_host}",
+            daemon=True,
+        )
+        _HEARTBEAT_THREAD.start()
+
+
+def stop_worker_heartbeat() -> None:
+    global _HEARTBEAT_STOP_EVENT, _HEARTBEAT_THREAD, _HEARTBEAT_KEY
+    with _HEARTBEAT_LOCK:
+        stop_ev = _HEARTBEAT_STOP_EVENT
+        thread = _HEARTBEAT_THREAD
+        key = _HEARTBEAT_KEY
+        _HEARTBEAT_STOP_EVENT = None
+        _HEARTBEAT_THREAD = None
+        _HEARTBEAT_KEY = None
+    if stop_ev is not None:
+        stop_ev.set()
+    if thread is not None and thread.is_alive():
+        thread.join(timeout=2.0)
+    if key:
+        client = _get_heartbeat_redis_client()
+        if client is not None:
+            try:
+                client.delete(key)
+            except Exception:
+                pass
+            finally:
+                try:
+                    client.close()
+                except Exception:
+                    pass
+
+
+if task_prerun is not None:
+    @task_prerun.connect
+    def _on_task_prerun(*args: Any, **kwargs: Any) -> None:
+        global _ACTIVE_TASKS_COUNT
+        with _ACTIVE_TASKS_LOCK:
+            _ACTIVE_TASKS_COUNT += 1
+
+
+if task_postrun is not None:
+    @task_postrun.connect
+    def _on_task_postrun(*args: Any, **kwargs: Any) -> None:
+        global _ACTIVE_TASKS_COUNT
+        with _ACTIVE_TASKS_LOCK:
+            _ACTIVE_TASKS_COUNT = max(0, _ACTIVE_TASKS_COUNT - 1)
+
+
+if worker_ready is not None:
+    @worker_ready.connect
+    def _on_worker_ready(sender: Any = None, **kwargs: Any) -> None:
+        hostname = getattr(sender, "hostname", None) or f"celery@{socket.gethostname()}"
+        concurrency = getattr(sender, "concurrency", None)
+        if concurrency is None and sender is not None:
+            pool = getattr(sender, "pool", None)
+            concurrency = getattr(pool, "limit", None)
+        start_worker_heartbeat(hostname=hostname, concurrency=concurrency)
+
+
+if worker_shutdown is not None:
+    @worker_shutdown.connect
+    def _on_worker_shutdown(sender: Any = None, **kwargs: Any) -> None:
+        stop_worker_heartbeat()
+
 

@@ -62,6 +62,15 @@ const HOP_BY_HOP_HEADERS = new Set([
 
 async function proxyToFastApi(req: Request, res: Response) {
   let body: Buffer | undefined;
+  const pathname = (req.originalUrl || '').split('?')[0];
+  const isSseRoute = pathname.endsWith('/stream');
+  const abortController = new AbortController();
+  const handleClientClose = () => {
+    if (!res.writableEnded) {
+      abortController.abort();
+    }
+  };
+
   try {
     const headers: Record<string, string> = {};
     for (const [name, value] of Object.entries(req.headers)) {
@@ -76,19 +85,90 @@ async function proxyToFastApi(req: Request, res: Response) {
     }
 
     const targetUrl = `${activeCloudUrl}${req.originalUrl}`;
-    const timeoutMs = req.originalUrl.includes('mesh-study') || req.originalUrl.includes('parametric-sweep') || req.originalUrl.includes('export-case') ? 180000 : 420000;
+    const timeoutMs =
+      req.originalUrl.includes('mesh-study') ||
+      req.originalUrl.includes('parametric-sweep') ||
+      req.originalUrl.includes('export-case')
+        ? 180000
+        : 420000;
+
+    let signal: AbortSignal;
+    if (isSseRoute) {
+      req.on('close', handleClientClose);
+      signal = abortController.signal;
+    } else {
+      signal = AbortSignal.timeout(timeoutMs);
+    }
+
     const upstream = await fetch(targetUrl, {
       method: req.method,
       headers,
       body: body ? new Uint8Array(body) : undefined,
-      signal: AbortSignal.timeout(timeoutMs),
+      signal,
     });
 
+    const contentType = (upstream.headers.get('content-type') || '').toLowerCase();
+    const isEventStream = isSseRoute || contentType.includes('text/event-stream');
+
+    if (isEventStream && upstream.body && upstream.status < 400) {
+      req.on('close', handleClientClose);
+      res.status(upstream.status);
+      upstream.headers.forEach((value, name) => {
+        const lower = name.toLowerCase();
+        if (!HOP_BY_HOP_HEADERS.has(lower) && lower !== 'cache-control' && lower !== 'x-accel-buffering') {
+          res.setHeader(name, value);
+        }
+      });
+      res.setHeader('Content-Type', upstream.headers.get('content-type') || 'text/event-stream; charset=utf-8');
+      res.setHeader('Cache-Control', 'no-cache');
+      res.setHeader('X-Accel-Buffering', 'no');
+      res.setHeader('Connection', 'keep-alive');
+      if (typeof res.flushHeaders === 'function') {
+        res.flushHeaders();
+      }
+
+      const reader = upstream.body.getReader();
+      try {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          if (res.writableEnded || req.destroyed) {
+            await reader.cancel().catch(() => {});
+            break;
+          }
+          if (value && value.byteLength > 0) {
+            res.write(Buffer.from(value));
+          }
+        }
+      } catch (streamErr: any) {
+        if (streamErr?.name !== 'AbortError' && !req.destroyed) {
+          console.warn('[SSE Proxy] Upstream stream terminated:', streamErr?.message || streamErr);
+        }
+      } finally {
+        req.off('close', handleClientClose);
+        reader.releaseLock();
+        if (!res.writableEnded) {
+          res.end();
+        }
+      }
+      return;
+    }
+
+    req.off('close', handleClientClose);
     upstream.headers.forEach((value, name) => {
       if (!HOP_BY_HOP_HEADERS.has(name.toLowerCase())) res.setHeader(name, value);
     });
     return res.status(upstream.status).send(Buffer.from(await upstream.arrayBuffer()));
   } catch (err: any) {
+    req.off('close', handleClientClose);
+    if (err?.name === 'AbortError' && (req.destroyed || res.writableEnded)) {
+      if (!res.writableEnded) res.end();
+      return;
+    }
+    if (res.headersSent) {
+      if (!res.writableEnded) res.end();
+      return;
+    }
     return res.status(502).json({
       success: false,
       code: 'PYTHON_SOLVER_UNREACHABLE',

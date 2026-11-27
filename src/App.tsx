@@ -56,6 +56,7 @@ import {
 } from './types/studio';
 import { exportToWordDocument, exportToCSV, exportToLatex, exportToJournalHTML, hasRealSimulationRun } from './utils/exporter';
 import { setEnterpriseAuthToken as syncEnterpriseAuthToken, withEnterpriseAuthHeaders } from './utils/enterpriseAuth';
+import { readJsonSafe, streamJobUntilDone } from './utils/jobStream';
 import { CleanWorkspaceHome } from './components/CleanWorkspaceHome';
 import { OverviewTab } from './components/OverviewTab';
 import { MeshStudyTab } from './components/MeshStudyTab';
@@ -158,6 +159,8 @@ export default function App() {
   const runIdRef = useRef(0);
   const issueIdRef = useRef(0);
   const activeTaskIdRef = useRef<string | null>(null);
+  const simAbortRef = useRef<AbortController | null>(null);
+  const meshStudyAbortRef = useRef<AbortController | null>(null);
   const isSolverRunning = solverJobStatus === 'queued' || solverJobStatus === 'running';
 
   const extractApiError = (body: any, fallback: string): string => {
@@ -205,6 +208,7 @@ export default function App() {
      }));
   const requestBody: Record<string, unknown> = {
     ...baseRequest,
+    project_id: currentProject.id,
     ...(appliedPhysicsOverrides || {}),
     ...(viewportBoundaryMarkers.length > 0 ? { boundary_markers: viewportBoundaryMarkers } : {}),
     ...(boundaryPatchesPayload.length > 0 ? { boundary_patches: boundaryPatchesPayload } : {}),
@@ -254,17 +258,13 @@ export default function App() {
       setLiveJobTelemetry(null);
       setJobWallClockSec(0);
 
-      for (;;) {
-        const statusResponse = await fetch(`/api/jobs/${encodeURIComponent(taskId)}`, {
-          headers: withEnterpriseAuthHeaders(),
-        });
-        const statusPayload = await readJson(statusResponse);
-        assertActive();
-        if (!statusResponse.ok) {
-          throw new Error(extractApiError(statusPayload, `Unable to read job ${taskId} (${statusResponse.status})`));
-        }
-        job = statusPayload;
-        const jobStatus = String(job?.status ?? 'QUEUED').toUpperCase();
+      simAbortRef.current?.abort();
+      const abortController = new AbortController();
+      simAbortRef.current = abortController;
+
+      const applyJobSnapshot = (snap: any) => {
+        if (runIdRef.current !== runId) return;
+        const jobStatus = String(snap?.status ?? 'QUEUED').toUpperCase();
         setSolverJobStatus(
           jobStatus === 'RUNNING' ? 'running' :
           jobStatus === 'COMPLETED' ? 'completed' :
@@ -272,22 +272,22 @@ export default function App() {
           jobStatus === 'CANCELLED' ? 'cancelled' :
           'queued'
         );
-        if (typeof job?.progress === 'number') setSolverProgress(job.progress);
-        if (typeof job?.current_iteration === 'number' && job.current_iteration > 0) {
-          setSolverCurrentIteration(job.current_iteration);
+        if (typeof snap?.progress === 'number') setSolverProgress(snap.progress);
+        if (typeof snap?.current_iteration === 'number' && snap.current_iteration > 0) {
+          setSolverCurrentIteration(snap.current_iteration);
         }
-        if (typeof job?.wall_clock_sec === 'number' && Number.isFinite(job.wall_clock_sec)) {
-          setJobWallClockSec(job.wall_clock_sec);
+        if (typeof snap?.wall_clock_sec === 'number' && Number.isFinite(snap.wall_clock_sec)) {
+          setJobWallClockSec(snap.wall_clock_sec);
         }
-        if (job?.telemetry && typeof job.telemetry === 'object') {
-          setLiveJobTelemetry(job.telemetry as LiveJobTelemetry);
+        if (snap?.telemetry && typeof snap.telemetry === 'object') {
+          setLiveJobTelemetry(snap.telemetry as LiveJobTelemetry);
         }
-        if (Array.isArray(job?.logs)) {
-          latestLogs = job.logs.map(String);
+        if (Array.isArray(snap?.logs) && snap.logs.length > 0) {
+          latestLogs = snap.logs.map(String);
           setSolverLogs(latestLogs);
         }
-        if (job?.live_residuals && typeof job.live_residuals === 'object') {
-          const liveSeries: ResidualSeries[] = Object.entries(job.live_residuals)
+        if (snap?.live_residuals && typeof snap.live_residuals === 'object') {
+          const liveSeries: ResidualSeries[] = Object.entries(snap.live_residuals)
             .map(([name, raw]: [string, any]) => {
               const iters: number[] = Array.isArray(raw?.iterations) ? raw.iterations : [];
               const vals: number[] = Array.isArray(raw?.values) ? raw.values : [];
@@ -301,30 +301,45 @@ export default function App() {
             setSolverResidualSeries(liveSeries);
           }
         }
-        if (jobStatus === 'COMPLETED') {
-          activeTaskIdRef.current = null;
-          setActiveTaskId(null);
-          const finalDur =
-            typeof job?.wall_clock_sec === 'number'
-              ? job.wall_clock_sec
-              : typeof job?.result?.process_time === 'number'
-                ? job.result.process_time
-                : null;
-          if (finalDur !== null) setLastCompletedDurationSec(finalDur);
-          break;
+      };
+
+      try {
+        job = await streamJobUntilDone(taskId, {
+          signal: abortController.signal,
+          pollIntervalMs: 1000,
+          onProgress: applyJobSnapshot,
+        });
+      } catch (streamErr: any) {
+        if (streamErr?.name === 'AbortError' || runIdRef.current !== runId) {
+          throw new SimulationCancelledError();
         }
-        if (jobStatus === 'FAILED' || jobStatus === 'CANCELLED') {
-          activeTaskIdRef.current = null;
-          setActiveTaskId(null);
-          const backendError = typeof job?.error === 'string' && job.error.trim() !== '' ? job.error : undefined;
-          if (backendError && !latestLogs.includes(backendError)) {
-            latestLogs = [...latestLogs, backendError];
-            setSolverLogs(latestLogs);
-          }
-          throw new Error(extractApiError(job, `Solver job ${jobStatus.toLowerCase()}`));
+        throw streamErr;
+      } finally {
+        if (simAbortRef.current === abortController) {
+          simAbortRef.current = null;
         }
-        await new Promise(resolve => setTimeout(resolve, 1000));
-        assertActive();
+      }
+
+      assertActive();
+      const finalStatus = String(job?.status ?? 'FAILED').toUpperCase();
+      activeTaskIdRef.current = null;
+      setActiveTaskId(null);
+
+      if (finalStatus === 'COMPLETED') {
+        const finalDur =
+          typeof job?.wall_clock_sec === 'number'
+            ? job.wall_clock_sec
+            : typeof job?.result?.process_time === 'number'
+              ? job.result.process_time
+              : null;
+        if (finalDur !== null) setLastCompletedDurationSec(finalDur);
+      } else {
+        const backendError = typeof job?.error === 'string' && job.error.trim() !== '' ? job.error : undefined;
+        if (backendError && !latestLogs.includes(backendError)) {
+          latestLogs = [...latestLogs, backendError];
+          setSolverLogs(latestLogs);
+        }
+        throw new Error(extractApiError(job, `Solver job ${finalStatus.toLowerCase()}`));
       }
     }
 
@@ -453,6 +468,7 @@ export default function App() {
         const isCht = !isFea && (c.heatFlux > 0 || (c.wallTempK ?? 0) > c.inletTempK + 0.1);
         const payload: Record<string, unknown> = isFea
           ? {
+              project_id: currentProject?.id || '',
               simulation_type: 'Structural_Static',
               execution_mode: 'celery',
               width_x: c.domainLengthM,
@@ -467,6 +483,7 @@ export default function App() {
               support_type: c.supportType,
             }
           : {
+              project_id: currentProject?.id || '',
               simulation_type: isCht ? 'CHT_Coupled' : 'CFD_Incompressible',
               execution_mode: 'celery',
               width_x: c.domainLengthM,
@@ -571,6 +588,8 @@ export default function App() {
     const taskId = activeTaskIdRef.current;
     activeTaskIdRef.current = null;
     runIdRef.current += 1;
+    simAbortRef.current?.abort();
+    simAbortRef.current = null;
     setSolverJobStatus('cancelled');
     setSolverProgress(null);
     setSolverLogs((prev) => [...prev, `[${new Date().toISOString()}] Simulation cancelled by user.`]);
@@ -601,7 +620,13 @@ export default function App() {
     setMeshStudyRunning(true);
     setMeshStudyError(null);
     setConsoleTab('logs');
-    setSolverLogs(previous => [...previous, `[${new Date().toISOString()}] Starting mesh independence study (${keyResultId}, 3 grid levels)`]);
+    const baseLogPrefix = `[${new Date().toISOString()}] Starting mesh independence study (${keyResultId}, 3 grid levels)`;
+    setSolverLogs(previous => [...previous, baseLogPrefix]);
+
+    meshStudyAbortRef.current?.abort();
+    const abortController = new AbortController();
+    meshStudyAbortRef.current = abortController;
+
     try {
       const boundaryPatchesPayload = (currentProject.boundaryConditions || [])
         .filter((bc) => Boolean(bc.patchName && bc.patchName.trim()))
@@ -614,6 +639,7 @@ export default function App() {
         }));
       const requestBody = {
         ...buildSimulationRequest(simulationInputs),
+        project_id: currentProject.id,
         ...(viewportBoundaryMarkers.length > 0 ? { boundary_markers: viewportBoundaryMarkers } : {}),
         ...(boundaryPatchesPayload.length > 0 ? { boundary_patches: boundaryPatchesPayload } : {}),
         ...(viewportRegionBox ? { region_box: viewportRegionBox } : {}),
@@ -624,20 +650,91 @@ export default function App() {
         method: 'POST',
         headers: withEnterpriseAuthHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify(requestBody),
+        signal: abortController.signal,
       });
-      const payload = await readJson(response);
+      const parsed = await readJsonSafe<any>(response);
+      const payload = parsed.data;
       if (!response.ok || payload?.success === false) {
-        throw new Error(extractApiError(payload, `Mesh study failed (${response.status})`));
+        throw new Error(
+          payload
+            ? extractApiError(payload, `Mesh study failed (${response.status})`)
+            : parsed.diagnosticMessage || `Mesh study failed (${response.status})`,
+        );
       }
-      if (!isCurrentMeshStudy(payload?.study)) {
+
+      let rawStudy: any = payload?.study;
+
+      // Async Celery job (HTTP 202 Accepted) -> track live via SSE /api/jobs/{taskId}/stream (with polling fallback)
+      if (!rawStudy && typeof payload?.task_id === 'string' && payload.task_id) {
+        const taskId: string = payload.task_id;
+        setSolverJobStatus('queued');
+        setSolverProgress(5);
+        setSolverLogs(previous => [
+          ...previous,
+          `[${new Date().toISOString()}] Mesh study queued (task ${taskId.slice(0, 8)}) — streaming live level-by-level solver output...`,
+        ]);
+        const seenLogSet = new Set<string>();
+        const finalJob = await streamJobUntilDone(taskId, {
+          signal: abortController.signal,
+          pollIntervalMs: 1000,
+          onProgress: (snap: any) => {
+            const st = String(snap?.status || 'QUEUED').toUpperCase();
+            setSolverJobStatus(
+              st === 'RUNNING' ? 'running' :
+              st === 'COMPLETED' ? 'completed' :
+              st === 'FAILED' ? 'failed' :
+              st === 'CANCELLED' ? 'cancelled' :
+              'queued',
+            );
+            if (typeof snap?.progress === 'number') {
+              setSolverProgress(snap.progress);
+            }
+            if (snap?.telemetry && typeof snap.telemetry === 'object') {
+              setLiveJobTelemetry(snap.telemetry as LiveJobTelemetry);
+            }
+            if (typeof snap?.wall_clock_sec === 'number' && Number.isFinite(snap.wall_clock_sec)) {
+              setJobWallClockSec(snap.wall_clock_sec);
+            }
+            if (Array.isArray(snap?.logs) && snap.logs.length > 0) {
+              const incoming: string[] = [];
+              for (const line of snap.logs) {
+                const text = String(line);
+                if (!seenLogSet.has(text)) {
+                  seenLogSet.add(text);
+                  incoming.push(text);
+                }
+              }
+              if (incoming.length > 0) {
+                setSolverLogs(previous => [...previous, ...incoming]);
+              }
+            }
+          },
+        });
+
+        const finalStatus = String(finalJob?.status || 'FAILED').toUpperCase();
+        if (finalStatus !== 'COMPLETED') {
+          throw new Error(
+            extractApiError(finalJob?.result || finalJob, `Mesh study job ${finalStatus.toLowerCase()}`),
+          );
+        }
+        const jobRes = finalJob?.result;
+        if (jobRes?.success === false) {
+          throw new Error(extractApiError(jobRes, 'Mesh study failed on worker'));
+        }
+        rawStudy = jobRes?.study ?? finalJob?.study;
+      }
+
+      if (!isCurrentMeshStudy(rawStudy)) {
         throw new Error('The mesh study backend returned an unrecognised response (expected schema version 2).');
       }
-      const study = payload.study;
+      const study = rawStudy;
       const meshStudyResult: MeshStudyResult = { ...study, recordedAt: new Date().toISOString() };
       setCurrentProject(project => (project && project.id === studiedProjectId ? { ...project, meshStudyResult } : project));
       const outcome = study.gci_fine_percent !== null
         ? `GCI (fine) = ${study.gci_fine_percent}%`
         : `no GCI (${study.convergence_type})`;
+      setSolverJobStatus('completed');
+      setSolverProgress(100);
       setSolverLogs(previous => [
         ...previous,
         `[${new Date().toISOString()}] Mesh study complete: ${study.key_result.label}, ${study.convergence_type}, ${outcome}` +
@@ -645,13 +742,18 @@ export default function App() {
       ]);
       setSaveToast(`Mesh independence study complete — ${outcome}`);
       setTimeout(() => setSaveToast(null), 4000);
-    } catch (error) {
+    } catch (error: any) {
+      if (error?.name === 'AbortError') return;
       const message = error instanceof Error ? error.message : 'Mesh study failed';
       setMeshStudyError(message);
+      setSolverJobStatus('failed');
       setSolverLogs(previous => [...previous, `[${new Date().toISOString()}] ERROR: ${message}`]);
       recordIssue(message);
       setConsoleTab('errors');
     } finally {
+      if (meshStudyAbortRef.current === abortController) {
+        meshStudyAbortRef.current = null;
+      }
       setMeshStudyRunning(false);
     }
   };
@@ -664,10 +766,16 @@ export default function App() {
     setCurrentProject(project => (project ? { ...project, validationProfile } : project));
   };
 
-  useEffect(() => () => { runIdRef.current += 1; }, []);
+  useEffect(() => () => {
+    runIdRef.current += 1;
+    simAbortRef.current?.abort();
+    meshStudyAbortRef.current?.abort();
+  }, []);
 
   useEffect(() => {
     runIdRef.current += 1;
+    simAbortRef.current?.abort();
+    meshStudyAbortRef.current?.abort();
     setDocumentOpen(false);
     setActiveStep('geometry');
     setResults(null);

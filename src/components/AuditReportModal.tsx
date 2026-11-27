@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
   X,
   ShieldCheck,
@@ -20,8 +20,10 @@ import {
   XCircle,
   MinusCircle,
   FileJson,
+  Square,
 } from 'lucide-react';
 import { withEnterpriseAuthHeaders } from '../utils/enterpriseAuth';
+import { readJsonSafe, streamJobUntilDone } from '../utils/jobStream';
 
 interface AuditReportModalProps {
   isOpen: boolean;
@@ -143,24 +145,29 @@ export const AuditReportModal: React.FC<AuditReportModalProps> = ({ isOpen, onCl
   const [vvBenchmarks, setVvBenchmarks] = useState<VVBenchmarkSpec[]>([]);
   const [vvLoadingCatalog, setVvLoadingCatalog] = useState(false);
   const [vvRunningId, setVvRunningId] = useState<string | null>(null);
+  const [vvActiveTaskId, setVvActiveTaskId] = useState<string | null>(null);
+  const [vvProgress, setVvProgress] = useState<number>(0);
+  const [vvStatusMessage, setVvStatusMessage] = useState<string>('');
   const [vvError, setVvError] = useState<string | null>(null);
   const [vvResultsById, setVvResultsById] = useState<Record<string, VVBenchmarkResult>>({});
   const [vvLatestReport, setVvLatestReport] = useState<VVSuiteReport | null>(null);
   const [vvCertificateMd, setVvCertificateMd] = useState<string>('');
+  const vvAbortRef = useRef<AbortController | null>(null);
 
   const fetchLiveAuditData = useCallback(() => {
     fetch('/api/cloud/status')
-      .then((res) => res.json())
-      .then((data) => setLiveStatus(data))
+      .then((res) => readJsonSafe<LiveCloudStatus>(res))
+      .then((parsed) => setLiveStatus(parsed.data))
       .catch(() => setLiveStatus(null));
 
     setVvLoadingCatalog(true);
     setVvError(null);
     fetch('/api/vv/benchmarks')
       .then(async (res) => {
-        const data = await res.json();
+        const parsed = await readJsonSafe<any>(res);
+        const data = parsed.data;
         if (!res.ok || !data?.success) {
-          throw new Error(data?.error || `HTTP ${res.status}`);
+          throw new Error(data?.error || parsed.diagnosticMessage || `HTTP ${res.status}`);
         }
         setVvBenchmarks(Array.isArray(data.benchmarks) ? data.benchmarks : []);
       })
@@ -174,38 +181,149 @@ export const AuditReportModal: React.FC<AuditReportModalProps> = ({ isOpen, onCl
   }, []);
 
   useEffect(() => {
-    if (!isOpen) return;
+    if (!isOpen) {
+      vvAbortRef.current?.abort();
+      vvAbortRef.current = null;
+      return;
+    }
     fetchLiveAuditData();
+    return () => {
+      vvAbortRef.current?.abort();
+      vvAbortRef.current = null;
+    };
   }, [isOpen, fetchLiveAuditData]);
 
   if (!isOpen) return null;
 
+  const mergeBenchmarkResults = (incoming: VVBenchmarkResult[]) => {
+    if (!Array.isArray(incoming) || incoming.length === 0) return;
+    setVvResultsById((prev) => {
+      const next = { ...prev };
+      for (const r of incoming) {
+        if (r && r.benchmark_id) {
+          next[r.benchmark_id] = r;
+        }
+      }
+      return next;
+    });
+  };
+
+  const handleCancelVV = async () => {
+    const taskId = vvActiveTaskId;
+    vvAbortRef.current?.abort();
+    vvAbortRef.current = null;
+    setVvActiveTaskId(null);
+    setVvRunningId(null);
+    setVvStatusMessage('تم إيقاف اختبار التحقق بناءً على طلب المهندس.');
+    if (taskId) {
+      try {
+        await fetch(`/api/jobs/${encodeURIComponent(taskId)}/cancel`, {
+          method: 'POST',
+          headers: withEnterpriseAuthHeaders(),
+        });
+      } catch {
+        // Ignore network errors during cancel
+      }
+    }
+  };
+
   const handleRunVV = async (benchmarkId: string) => {
+    vvAbortRef.current?.abort();
+    const abortController = new AbortController();
+    vvAbortRef.current = abortController;
+
     setVvRunningId(benchmarkId);
+    setVvActiveTaskId(null);
+    setVvProgress(4);
+    setVvStatusMessage(
+      benchmarkId === 'all'
+        ? 'جارٍ إرسال حزمة الاختبارات الدولية (6 معايير) إلى حاوية العامل...'
+        : `جارٍ إرسال اختبار ${benchmarkId} إلى حاوية العامل...`,
+    );
     setVvError(null);
+
     try {
       const res = await fetch('/api/vv/run', {
         method: 'POST',
         headers: withEnterpriseAuthHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify({ benchmark_id: benchmarkId, execution_mode: 'celery' }),
+        signal: abortController.signal,
       });
-      const data = await res.json();
-      if (!res.ok || !data?.success || !data?.report) {
-        throw new Error(data?.error || `HTTP ${res.status}`);
+      const parsed = await readJsonSafe<any>(res);
+      const data = parsed.data;
+      if (!res.ok || !data || data.success === false) {
+        throw new Error(data?.error || parsed.diagnosticMessage || `HTTP ${res.status}`);
+      }
+
+      // Async Celery execution (HTTP 202 Accepted) -> live SSE stream with polling fallback
+      if (typeof data.task_id === 'string' && data.task_id && !data.report) {
+        const taskId: string = data.task_id;
+        setVvActiveTaskId(taskId);
+        setVvProgress(8);
+        setVvStatusMessage(`تم إدراج المهمة (${taskId.slice(0, 8)}) في طابور المحركات — بانتظار البث الحي...`);
+
+        const finalJob = await streamJobUntilDone(taskId, {
+          signal: abortController.signal,
+          pollIntervalMs: 1000,
+          onProgress: (snap: any) => {
+            if (typeof snap?.progress === 'number') {
+              setVvProgress(Math.max(5, Math.min(100, Math.round(snap.progress))));
+            }
+            if (typeof snap?.status_message === 'string' && snap.status_message.trim()) {
+              setVvStatusMessage(snap.status_message);
+            } else if (Array.isArray(snap?.logs) && snap.logs.length > 0) {
+              setVvStatusMessage(String(snap.logs[snap.logs.length - 1]));
+            }
+            const partialList =
+              (Array.isArray(snap?.results) && snap.results) ||
+              (Array.isArray(snap?.result?.results) && snap.result.results) ||
+              [];
+            if (partialList.length > 0) {
+              mergeBenchmarkResults(partialList);
+            }
+          },
+        });
+
+        const finalStatus = String(finalJob?.status || 'FAILED').toUpperCase();
+        if (finalStatus === 'CANCELLED') {
+          setVvStatusMessage('تم إلغاء تشغيل اختبارات التحقق.');
+          return;
+        }
+        const jobRes = finalJob?.result;
+        if (finalStatus !== 'COMPLETED' || !jobRes || jobRes.success === false || !jobRes.report) {
+          throw new Error(
+            jobRes?.error ||
+              finalJob?.error ||
+              `تعذر إكمال حزمة التحقق V&V (الحالة: ${finalStatus})`,
+          );
+        }
+        const report: VVSuiteReport = jobRes.report;
+        setVvLatestReport(report);
+        setVvCertificateMd(typeof jobRes.certificate_markdown === 'string' ? jobRes.certificate_markdown : '');
+        mergeBenchmarkResults(report.results || []);
+        setVvProgress(100);
+        setVvStatusMessage(`اكتملت حزمة التحقق بنجاح — الحكم العام: ${report.overall_status}`);
+        return;
+      }
+
+      // Direct synchronous mode fallback
+      if (!data.report) {
+        throw new Error('استجابة غير مكتملة من خادم التحقق (تقرير V&V مفقود).');
       }
       const report: VVSuiteReport = data.report;
       setVvLatestReport(report);
       setVvCertificateMd(typeof data.certificate_markdown === 'string' ? data.certificate_markdown : '');
-      setVvResultsById((prev) => {
-        const next = { ...prev };
-        for (const r of report.results || []) {
-          next[r.benchmark_id] = r;
-        }
-        return next;
-      });
+      mergeBenchmarkResults(report.results || []);
+      setVvProgress(100);
+      setVvStatusMessage(`اكتملت حزمة التحقق — الحكم العام: ${report.overall_status}`);
     } catch (err: any) {
+      if (err?.name === 'AbortError') return;
       setVvError(`فشل تشغيل اختبار التحقق (${benchmarkId}): ${err?.message || String(err)}`);
     } finally {
+      if (vvAbortRef.current === abortController) {
+        vvAbortRef.current = null;
+      }
+      setVvActiveTaskId(null);
       setVvRunningId(null);
     }
   };
@@ -433,8 +551,36 @@ export const AuditReportModal: React.FC<AuditReportModalProps> = ({ isOpen, onCl
                     )}
                     <span>{vvRunningId === 'all' ? 'جارٍ تشغيل الحزمة الكاملة...' : 'تشغيل الحزمة الكاملة وإصدار الشهادة'}</span>
                   </button>
+                  {vvRunningId !== null && (
+                    <button
+                      onClick={handleCancelVV}
+                      className="flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-bold bg-rose-600/90 hover:bg-rose-500 text-white transition-colors shadow-sm"
+                    >
+                      <Square className="w-3.5 h-3.5 fill-current" />
+                      <span>إيقاف الاختبار</span>
+                    </button>
+                  )}
                 </div>
               </div>
+
+              {/* Live SSE Progress Bar while V&V job is running */}
+              {vvRunningId !== null && (
+                <div className="p-3.5 rounded-xl bg-sky-950/40 border border-sky-500/40 space-y-2">
+                  <div className="flex items-center justify-between gap-2 text-xs">
+                    <div className="flex items-center gap-2 text-sky-200 font-semibold min-w-0">
+                      <Loader2 className="w-3.5 h-3.5 animate-spin text-sky-400 shrink-0" />
+                      <span className="truncate">{vvStatusMessage || 'جارٍ تنفيذ اختبارات التحقق الحية...'}</span>
+                    </div>
+                    <span className="font-mono font-bold text-sky-300 shrink-0">{vvProgress}%</span>
+                  </div>
+                  <div className="w-full h-2 rounded-full bg-slate-800 overflow-hidden">
+                    <div
+                      className="h-full bg-gradient-to-l from-amber-400 via-sky-400 to-emerald-400 transition-all duration-300"
+                      style={{ width: `${Math.max(4, Math.min(100, vvProgress))}%` }}
+                    />
+                  </div>
+                </div>
+              )}
 
               {vvError && (
                 <div className="flex items-start gap-2.5 p-3.5 rounded-xl bg-rose-950/50 border border-rose-500/40 text-rose-200 text-xs">

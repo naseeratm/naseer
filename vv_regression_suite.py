@@ -626,6 +626,8 @@ def run_vv_suite(
     executor: Optional[Callable[[Dict[str, Any]], Dict[str, Any]]] = None,
     capabilities: Optional[Mapping[str, Any]] = None,
     timeout_sec: float = 300.0,
+    on_benchmark_start: Optional[Callable[[int, int, str], None]] = None,
+    on_benchmark_complete: Optional[Callable[[int, int, Dict[str, Any], List[Dict[str, Any]]], None]] = None,
 ) -> Dict[str, Any]:
     """Run one, several, or all 6 international V&V benchmarks and build a signed certificate."""
     selected = benchmark_ids or [b["id"] for b in VV_BENCHMARKS]
@@ -640,16 +642,21 @@ def run_vv_suite(
 
     started_utc = datetime.now(timezone.utc).isoformat()
     t0 = time.perf_counter()
-    results = [
-        run_vv_benchmark(
+    results: List[Dict[str, Any]] = []
+    total = len(selected)
+    for idx, bid in enumerate(selected, start=1):
+        if on_benchmark_start is not None:
+            on_benchmark_start(idx, total, bid)
+        bench_result = run_vv_benchmark(
             bid,
             api_url=api_url,
             executor=executor,
             capabilities=capabilities,
             timeout_sec=timeout_sec,
         )
-        for bid in selected
-    ]
+        results.append(bench_result)
+        if on_benchmark_complete is not None:
+            on_benchmark_complete(idx, total, dict(bench_result), [dict(r) for r in results])
     total_sec = round(time.perf_counter() - t0, 3)
 
     passed_count = sum(1 for r in results if r["status"] == "PASS")
