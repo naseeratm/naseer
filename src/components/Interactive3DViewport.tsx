@@ -28,6 +28,8 @@ import {
   RotateCcw,
   LineChart,
   Camera,
+  Ruler,
+  X,
 } from 'lucide-react';
 import { VtkFieldPayload } from '../types/thesis';
 import { ColormapType, getColorFromColormap } from '../utils/physicsEngine';
@@ -35,6 +37,12 @@ import {
   computeVtkSurfaceGradientMagnitude,
   exportWebGLSnapshotPng,
 } from '../utils/postProcessingMaps';
+import {
+  computeMeasurementMetrics,
+  computeVtkPhysicalBounds,
+  formatLengthSI,
+  PhysicalPoint3D,
+} from '../utils/geometryMeasure';
 
 export type ShadingMode = 'shaded' | 'contour' | 'wireframe';
 export type ViewPreset = 'iso' | 'front' | 'top' | 'right';
@@ -117,6 +125,7 @@ const CUBE_FACES: { label: string; preset: ViewPreset; transform: string }[] = [
 type ActiveToolType =
   | 'orbit'
   | 'probe'
+  | 'measure'
   | 'tag_inlet'
   | 'tag_outlet'
   | 'tag_heat'
@@ -171,6 +180,7 @@ export const Interactive3DViewport: React.FC<Interactive3DViewportProps> = ({
   const markerObjectsMap = useRef<Map<string, THREE.Object3D>>(new Map());
   const regionBoxGroupRef = useRef<THREE.Group | null>(null);
   const sliceGuideGroupRef = useRef<THREE.Group | null>(null);
+  const measureGroupRef = useRef<THREE.Group | null>(null);
 
   // Base geometry arrays for non-destructive Deformation Scaling & Iso-Thresholding
   const baseVtkRef = useRef<{
@@ -194,6 +204,10 @@ export const Interactive3DViewport: React.FC<Interactive3DViewportProps> = ({
     scalarKey: '',
     scalars: undefined,
     unit: '',
+  });
+  const cadTransformRef = useRef<{ center: THREE.Vector3; scale: number }>({
+    center: new THREE.Vector3(0, 0, 0),
+    scale: 1,
   });
 
   const [showWireframe, setShowWireframe] = useState<boolean>(propShowMesh);
@@ -222,6 +236,12 @@ export const Interactive3DViewport: React.FC<Interactive3DViewportProps> = ({
   const [isPlaying, setIsPlaying] = useState<boolean>(false);
   const [showSurfaceGradient, setShowSurfaceGradient] = useState<boolean>(false);
   const [isExportingPng, setIsExportingPng] = useState<boolean>(false);
+
+  // Interactive 3D Ruler / Distance Measurement Tool (Zero-Mock physical coordinates)
+  const [measureP1, setMeasureP1] = useState<PhysicalPoint3D | null>(null);
+  const [measureP2, setMeasureP2] = useState<PhysicalPoint3D | null>(null);
+  const [measureHover, setMeasureHover] = useState<PhysicalPoint3D | null>(null);
+  const [copiedMeasure, setCopiedMeasure] = useState<boolean>(false);
 
   const [regionBox, setRegionBox] = useState<RegionBoxState>({
     enabled: false,
@@ -417,6 +437,10 @@ export const Interactive3DViewport: React.FC<Interactive3DViewportProps> = ({
 
   const activeToolRef = useRef<ActiveToolType>(activeTool);
   activeToolRef.current = activeTool;
+  const measureP1Ref = useRef<PhysicalPoint3D | null>(measureP1);
+  measureP1Ref.current = measureP1;
+  const measureP2Ref = useRef<PhysicalPoint3D | null>(measureP2);
+  measureP2Ref.current = measureP2;
   const isFEARef = useRef<boolean>(isFEA);
   isFEARef.current = isFEA;
   const hasSolvedRef = useRef<boolean>(hasSolvedResults || Boolean(vtkData));
@@ -425,6 +449,28 @@ export const Interactive3DViewport: React.FC<Interactive3DViewportProps> = ({
   fieldLabelRef.current = fieldLabel;
   const onBoundaryAddedRef = useRef(onBoundaryAdded);
   onBoundaryAddedRef.current = onBoundaryAdded;
+
+  const modelPhysicalBounds = useMemo(() => {
+    const vtkBounds = computeVtkPhysicalBounds(effectiveVtkData?.points);
+    if (vtkBounds) return vtkBounds;
+    if (cadStats) {
+      const [sx, sy, sz] = cadStats.dimensions;
+      return {
+        min: [-sx / 2, -sy / 2, -sz / 2] as [number, number, number],
+        max: [sx / 2, sy / 2, sz / 2] as [number, number, number],
+        size: [sx, sy, sz] as [number, number, number],
+        diagonalM: Math.hypot(sx, sy, sz),
+      };
+    }
+    return null;
+  }, [effectiveVtkData, cadStats]);
+
+  const activeMeasurement = useMemo(() => {
+    if (!measureP1) return null;
+    const second = measureP2 || measureHover;
+    if (!second) return null;
+    return computeMeasurementMetrics(measureP1, second);
+  }, [measureP1, measureP2, measureHover]);
 
   useEffect(() => {
     if (onBoundaryMarkersChange) {
@@ -465,16 +511,18 @@ export const Interactive3DViewport: React.FC<Interactive3DViewportProps> = ({
           const loader = new STLLoader();
           const geometry = loader.parse(contents);
           geometry.computeVertexNormals();
-          geometry.center();
-
           geometry.computeBoundingBox();
-          const bbox = geometry.boundingBox!;
-          const sizeX = bbox.max.x - bbox.min.x;
-          const sizeY = bbox.max.y - bbox.min.y;
-          const sizeZ = bbox.max.z - bbox.min.z;
+          const origBbox = geometry.boundingBox!;
+          const origCenter = new THREE.Vector3();
+          origBbox.getCenter(origCenter);
+          const sizeX = origBbox.max.x - origBbox.min.x;
+          const sizeY = origBbox.max.y - origBbox.min.y;
+          const sizeZ = origBbox.max.z - origBbox.min.z;
           const maxDim = Math.max(sizeX, sizeY, sizeZ);
           const scaleFactor = 5.0 / (maxDim || 1);
+          geometry.translate(-origCenter.x, -origCenter.y, -origCenter.z);
           geometry.scale(scaleFactor, scaleFactor, scaleFactor);
+          cadTransformRef.current = { center: origCenter, scale: scaleFactor };
 
           const pos = geometry.attributes.position;
           const count = pos.count;
@@ -614,6 +662,10 @@ export const Interactive3DViewport: React.FC<Interactive3DViewportProps> = ({
     vectorGroupRef.current = vectorGroup;
     scene.add(vectorGroup);
 
+    const measureGroup = new THREE.Group();
+    measureGroupRef.current = measureGroup;
+    scene.add(measureGroup);
+
     const controls = new OrbitControls(camera, renderer.domElement);
     controlsRef.current = controls;
     controls.enableDamping = true;
@@ -631,14 +683,61 @@ export const Interactive3DViewport: React.FC<Interactive3DViewportProps> = ({
 
     const getPickTargets = (): THREE.Object3D[] => {
       const list: THREE.Object3D[] = [];
-      if (vtkMeshRef.current) list.push(vtkMeshRef.current);
-      if (customMeshRef.current) list.push(customMeshRef.current);
+      if (vtkMeshRef.current && vtkMeshRef.current.visible) list.push(vtkMeshRef.current);
+      if (customMeshRef.current && customMeshRef.current.visible) list.push(customMeshRef.current);
       return list;
     };
 
+    const extractPhysicalHit = (hit: THREE.Intersection): PhysicalPoint3D => {
+      const pt = hit.point;
+      const isVtkHit = hit.object === vtkMeshRef.current && Boolean(vtkMeshRef.current);
+      const tf = isVtkHit ? vtkTransformRef.current : { ...cadTransformRef.current, scalarKey: '', scalars: undefined, unit: '' };
+      const physX = tf.scale !== 0 ? pt.x / tf.scale + tf.center.x : pt.x;
+      const physY = tf.scale !== 0 ? pt.y / tf.scale + tf.center.y : pt.y;
+      const physZ = tf.scale !== 0 ? pt.z / tf.scale + tf.center.z : pt.z;
+
+      let scalarValue: number | undefined;
+      if (isVtkHit && hit.face && tf.scalars && vtkMeshRef.current) {
+        const geom = vtkMeshRef.current.geometry;
+        const posAttr = geom.attributes.position as THREE.BufferAttribute;
+        const vA = new THREE.Vector3().fromBufferAttribute(posAttr, hit.face.a);
+        const vB = new THREE.Vector3().fromBufferAttribute(posAttr, hit.face.b);
+        const vC = new THREE.Vector3().fromBufferAttribute(posAttr, hit.face.c);
+        const bary = new THREE.Vector3();
+        THREE.Triangle.getBarycoord(pt, vA, vB, vC, bary);
+        const sA = tf.scalars[hit.face.a] ?? 0;
+        const sB = tf.scalars[hit.face.b] ?? 0;
+        const sC = tf.scalars[hit.face.c] ?? 0;
+        const interp = sA * bary.x + sB * bary.y + sC * bary.z;
+        if (Number.isFinite(interp)) scalarValue = interp;
+      }
+
+      return {
+        x: physX,
+        y: physY,
+        z: physZ,
+        scenePoint: [pt.x, pt.y, pt.z],
+        scalarValue,
+        scalarLabel: tf.scalarKey || undefined,
+        scalarUnit: tf.unit || undefined,
+      };
+    };
+
+    let pointerDownX = 0;
+    let pointerDownY = 0;
+    let lastHoverRaycast = 0;
+
+    const onPointerDown = (e: MouseEvent) => {
+      pointerDownX = e.clientX;
+      pointerDownY = e.clientY;
+    };
+
     const onPointerClick = (e: MouseEvent) => {
+      // Ignore OrbitControls camera drags so rotating never places accidental pins
+      if (Math.hypot(e.clientX - pointerDownX, e.clientY - pointerDownY) > 5) return;
+
       const currentTool = activeToolRef.current;
-      if (!currentTool.startsWith('tag_')) return;
+      if (!currentTool.startsWith('tag_') && currentTool !== 'measure') return;
 
       const targets = getPickTargets();
       if (targets.length === 0) return;
@@ -652,6 +751,20 @@ export const Interactive3DViewport: React.FC<Interactive3DViewportProps> = ({
 
       if (intersects.length > 0) {
         const hit = intersects[0];
+
+        if (currentTool === 'measure') {
+          const picked = extractPhysicalHit(hit);
+          if (!measureP1Ref.current || measureP2Ref.current) {
+            setMeasureP1(picked);
+            setMeasureP2(null);
+            setMeasureHover(null);
+          } else {
+            setMeasureP2(picked);
+            setMeasureHover(null);
+          }
+          return;
+        }
+
         const pt = hit.point;
         const norm = hit.face?.normal ? hit.face.normal.clone().normalize() : new THREE.Vector3(0, 1, 0);
 
@@ -705,10 +818,7 @@ export const Interactive3DViewport: React.FC<Interactive3DViewportProps> = ({
         const newId = `bm_${Date.now()}`;
         markerObjectsMap.current.set(newId, arrow);
 
-        const { center, scale } = vtkTransformRef.current;
-        const physX = scale !== 0 ? pt.x / scale + center.x : pt.x;
-        const physY = scale !== 0 ? pt.y / scale + center.y : pt.y;
-        const physZ = scale !== 0 ? pt.z / scale + center.z : pt.z;
+        const pickedPhys = extractPhysicalHit(hit);
 
         let detectedPatchName: string | undefined;
         const curVtk = effectiveVtkDataRef.current;
@@ -734,7 +844,7 @@ export const Interactive3DViewport: React.FC<Interactive3DViewportProps> = ({
           unit: defaultUnit,
           secondaryValue: secVal,
           secondaryUnit: secUnit,
-          point: [Number(physX.toFixed(4)), Number(physY.toFixed(4)), Number(physZ.toFixed(4))],
+          point: [Number(pickedPhys.x.toFixed(4)), Number(pickedPhys.y.toFixed(4)), Number(pickedPhys.z.toFixed(4))],
           normal: [Number(norm.x.toFixed(2)), Number(norm.y.toFixed(2)), Number(norm.z.toFixed(2))],
         };
 
@@ -747,14 +857,22 @@ export const Interactive3DViewport: React.FC<Interactive3DViewportProps> = ({
     };
 
     const onPointerMove = (e: MouseEvent) => {
-      if (activeToolRef.current !== 'probe') {
+      const tool = activeToolRef.current;
+      const isLiveMeasureHover = tool === 'measure' && Boolean(measureP1Ref.current) && !measureP2Ref.current;
+      if (tool !== 'probe' && !isLiveMeasureHover) {
         setProbeData(null);
+        setMeasureHover(null);
         return;
       }
+
+      const now = performance.now();
+      if (now - lastHoverRaycast < 24) return;
+      lastHoverRaycast = now;
 
       const targets = getPickTargets();
       if (targets.length === 0) {
         setProbeData(null);
+        setMeasureHover(null);
         return;
       }
 
@@ -765,37 +883,20 @@ export const Interactive3DViewport: React.FC<Interactive3DViewportProps> = ({
       raycaster.setFromCamera(mouse, camera);
       const intersects = raycaster.intersectObjects(targets, true);
       if (intersects.length > 0) {
-        const hit = intersects[0];
-        const pt = hit.point;
-        const tf = vtkTransformRef.current;
-
-        const physX = tf.scale !== 0 ? pt.x / tf.scale + tf.center.x : pt.x;
-        const physY = tf.scale !== 0 ? pt.y / tf.scale + tf.center.y : pt.y;
-        const physZ = tf.scale !== 0 ? pt.z / tf.scale + tf.center.z : pt.z;
-
-        let scalarValue: number | undefined;
-        if (hit.object === vtkMeshRef.current && hit.face && tf.scalars && vtkMeshRef.current) {
-          const geom = vtkMeshRef.current.geometry;
-          const posAttr = geom.attributes.position as THREE.BufferAttribute;
-          const vA = new THREE.Vector3().fromBufferAttribute(posAttr, hit.face.a);
-          const vB = new THREE.Vector3().fromBufferAttribute(posAttr, hit.face.b);
-          const vC = new THREE.Vector3().fromBufferAttribute(posAttr, hit.face.c);
-          const bary = new THREE.Vector3();
-          THREE.Triangle.getBarycoord(pt, vA, vB, vC, bary);
-          const sA = tf.scalars[hit.face.a] ?? 0;
-          const sB = tf.scalars[hit.face.b] ?? 0;
-          const sC = tf.scalars[hit.face.c] ?? 0;
-          scalarValue = sA * bary.x + sB * bary.y + sC * bary.z;
+        const picked = extractPhysicalHit(intersects[0]);
+        if (isLiveMeasureHover) {
+          setMeasureHover(picked);
+          setProbeData(null);
+          return;
         }
-
         setProbeData({
-          x: Number(physX.toFixed(4)),
-          y: Number(physY.toFixed(4)),
-          z: Number(physZ.toFixed(4)),
-          scalarValue: scalarValue !== undefined && Number.isFinite(scalarValue) ? Number(scalarValue.toFixed(4)) : undefined,
-          scalarUnit: tf.unit,
-          label: tf.scalarKey
-            ? `${tf.scalarKey}`
+          x: Number(picked.x.toFixed(4)),
+          y: Number(picked.y.toFixed(4)),
+          z: Number(picked.z.toFixed(4)),
+          scalarValue: picked.scalarValue !== undefined ? Number(picked.scalarValue.toFixed(4)) : undefined,
+          scalarUnit: picked.scalarUnit,
+          label: picked.scalarLabel
+            ? `${picked.scalarLabel}`
             : hasSolvedRef.current && fieldLabelRef.current
               ? fieldLabelRef.current
               : 'Surface Coordinate Probe',
@@ -804,9 +905,11 @@ export const Interactive3DViewport: React.FC<Interactive3DViewportProps> = ({
         });
       } else {
         setProbeData(null);
+        if (isLiveMeasureHover) setMeasureHover(null);
       }
     };
 
+    container.addEventListener('pointerdown', onPointerDown);
     container.addEventListener('click', onPointerClick);
     container.addEventListener('mousemove', onPointerMove);
 
@@ -852,6 +955,7 @@ export const Interactive3DViewport: React.FC<Interactive3DViewportProps> = ({
     resizeObserver.observe(container);
 
     return () => {
+      container.removeEventListener('pointerdown', onPointerDown);
       container.removeEventListener('click', onPointerClick);
       container.removeEventListener('mousemove', onPointerMove);
       resizeObserver.disconnect();
@@ -1355,6 +1459,112 @@ export const Interactive3DViewport: React.FC<Interactive3DViewportProps> = ({
     setTimeout(() => setCopiedTopoSet(false), 2000);
   };
 
+  // Render 3D Ruler Pins, Connecting Distance Segment & Cartesian Component Guides
+  useEffect(() => {
+    const group = measureGroupRef.current;
+    if (!group) return;
+
+    while (group.children.length > 0) {
+      const child = group.children[0] as THREE.Mesh | THREE.Line;
+      group.remove(child);
+      if (child.geometry) child.geometry.dispose();
+      if (Array.isArray(child.material)) {
+        child.material.forEach((m) => m.dispose());
+      } else if (child.material) {
+        child.material.dispose();
+      }
+    }
+
+    const p1Scene = measureP1?.scenePoint;
+    if (!p1Scene) return;
+
+    const v1 = new THREE.Vector3(p1Scene[0], p1Scene[1], p1Scene[2]);
+    const pinGeo1 = new THREE.SphereGeometry(0.065, 16, 16);
+    const pinMat1 = new THREE.MeshBasicMaterial({ color: 0x10b981, depthTest: false });
+    const pin1 = new THREE.Mesh(pinGeo1, pinMat1);
+    pin1.position.copy(v1);
+    pin1.renderOrder = 25;
+    group.add(pin1);
+
+    const endPt = measureP2 || measureHover;
+    const p2Scene = endPt?.scenePoint;
+    if (!p2Scene) return;
+
+    const v2 = new THREE.Vector3(p2Scene[0], p2Scene[1], p2Scene[2]);
+    const isLocked = Boolean(measureP2);
+
+    const pinGeo2 = new THREE.SphereGeometry(isLocked ? 0.065 : 0.05, 16, 16);
+    const pinMat2 = new THREE.MeshBasicMaterial({ color: isLocked ? 0xf59e0b : 0x38bdf8, depthTest: false });
+    const pin2 = new THREE.Mesh(pinGeo2, pinMat2);
+    pin2.position.copy(v2);
+    pin2.renderOrder = 25;
+    group.add(pin2);
+
+    const lineGeo = new THREE.BufferGeometry().setFromPoints([v1, v2]);
+    const lineMat = new THREE.LineBasicMaterial({
+      color: isLocked ? 0x38bdf8 : 0x7dd3fc,
+      depthTest: false,
+      transparent: !isLocked,
+      opacity: isLocked ? 1.0 : 0.8,
+    });
+    const mainLine = new THREE.Line(lineGeo, lineMat);
+    mainLine.renderOrder = 24;
+    group.add(mainLine);
+
+    if (isLocked) {
+      // Subtle X (red), Y (green), Z (blue) orthogonal component legs
+      const vxEnd = new THREE.Vector3(v2.x, v1.y, v1.z);
+      const vyEnd = new THREE.Vector3(v2.x, v2.y, v1.z);
+
+      const addLeg = (a: THREE.Vector3, b: THREE.Vector3, hex: number) => {
+        if (a.distanceTo(b) < 1e-4) return;
+        const g = new THREE.BufferGeometry().setFromPoints([a, b]);
+        const m = new THREE.LineBasicMaterial({ color: hex, transparent: true, opacity: 0.55, depthTest: false });
+        const seg = new THREE.Line(g, m);
+        seg.renderOrder = 23;
+        group.add(seg);
+      };
+      addLeg(v1, vxEnd, 0xf87171);
+      addLeg(vxEnd, vyEnd, 0x4ade80);
+      addLeg(vyEnd, v2, 0x60a5fa);
+    }
+  }, [measureP1, measureP2, measureHover]);
+
+  // Clear active ruler points when switching models so stale coordinates never linger
+  useEffect(() => {
+    setMeasureP1(null);
+    setMeasureP2(null);
+    setMeasureHover(null);
+  }, [effectiveVtkData]);
+
+  const clearMeasurement = () => {
+    setMeasureP1(null);
+    setMeasureP2(null);
+    setMeasureHover(null);
+  };
+
+  const copyMeasurementSummary = () => {
+    if (!activeMeasurement) return;
+    const lines = [
+      `Distance ΔL = ${activeMeasurement.distanceM.toFixed(6)} m (${activeMeasurement.distanceMm.toFixed(3)} mm)`,
+      `ΔX = ${activeMeasurement.dx.toFixed(6)} m, ΔY = ${activeMeasurement.dy.toFixed(6)} m, ΔZ = ${activeMeasurement.dz.toFixed(6)} m`,
+      `P1 = (${activeMeasurement.p1.x.toFixed(5)}, ${activeMeasurement.p1.y.toFixed(5)}, ${activeMeasurement.p1.z.toFixed(5)}) m`,
+      `P2 = (${activeMeasurement.p2.x.toFixed(5)}, ${activeMeasurement.p2.y.toFixed(5)}, ${activeMeasurement.p2.z.toFixed(5)}) m`,
+      `Suggested Mesh Cell Size (L/15..L/10): ${activeMeasurement.meshHintFineM.toFixed(5)} m – ${activeMeasurement.meshHintCoarseM.toFixed(5)} m`,
+    ];
+    if (activeMeasurement.scalarDelta !== undefined) {
+      lines.push(
+        `Δ${activeMeasurement.scalarLabel || 'φ'} = ${activeMeasurement.scalarDelta.toPrecision(5)} ${activeMeasurement.scalarUnit || ''}` +
+          (activeMeasurement.scalarSlope !== undefined
+            ? ` | Slope = ${activeMeasurement.scalarSlope.toPrecision(5)} ${activeMeasurement.slopeUnit || ''}`
+            : ''),
+      );
+    }
+    navigator.clipboard.writeText(lines.join('\n'));
+    setCopiedMeasure(true);
+    setTimeout(() => setCopiedMeasure(false), 1800);
+  };
+
   const showLegend =
     isShowingSolvedVtk &&
     (hasSolvedResults || availableScalars.length > 0) &&
@@ -1457,6 +1667,28 @@ export const Interactive3DViewport: React.FC<Interactive3DViewportProps> = ({
           }`}
         >
           <MousePointer2 className="h-3.5 w-3.5" />
+        </button>
+
+        <button
+          type="button"
+          title="3D Ruler / Measurement Tool (Click 2 points on geometry to measure exact distance ΔL, ΔX/ΔY/ΔZ & Δφ)"
+          onClick={() => {
+            if (activeTool === 'measure') {
+              setActiveTool('orbit');
+              setMeasureHover(null);
+            } else {
+              setActiveTool('measure');
+              setProbeData(null);
+            }
+          }}
+          className={`flex h-7 shrink-0 items-center gap-1 px-2 rounded-lg text-xs font-semibold transition-colors ${
+            activeTool === 'measure' || measureP1 !== null
+              ? 'bg-emerald-500/25 text-emerald-300 ring-1 ring-emerald-500/60'
+              : 'text-slate-300 hover:bg-slate-800 hover:text-white'
+          }`}
+        >
+          <Ruler className="h-3.5 w-3.5" />
+          <span>Ruler</span>
         </button>
 
         <span className="mx-1 h-4 w-px shrink-0 bg-slate-700/80" />
@@ -2121,6 +2353,143 @@ export const Interactive3DViewport: React.FC<Interactive3DViewportProps> = ({
         </div>
       )}
 
+      {/* Interactive 3D Ruler & Model Dimensions HUD Card */}
+      {(activeTool === 'measure' || measureP1 !== null) && (
+        <div
+          className={`absolute left-4 z-20 w-76 rounded-xl border border-emerald-500/40 bg-slate-950/95 p-3 shadow-2xl text-xs ${
+            regionBox.enabled ? 'top-[290px]' : 'top-14'
+          }`}
+        >
+          <div className="flex items-center justify-between gap-2 border-b border-slate-800 pb-1.5 mb-2">
+            <span className="font-bold text-emerald-300 flex items-center gap-1.5">
+              <Ruler className="h-3.5 w-3.5" />
+              3D Ruler & Dimensions
+            </span>
+            <div className="flex items-center gap-1">
+              {activeMeasurement && (
+                <button
+                  type="button"
+                  onClick={copyMeasurementSummary}
+                  title="Copy measurement to clipboard"
+                  className="flex items-center gap-1 rounded bg-emerald-950 hover:bg-emerald-900 border border-emerald-700/60 px-1.5 py-0.5 font-mono text-[10px] text-emerald-300"
+                >
+                  {copiedMeasure ? <Check className="h-3 w-3" /> : <Copy className="h-3 w-3" />}
+                  <span>{copiedMeasure ? 'Copied' : 'Copy'}</span>
+                </button>
+              )}
+              {measureP1 && (
+                <button
+                  type="button"
+                  onClick={clearMeasurement}
+                  title="Clear Ruler Points"
+                  className="rounded bg-slate-900 hover:bg-slate-800 border border-slate-700 px-1.5 py-0.5 font-mono text-[10px] text-slate-300"
+                >
+                  Clear
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={() => {
+                  clearMeasurement();
+                  setActiveTool('orbit');
+                }}
+                title="Close Ruler Tool"
+                className="rounded p-0.5 text-slate-400 hover:bg-slate-800 hover:text-white"
+              >
+                <X className="h-3.5 w-3.5" />
+              </button>
+            </div>
+          </div>
+
+          {!measureP1 ? (
+            <p className="text-[11px] text-slate-300 leading-relaxed">
+              Click <strong className="text-emerald-300">Point 1</strong> then <strong className="text-amber-300">Point 2</strong> directly on the 3D CAD or VTK surface to measure true physical distance.
+            </p>
+          ) : !activeMeasurement ? (
+            <div className="space-y-1.5 font-mono text-[10.5px]">
+              <div className="text-emerald-300">
+                P1 locked: ({measureP1.x.toFixed(4)}, {measureP1.y.toFixed(4)}, {measureP1.z.toFixed(4)}) m
+              </div>
+              <div className="text-slate-400 font-sans text-[11px]">
+                Move cursor over the model and click <strong className="text-amber-300">Point 2</strong>…
+              </div>
+            </div>
+          ) : (
+            <div className="space-y-2">
+              <div className="rounded-lg border border-sky-500/30 bg-slate-900/90 px-2.5 py-2">
+                <div className="flex items-center justify-between text-[10px] text-slate-400">
+                  <span>{measureP2 ? 'Measured Distance ΔL' : 'Live Preview ΔL'}</span>
+                  <span className="font-mono text-sky-300">SI (m / mm)</span>
+                </div>
+                <div className="mt-0.5 font-mono text-sm font-bold text-white tabular-nums">
+                  {formatLengthSI(activeMeasurement.distanceM)}
+                </div>
+                <div className="mt-1 grid grid-cols-3 gap-1.5 border-t border-slate-800 pt-1 font-mono text-[10px] tabular-nums">
+                  <span className="text-rose-300">ΔX: {activeMeasurement.dx.toFixed(4)}</span>
+                  <span className="text-emerald-300">ΔY: {activeMeasurement.dy.toFixed(4)}</span>
+                  <span className="text-sky-300">ΔZ: {activeMeasurement.dz.toFixed(4)}</span>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 gap-0.5 font-mono text-[9.5px] text-slate-300 tabular-nums">
+                <div>
+                  <span className="text-emerald-400 font-bold">P1:</span> ({activeMeasurement.p1.x.toFixed(4)}, {activeMeasurement.p1.y.toFixed(4)}, {activeMeasurement.p1.z.toFixed(4)}) m
+                </div>
+                <div>
+                  <span className="text-amber-400 font-bold">P2:</span> ({activeMeasurement.p2.x.toFixed(4)}, {activeMeasurement.p2.y.toFixed(4)}, {activeMeasurement.p2.z.toFixed(4)}) m
+                </div>
+              </div>
+
+              {activeMeasurement.distanceM > 1e-9 && (
+                <div className="rounded-lg border border-slate-800 bg-slate-900/70 px-2 py-1.5 font-mono text-[10px] text-slate-300 tabular-nums">
+                  <div className="text-[9.5px] font-sans text-slate-400 mb-0.5">
+                    Gmsh Cell Size Guide (Feature L/15 – L/10):
+                  </div>
+                  <div className="text-cyan-300 font-semibold">
+                    h ≈ {(activeMeasurement.meshHintFineM * 1000).toFixed(2)} – {(activeMeasurement.meshHintCoarseM * 1000).toFixed(2)} mm
+                    <span className="text-slate-400 font-normal"> ({activeMeasurement.meshHintFineM.toFixed(4)} m)</span>
+                  </div>
+                </div>
+              )}
+
+              {activeMeasurement.scalarDelta !== undefined && (
+                <div className="rounded-lg border border-amber-500/30 bg-amber-950/20 px-2 py-1.5 font-mono text-[10px] tabular-nums">
+                  <div className="flex items-center justify-between text-amber-300 font-semibold">
+                    <span>Δ{activeMeasurement.scalarLabel || 'φ'}:</span>
+                    <span>
+                      {activeMeasurement.scalarDelta >= 0 ? '+' : ''}
+                      {activeMeasurement.scalarDelta.toPrecision(4)} {activeMeasurement.scalarUnit}
+                    </span>
+                  </div>
+                  {activeMeasurement.scalarSlope !== undefined && (
+                    <div className="mt-0.5 flex items-center justify-between text-slate-300">
+                      <span>Avg Slope (Δφ/ΔL):</span>
+                      <span>
+                        {activeMeasurement.scalarSlope.toPrecision(4)} {activeMeasurement.slopeUnit}
+                      </span>
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
+
+          {modelPhysicalBounds && (
+            <div className="mt-2 pt-2 border-t border-slate-800 font-mono text-[9.5px] text-slate-400 tabular-nums">
+              <div className="flex items-center justify-between text-slate-300 mb-0.5">
+                <span className="font-sans text-[10px] font-semibold">Overall Model Envelope</span>
+                <span>Diag: {modelPhysicalBounds.diagonalM.toFixed(4)} m</span>
+              </div>
+              <div>
+                Lx: <strong className="text-slate-200">{modelPhysicalBounds.size[0].toFixed(4)} m</strong> · Ly:{' '}
+                <strong className="text-slate-200">{modelPhysicalBounds.size[1].toFixed(4)} m</strong> · Lz:{' '}
+                <strong className="text-slate-200">{modelPhysicalBounds.size[2].toFixed(4)} m</strong>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
       {/* Status Bar */}
       <div className="pointer-events-none absolute inset-x-0 bottom-0 z-10 flex h-6 items-center justify-between border-t border-slate-800/80 bg-slate-950/95 px-3 font-mono text-[10px] text-slate-400">
         <div className="flex items-center gap-3">
@@ -2131,6 +2500,11 @@ export const Interactive3DViewport: React.FC<Interactive3DViewportProps> = ({
           <span>
             View: {showWireframe ? 'Mesh Wireframe' : isShowingSolvedVtk ? (scalarRange.isGradient ? 'VTK Surface Gradient |∇|' : 'VTK Contours') : meshPreviewVtk ? 'Pre-Solve CAD/Mesh' : 'Solid CAD'}
           </span>
+          {activeTool === 'measure' && (
+            <span className="text-emerald-300 font-bold">
+              [{!measureP1 ? 'Ruler: Click Point 1 on 3D surface' : !measureP2 ? 'Ruler: Click Point 2 to lock distance' : 'Ruler: Click any surface point for new measurement'}]
+            </span>
+          )}
           {activeTool.startsWith('tag_') && (
             <span className="text-amber-300 font-bold">
               [Click on 3D surface to assign {activeTool.replace('tag_', '').toUpperCase()}]
