@@ -1,4 +1,5 @@
 import asyncio
+import base64
 import io
 import json
 import math
@@ -10,7 +11,7 @@ from datetime import datetime, timezone
 from enum import Enum
 from json import JSONDecodeError
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 try:
     import redis as redis_lib
@@ -25,6 +26,16 @@ from fastapi.responses import JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator, model_validator
 
 from backend.file_parser import parse_engineering_file
+from backend.volumetric_post import (
+    HAS_PYVISTA,
+    VolumetricBackendUnavailableError,
+    VolumetricDataUnavailableError,
+    compute_volumetric_isosurface,
+    compute_volumetric_slice,
+    compute_volumetric_streamlines,
+    export_case_surface_binary,
+    get_case_volume_metadata,
+)
 from backend.vv_metrics import KeyResultUnavailable, MeshStudyError, key_result_specs, resolve_key_result, run_mesh_study
 from cae_repository import JobRepository
 from enterprise_security import EnterpriseSecurityService, SecurityError
@@ -341,6 +352,25 @@ class CadPreviewRequest(BaseModel):
 class ParametricSweepRequest(SimulationRequest):
     sweep_parameter: str = Field(default="velocity")
     values: List[float] = Field(..., min_length=2, max_length=25)
+
+
+class VolumetricSliceRequest(BaseModel):
+    axis: str = Field(default="z", pattern="^[xyzXYZ]$")
+    offset_ratio: float = Field(default=0.0, ge=-0.98, le=0.98)
+    field: Optional[str] = Field(default=None, max_length=128)
+
+
+class VolumetricStreamlinesRequest(BaseModel):
+    vector_field: Optional[str] = Field(default=None, max_length=128)
+    n_seeds: int = Field(default=80, ge=1, le=500)
+    seed_origin: Optional[List[float]] = Field(default=None, min_length=3, max_length=3)
+    seed_radius: Optional[float] = Field(default=None, gt=0.0)
+    max_time: Optional[float] = Field(default=None, gt=0.0)
+
+
+class VolumetricIsoSurfaceRequest(BaseModel):
+    field: str = Field(..., min_length=1, max_length=128)
+    iso_value: float = Field(...)
 
 
 # ---------------------------------------------------------
@@ -1100,13 +1130,14 @@ async def cancel_job(task_id: str, http_request: Request):
     return {"success": True, "task_id": task_id, "status": "CANCELLED", "job": updated}
 
 
-@app.get("/api/jobs/{task_id}/export-case")
-async def export_job_case_archive(task_id: str, http_request: Request):
-    """Stream a ZIP archive of the real solver case directory (OpenFOAM/CalculiX/Elmer files, VTK, logs)."""
-    security_service.resolve_actor(http_request.headers.get("authorization"), require_role="viewer")
+def _resolve_confined_job_case_dir(task_id: str) -> Path:
+    """Resolve and strictly confine a job's solver case directory within allowed job storage roots."""
     job = job_repository.get(task_id)
     if not job:
-        raise HTTPException(status_code=404, detail={"success": False, "code": "JOB_NOT_FOUND", "error": f"Job {task_id} not found."})
+        raise HTTPException(
+            status_code=404,
+            detail={"success": False, "code": "JOB_NOT_FOUND", "error": f"Job {task_id} not found."},
+        )
 
     res = job.get("result") or {}
     nested = res.get("data") if isinstance(res.get("data"), dict) else {}
@@ -1119,7 +1150,11 @@ async def export_job_case_archive(task_id: str, http_request: Request):
     if not case_dir_raw or not isinstance(case_dir_raw, str):
         raise HTTPException(
             status_code=404,
-            detail={"success": False, "code": "CASE_ARTIFACTS_UNAVAILABLE", "error": "No solver case directory recorded for this job."},
+            detail={
+                "success": False,
+                "code": "CASE_ARTIFACTS_UNAVAILABLE",
+                "error": "No solver case directory recorded for this job.",
+            },
         )
 
     case_path = Path(case_dir_raw).resolve()
@@ -1135,16 +1170,104 @@ async def export_job_case_archive(task_id: str, http_request: Request):
         )
         if p
     ]
-    if not any(case_path == root or root in case_path.parents for root in allowed_roots):
+    if not any(case_path == root or case_path.is_relative_to(root) for root in allowed_roots):
         raise HTTPException(
             status_code=403,
-            detail={"success": False, "code": "INVALID_CASE_PATH", "error": "Case directory lies outside allowed job storage."},
+            detail={
+                "success": False,
+                "code": "INVALID_CASE_PATH",
+                "error": "Case directory lies outside allowed job storage.",
+            },
         )
     if not case_path.is_dir():
         raise HTTPException(
             status_code=404,
-            detail={"success": False, "code": "CASE_DIR_MISSING", "error": "Solver case directory no longer exists on disk."},
+            detail={
+                "success": False,
+                "code": "CASE_DIR_MISSING",
+                "error": "Solver case directory no longer exists on disk.",
+            },
         )
+    return case_path
+
+
+def _dispatch_volumetric_operation(
+    celery_task_name: str,
+    task_args: List[Any],
+    local_fn: Callable[..., Any],
+    *,
+    binary: bool = True,
+    timeout: float = 90.0,
+) -> Any:
+    """Execute a Zero-Mock PyVista volumetric operation locally (if installed) or via Celery worker."""
+    if HAS_PYVISTA:
+        try:
+            return local_fn(*task_args)
+        except VolumetricBackendUnavailableError as exc:
+            raise HTTPException(
+                status_code=503,
+                detail={"success": False, "code": "VOLUMETRIC_BACKEND_UNAVAILABLE", "error": str(exc)},
+            ) from exc
+        except VolumetricDataUnavailableError as exc:
+            raise HTTPException(
+                status_code=422,
+                detail={"success": False, "code": "VOLUMETRIC_DATA_UNAVAILABLE", "error": str(exc)},
+            ) from exc
+
+    # Delegate to Celery worker (where headless PyVista/VTK is installed in Dockerfile.worker)
+    try:
+        task = celery_app.send_task(celery_task_name, args=task_args)
+        worker_resp = task.get(timeout=timeout)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "success": False,
+                "code": "VOLUMETRIC_BACKEND_UNAVAILABLE",
+                "error": f"Headless volumetric post-processing worker unavailable: {exc}",
+            },
+        ) from exc
+
+    if not isinstance(worker_resp, dict):
+        raise HTTPException(
+            status_code=500,
+            detail={"success": False, "code": "VOLUMETRIC_POST_FAILED", "error": "Unexpected worker response."},
+        )
+    if not worker_resp.get("success", False):
+        err_type = worker_resp.get("error_type")
+        err_msg = str(worker_resp.get("error") or "Volumetric post-processing failed.")
+        if err_type == "BACKEND_UNAVAILABLE":
+            raise HTTPException(
+                status_code=503,
+                detail={"success": False, "code": "VOLUMETRIC_BACKEND_UNAVAILABLE", "error": err_msg},
+            )
+        if err_type == "DATA_UNAVAILABLE":
+            raise HTTPException(
+                status_code=422,
+                detail={"success": False, "code": "VOLUMETRIC_DATA_UNAVAILABLE", "error": err_msg},
+            )
+        raise HTTPException(
+            status_code=500,
+            detail={"success": False, "code": "VOLUMETRIC_POST_FAILED", "error": err_msg},
+        )
+
+    if binary:
+        b64_payload = worker_resp.get("b64")
+        if not isinstance(b64_payload, str):
+            raise HTTPException(
+                status_code=500,
+                detail={"success": False, "code": "VOLUMETRIC_POST_FAILED", "error": "Missing binary NSR1 payload."},
+            )
+        return base64.b64decode(b64_payload.encode("ascii"))
+
+    return worker_resp
+
+
+@app.get("/api/jobs/{task_id}/export-case")
+async def export_job_case_archive(task_id: str, http_request: Request):
+    """Stream a ZIP archive of the real solver case directory (OpenFOAM/CalculiX/Elmer files, VTK, logs)."""
+    security_service.resolve_actor(http_request.headers.get("authorization"), require_role="viewer")
+    case_path = _resolve_confined_job_case_dir(task_id)
 
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_DEFLATED) as zf:
@@ -1163,6 +1286,115 @@ async def export_job_case_archive(task_id: str, http_request: Request):
         content=buf.getvalue(),
         media_type="application/zip",
         headers={"Content-Disposition": f'attachment; filename="naseer-case-{short_id}.zip"'},
+    )
+
+
+@app.get("/api/jobs/{task_id}/post/metadata")
+async def post_volume_metadata_endpoint(task_id: str, http_request: Request):
+    """Return real 3D volumetric bounds, cell/point counts, scalar/vector fields, and bad-cell coordinates."""
+    security_service.resolve_actor(http_request.headers.get("authorization"), require_role="viewer")
+    case_path = _resolve_confined_job_case_dir(task_id)
+    meta = _dispatch_volumetric_operation(
+        "universal_dispatcher.post_volume_metadata",
+        [str(case_path)],
+        get_case_volume_metadata,
+        binary=False,
+    )
+    return {"success": True, "task_id": task_id, **{k: v for k, v in meta.items() if k != "success"}}
+
+
+@app.get("/api/jobs/{task_id}/post/surface.bin")
+async def post_volume_surface_binary_endpoint(
+    task_id: str,
+    http_request: Request,
+    field: Optional[str] = None,
+):
+    """Stream outer surface triangulated mesh (up to 1M triangles) in NSR1 binary container."""
+    security_service.resolve_actor(http_request.headers.get("authorization"), require_role="viewer")
+    case_path = _resolve_confined_job_case_dir(task_id)
+    blob = _dispatch_volumetric_operation(
+        "universal_dispatcher.post_volume_surface_binary",
+        [str(case_path), field],
+        export_case_surface_binary,
+        binary=True,
+    )
+    return Response(
+        content=blob,
+        media_type="application/octet-stream",
+        headers={"X-Naseer-Format": "NSR1", "Cache-Control": "no-store"},
+    )
+
+
+@app.post("/api/jobs/{task_id}/post/slice.bin")
+async def post_volume_slice_binary_endpoint(
+    task_id: str,
+    request: VolumetricSliceRequest,
+    http_request: Request,
+):
+    """Compute a real 3D volumetric cutting-plane slice and stream NSR1 binary geometry."""
+    security_service.resolve_actor(http_request.headers.get("authorization"), require_role="viewer")
+    case_path = _resolve_confined_job_case_dir(task_id)
+    blob = _dispatch_volumetric_operation(
+        "universal_dispatcher.post_volume_slice_binary",
+        [str(case_path), request.axis.lower(), float(request.offset_ratio), request.field],
+        compute_volumetric_slice,
+        binary=True,
+    )
+    return Response(
+        content=blob,
+        media_type="application/octet-stream",
+        headers={"X-Naseer-Format": "NSR1", "Cache-Control": "no-store"},
+    )
+
+
+@app.post("/api/jobs/{task_id}/post/streamlines.bin")
+async def post_volume_streamlines_binary_endpoint(
+    task_id: str,
+    request: VolumetricStreamlinesRequest,
+    http_request: Request,
+):
+    """Integrate true 3D RK4 streamlines from real solver vector fields and stream NSR1 binary polylines."""
+    security_service.resolve_actor(http_request.headers.get("authorization"), require_role="viewer")
+    case_path = _resolve_confined_job_case_dir(task_id)
+    blob = _dispatch_volumetric_operation(
+        "universal_dispatcher.post_volume_streamlines_binary",
+        [
+            str(case_path),
+            request.vector_field,
+            int(request.n_seeds),
+            request.seed_origin,
+            request.seed_radius,
+            request.max_time,
+        ],
+        compute_volumetric_streamlines,
+        binary=True,
+    )
+    return Response(
+        content=blob,
+        media_type="application/octet-stream",
+        headers={"X-Naseer-Format": "NSR1", "Cache-Control": "no-store"},
+    )
+
+
+@app.post("/api/jobs/{task_id}/post/isosurface.bin")
+async def post_volume_isosurface_binary_endpoint(
+    task_id: str,
+    request: VolumetricIsoSurfaceRequest,
+    http_request: Request,
+):
+    """Compute a real 3D scalar iso-surface contour and stream NSR1 binary mesh."""
+    security_service.resolve_actor(http_request.headers.get("authorization"), require_role="viewer")
+    case_path = _resolve_confined_job_case_dir(task_id)
+    blob = _dispatch_volumetric_operation(
+        "universal_dispatcher.post_volume_isosurface_binary",
+        [str(case_path), request.field, float(request.iso_value)],
+        compute_volumetric_isosurface,
+        binary=True,
+    )
+    return Response(
+        content=blob,
+        media_type="application/octet-stream",
+        headers={"X-Naseer-Format": "NSR1", "Cache-Control": "no-store"},
     )
 
 

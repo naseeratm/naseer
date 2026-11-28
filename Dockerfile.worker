@@ -67,6 +67,10 @@ RUN apt-get -o Acquire::Retries=5 update && \
     && ldconfig \
     && rm -rf /var/lib/apt/lists/*
 
+# 5. Headless PyVista/VTK volumetric post-processing runtime (worker-only; keeps API image slim)
+COPY worker-requirements.txt ./worker-requirements.txt
+RUN pip install -r worker-requirements.txt
+
 COPY main.py physics_solver.py universal_dispatcher.py cae_repository.py vv_regression_suite.py enterprise_security.py object_storage.py ./
 COPY backend/ ./backend/
 COPY docker-entrypoint-worker.sh /usr/local/bin/docker-entrypoint-worker.sh

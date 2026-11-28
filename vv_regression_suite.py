@@ -626,10 +626,12 @@ def run_vv_suite(
     executor: Optional[Callable[[Dict[str, Any]], Dict[str, Any]]] = None,
     capabilities: Optional[Mapping[str, Any]] = None,
     timeout_sec: float = 300.0,
-    on_benchmark_start: Optional[Callable[[int, int, str], None]] = None,
-    on_benchmark_complete: Optional[Callable[[int, int, Dict[str, Any], List[Dict[str, Any]]], None]] = None,
+    on_benchmark_start: Optional[Callable[..., None]] = None,
+    on_benchmark_complete: Optional[Callable[..., None]] = None,
 ) -> Dict[str, Any]:
     """Run one, several, or all 6 international V&V benchmarks and build a signed certificate."""
+    import inspect
+
     selected = benchmark_ids or [b["id"] for b in VV_BENCHMARKS]
     invalid = [bid for bid in selected if bid not in VV_BENCHMARK_BY_ID]
     if invalid:
@@ -644,6 +646,28 @@ def run_vv_suite(
     t0 = time.perf_counter()
     results: List[Dict[str, Any]] = []
     total = len(selected)
+
+    def _invoke_complete_cb(idx_val: int, total_val: int, bench_res: Dict[str, Any], all_res: List[Dict[str, Any]]) -> None:
+        if on_benchmark_complete is None:
+            return
+        try:
+            sig = inspect.signature(on_benchmark_complete)
+            params = list(sig.parameters.values())
+            has_varargs = any(p.kind == inspect.Parameter.VAR_POSITIONAL for p in params)
+            pos_count = sum(
+                1
+                for p in params
+                if p.kind in (inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD)
+            )
+            if has_varargs or pos_count >= 4:
+                on_benchmark_complete(idx_val, total_val, bench_res, all_res)
+            elif pos_count == 3:
+                on_benchmark_complete(bench_res, idx_val, total_val)
+            else:
+                on_benchmark_complete(bench_res)
+        except (TypeError, ValueError):
+            on_benchmark_complete(idx_val, total_val, bench_res, all_res)
+
     for idx, bid in enumerate(selected, start=1):
         if on_benchmark_start is not None:
             on_benchmark_start(idx, total, bid)
@@ -655,8 +679,7 @@ def run_vv_suite(
             timeout_sec=timeout_sec,
         )
         results.append(bench_result)
-        if on_benchmark_complete is not None:
-            on_benchmark_complete(idx, total, dict(bench_result), [dict(r) for r in results])
+        _invoke_complete_cb(idx, total, dict(bench_result), [dict(r) for r in results])
     total_sec = round(time.perf_counter() - t0, 3)
 
     passed_count = sum(1 for r in results if r["status"] == "PASS")

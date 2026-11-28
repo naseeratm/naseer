@@ -1,8 +1,0 @@
-FoamFile { version 2.0; format ascii; class dictionary; object fvSchemes; }
-ddtSchemes { default Euler; }
-gradSchemes { default Gauss linear; }
-divSchemes { default none; div(phi,U) Gauss linearUpwind grad(U); div(phi,h) Gauss linearUpwind grad(U); div(phi,K) Gauss upwind; div(phi,T) Gauss linearUpwind grad(U); div(phid,p) Gauss upwind; div(phi,k) Gauss upwind; div(phi,epsilon) Gauss upwind; div(phi,omega) Gauss upwind; div(phi,nuTilda) Gauss linearUpwind grad(nuTilda); div(rhoPhi,U) Gauss linearUpwind grad(U); div(phi,alpha) Gauss vanLeer; div(phirb,alpha) Gauss linear; "div\(.*\)" Gauss linear; }
-laplacianSchemes { default Gauss linear corrected; }
-interpolationSchemes { default linear; }
-snGradSchemes { default corrected; }
-wallDist { method meshWave; }

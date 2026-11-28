@@ -1,0 +1,3 @@
+# Worker-only headless 3D volumetric VTK/PyVista post-processing runtime
+# Installed exclusively in Dockerfile.worker to keep Dockerfile.api lightweight.
+pyvista>=0.44.0

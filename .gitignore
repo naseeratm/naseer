@@ -19,3 +19,5 @@ backend/.venv312/
 /cae-workspace/
 /data/
 !src/data/
+jobs/
+audit_bundle/
