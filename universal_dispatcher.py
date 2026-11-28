@@ -334,6 +334,100 @@ def _task_progress(task: Any, progress: int, message: str, **extra: Any) -> None
     task.update_state(state="STARTED", meta=meta)
 
 
+_RE_COURANT_LINE = re.compile(
+    r"Courant\s+Number\s+mean:\s*([-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?)\s+max:\s*([-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?)",
+    re.I,
+)
+_RE_DELTAT_LINE = re.compile(
+    r"^\s*deltaT\s*=\s*([-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?)",
+    re.I,
+)
+_RE_TIME_LINE = re.compile(r"^\s*Time\s*=\s*([-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?)")
+
+
+def parse_openfoam_courant_history(log_text: str) -> Dict[str, Any]:
+    """Parse real OpenFOAM Courant Number and adaptive deltaT lines from solver stdout/log (Zero-Mock)."""
+    if not isinstance(log_text, str) or not log_text.strip():
+        return {
+            "available": False,
+            "samples": [],
+            "max_co_peak": None,
+            "max_co_final": None,
+            "min_delta_t": None,
+            "max_delta_t": None,
+            "final_delta_t": None,
+        }
+
+    samples: List[Dict[str, Any]] = []
+    cur_time: Optional[float] = None
+    cur_dt: Optional[float] = None
+    co_max_vals: List[float] = []
+    dt_vals: List[float] = []
+
+    for raw in log_text.splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        m_t = _RE_TIME_LINE.match(line)
+        if m_t:
+            try:
+                v = float(m_t.group(1))
+                if math.isfinite(v):
+                    cur_time = v
+            except ValueError:
+                pass
+            continue
+        m_dt = _RE_DELTAT_LINE.match(line)
+        if m_dt:
+            try:
+                v = float(m_dt.group(1))
+                if math.isfinite(v) and v > 0:
+                    cur_dt = v
+                    dt_vals.append(v)
+                    if samples and samples[-1].get("delta_t") is None and samples[-1].get("time") == cur_time:
+                        samples[-1]["delta_t"] = v
+            except ValueError:
+                pass
+            continue
+        m_co = _RE_COURANT_LINE.search(line)
+        if m_co:
+            try:
+                co_mean = float(m_co.group(1))
+                co_max = float(m_co.group(2))
+                if math.isfinite(co_mean) and math.isfinite(co_max):
+                    co_max_vals.append(co_max)
+                    samples.append({
+                        "time": cur_time,
+                        "co_mean": round(co_mean, 6),
+                        "co_max": round(co_max, 6),
+                        "delta_t": cur_dt,
+                    })
+            except ValueError:
+                pass
+
+    if not co_max_vals and not dt_vals:
+        return {
+            "available": False,
+            "samples": [],
+            "max_co_peak": None,
+            "max_co_final": None,
+            "min_delta_t": None,
+            "max_delta_t": None,
+            "final_delta_t": None,
+        }
+
+    return {
+        "available": True,
+        "samples": samples[-250:],
+        "sample_count": len(samples),
+        "max_co_peak": round(max(co_max_vals), 6) if co_max_vals else None,
+        "max_co_final": round(co_max_vals[-1], 6) if co_max_vals else None,
+        "min_delta_t": min(dt_vals) if dt_vals else None,
+        "max_delta_t": max(dt_vals) if dt_vals else None,
+        "final_delta_t": dt_vals[-1] if dt_vals else None,
+    }
+
+
 def _run_streaming_command(
     command: List[str],
     *,
@@ -346,7 +440,7 @@ def _run_streaming_command(
     max_iters: Optional[int] = None,
     end_time: Optional[float] = None,
 ) -> subprocess.CompletedProcess[str]:
-    """Execute a real solver subprocess via Popen, streaming live iterations, residuals, and OS telemetry to Celery/SQLite."""
+    """Execute a real solver subprocess via Popen, streaming live iterations, residuals, Courant/dt, and OS telemetry to Celery/SQLite."""
     callback: Optional[Callable[[Dict[str, Any]], None]] = getattr(_STREAM_STATE, "callback", None)
     started_mono = time.monotonic()
     proc = subprocess.Popen(
@@ -360,6 +454,7 @@ def _run_streaming_command(
     )
     lines: List[str] = []
     live_residuals: Dict[str, Dict[str, List[float]]] = {}
+    live_courant: Optional[Dict[str, Any]] = None
     current_iter = 0
     current_time = 0.0
     last_emit = started_mono
@@ -390,6 +485,33 @@ def _run_streaming_command(
                     try:
                         current_time = float(m_t.group(1))
                         current_iter += 1
+                    except ValueError:
+                        pass
+                m_co = _RE_COURANT_LINE.search(line)
+                if m_co:
+                    try:
+                        co_mean = float(m_co.group(1))
+                        co_max = float(m_co.group(2))
+                        if math.isfinite(co_mean) and math.isfinite(co_max):
+                            prev_dt = live_courant.get("delta_t") if isinstance(live_courant, dict) else None
+                            live_courant = {
+                                "co_mean": round(co_mean, 6),
+                                "co_max": round(co_max, 6),
+                                "delta_t": prev_dt,
+                                "time": current_time,
+                            }
+                    except ValueError:
+                        pass
+                m_dt = _RE_DELTAT_LINE.match(line)
+                if m_dt:
+                    try:
+                        dt_v = float(m_dt.group(1))
+                        if math.isfinite(dt_v) and dt_v > 0:
+                            if live_courant is None:
+                                live_courant = {"co_mean": None, "co_max": None, "delta_t": dt_v, "time": current_time}
+                            else:
+                                live_courant["delta_t"] = dt_v
+                                live_courant["time"] = current_time
                     except ValueError:
                         pass
                 m_r = re_res.search(line)
@@ -429,14 +551,17 @@ def _run_streaming_command(
                     live_tel = sample_node_telemetry(pid=proc.pid)
                     live_tel["wall_clock_sec"] = round(now - started_mono, 2)
                     live_tel["solver_binary"] = Path(command[0]).name
-                    callback({
+                    cb_payload: Dict[str, Any] = {
                         "progress": max(35, min(95, pct)),
                         "logs": lines[-140:],
                         "residuals": live_residuals,
                         "current_iteration": current_iter,
                         "status_message": f"{Path(command[0]).name}: iter {current_iter}" if current_iter > 0 else f"Running {Path(command[0]).name}",
                         "telemetry": live_tel,
-                    })
+                    }
+                    if live_courant is not None:
+                        cb_payload["live_courant"] = dict(live_courant)
+                    callback(cb_payload)
                 except Exception:
                     pass
 
@@ -446,14 +571,17 @@ def _run_streaming_command(
                 live_tel = sample_node_telemetry(pid=proc.pid)
                 live_tel["wall_clock_sec"] = round(now - started_mono, 2)
                 live_tel["solver_binary"] = Path(command[0]).name
-                callback({
+                cb_payload = {
                     "progress": 95,
                     "logs": lines[-140:],
                     "residuals": live_residuals,
                     "current_iteration": current_iter,
                     "status_message": f"{Path(command[0]).name}: iter {current_iter}" if current_iter > 0 else f"Completed {Path(command[0]).name}",
                     "telemetry": live_tel,
-                })
+                }
+                if live_courant is not None:
+                    cb_payload["live_courant"] = dict(live_courant)
+                callback(cb_payload)
             except Exception:
                 pass
 
@@ -1055,6 +1183,13 @@ def classify_physics(input_data: Mapping[str, Any]) -> str:
         "thermo_mechanical": "Thermal_Structural",
         "cht_coupled": "CHT_Coupled",
         "cht": "CHT_Coupled",
+        "cht_multiregion": "CHT_MultiRegion",
+        "multiregion_cht": "CHT_MultiRegion",
+        "chtmultiregion": "CHT_MultiRegion",
+        "fsi_2way": "FSI_2Way",
+        "2way_fsi": "FSI_2Way",
+        "fsi": "FSI_2Way",
+        "precice_fsi": "FSI_2Way",
         "multiphase_vof": "Multiphase_VOF",
         "multiphase": "Multiphase_VOF",
         "vof": "Multiphase_VOF",
@@ -1071,6 +1206,10 @@ def classify_physics(input_data: Mapping[str, Any]) -> str:
         return "CFD_Incompressible"
 
     text = _flatten_text(input_data).lower()
+    if any(t in text for t in ("precice", "2-way fsi", "2way fsi", "fsi_2way", "fluid-structure interaction")):
+        return "FSI_2Way"
+    if any(t in text for t in ("chtmultiregion", "multi-region cht", "multiregion cht", "cht_multiregion")):
+        return "CHT_MultiRegion"
     if any(t in text for t in ("maxwell", "electromagnetic", "magnetostatic", "electrostatic", "induction", "joule")):
         return "Electromagnetic"
     if any(t in text for t in ("acoustic", "helmholtz", "sound pressure")):
@@ -1118,6 +1257,8 @@ def _recommended_engine(physics_type: str) -> str:
         "CFD_Incompressible": "OpenFOAM (simpleFoam / icoFoam / pimpleFoam)",
         "CFD_Compressible": "OpenFOAM (rhoSimpleFoam / rhoPimpleFoam)",
         "CHT_Coupled": "OpenFOAM (buoyantSimpleFoam / chtMultiRegionSimpleFoam)",
+        "CHT_MultiRegion": "OpenFOAM Multi-Region (chtMultiRegionSimpleFoam / chtMultiRegionFoam)",
+        "FSI_2Way": "preCICE v3 Co-Simulation (OpenFOAM pimpleFoam + CalculiX ccx_preCICE)",
         "Multiphase_VOF": "OpenFOAM (interFoam VOF)",
         "Structural_Static": "CalculiX (ccx *STATIC)",
         "Structural_Dynamic": "CalculiX (ccx *FREQUENCY / *MODAL DYNAMIC)",
@@ -1143,8 +1284,12 @@ _OPENFOAM_BINARIES = {
     "sonicFoam",
     "interFoam",
     "buoyantSimpleFoam",
+    "buoyantBoussinesqSimpleFoam",
+    "buoyantBoussinesqPimpleFoam",
     "buoyantPimpleFoam",
     "chtMultiRegionSimpleFoam",
+    "chtMultiRegionFoam",
+    "splitMeshRegions",
     "blockMesh",
     "snappyHexMesh",
     "surfaceFeatureExtract",
@@ -1236,8 +1381,8 @@ def _probe_binary_version(binary: str, args: Sequence[str] = ("--version",)) -> 
 
 
 def probe_worker_capabilities() -> Dict[str, Any]:
-    """Inspect real installed binaries inside the current container."""
-    return {
+    """Inspect real installed binaries & multiphysics coupling adapters inside the current container."""
+    caps: Dict[str, Any] = {
         "openfoam": _probe_binary_version("simpleFoam", ("-help",)),
         "openfoam_blockMesh": _probe_binary_version("blockMesh", ("-help",)),
         "openfoam_snappyHexMesh": _probe_binary_version("snappyHexMesh", ("-help",)),
@@ -1251,6 +1396,15 @@ def probe_worker_capabilities() -> Dict[str, Any]:
         "elmer": _probe_binary_version("ElmerSolver", ("--version",)),
         "elmer_grid": _probe_binary_version("ElmerGrid", ("--help",)),
     }
+    try:
+        from backend.precice_coupling import probe_coupling_capabilities
+
+        coupling_caps = probe_coupling_capabilities()
+        if isinstance(coupling_caps, dict):
+            caps.update(coupling_caps)
+    except Exception:
+        pass
+    return caps
 
 
 def _parse_check_mesh_output(log_text: str) -> Dict[str, Any]:
@@ -2951,7 +3105,8 @@ def call_openfoam_solver(data: Mapping[str, Any]) -> PhysicsResult:
     turb_class = _classify_openfoam_turbulence("laminar" if compressible else turb_model)
     mrf_requested = bool(data.get("mrf_enabled")) or abs(float(data.get("mrf_omega_rad_s") or 0.0)) > 0.0
     time_mode = str(data.get("time_mode") or "steady").lower()
-    is_transient = time_mode == "transient" or is_vof or bool(turb_class["is_les"])
+    adaptive_dt = bool(data.get("adaptive_time_stepping"))
+    is_transient = time_mode == "transient" or adaptive_dt or is_vof or bool(turb_class["is_les"])
 
     # Promote CFD to CHT when wall thermal boundary conditions (heat flux / wall temperature) are present
     markers = data.get("boundary_markers")
@@ -2973,7 +3128,8 @@ def call_openfoam_solver(data: Mapping[str, Any]) -> PhysicsResult:
     elif turb_class["is_les"]:
         candidates = ("pimpleFoam", "simpleFoam")
     elif is_transient:
-        candidates = ("pimpleFoam", "simpleFoam") if mrf_requested else ("pimpleFoam", "icoFoam", "simpleFoam")
+        # Adaptive CFL time-stepping requires pimpleFoam (icoFoam has fixed deltaT only)
+        candidates = ("pimpleFoam", "simpleFoam") if (mrf_requested or adaptive_dt) else ("pimpleFoam", "icoFoam", "simpleFoam")
     else:
         candidates = ("simpleFoam", "pimpleFoam") if (turb_class["simulation_type"] != "laminar" or mrf_requested) else ("icoFoam", "simpleFoam", "pimpleFoam")
 
@@ -3346,15 +3502,30 @@ def call_openfoam_solver(data: Mapping[str, Any]) -> PhysicsResult:
     )
 
     is_transient_run = bool(is_vof or is_transient or is_les or solver_stem in {"icoFoam", "pimpleFoam", "rhoPimpleFoam"})
+    max_co_val = max(0.05, min(10.0, float(data.get("max_co") or 0.8)))
+    max_alpha_co_val = max(0.05, min(5.0, float(data.get("max_alpha_co") or 0.5)))
+    max_delta_t_val = max(dt_val, float(data.get("max_delta_t") or max(0.05, end_t_val / 5.0)))
     if is_transient_run:
         n_steps = max(1, int(round(end_t_val / dt_val)))
         w_int = max(1, n_steps // 12)
-        ctrl_text = (
-            'FoamFile { version 2.0; format ascii; class dictionary; object controlDict; }\n'
-            f"application {solver_stem};\nstartFrom startTime;\nstartTime 0;\nstopAt endTime;\n"
-            f"endTime {end_t_val:.6g};\ndeltaT {dt_val:.6g};\nwriteControl timeStep;\nwriteInterval {w_int};\npurgeWrite 0;\nwriteFormat ascii;\n"
-            "writePrecision 8;\ntimeFormat general;\ntimePrecision 8;\nrunTimeModifiable true;\n"
-        )
+        if adaptive_dt and solver_stem in {"pimpleFoam", "rhoPimpleFoam", "interFoam", "buoyantPimpleFoam"}:
+            write_interval_t = max(1e-5, round(end_t_val / 10.0, 6))
+            alpha_co_line = f"maxAlphaCo {max_alpha_co_val:.4g};\n" if is_vof else ""
+            ctrl_text = (
+                'FoamFile { version 2.0; format ascii; class dictionary; object controlDict; }\n'
+                f"application {solver_stem};\nstartFrom startTime;\nstartTime 0;\nstopAt endTime;\n"
+                f"endTime {end_t_val:.6g};\ndeltaT {dt_val:.6g};\n"
+                f"writeControl adjustableRunTime;\nwriteInterval {write_interval_t:.6g};\npurgeWrite 0;\n"
+                f"adjustTimeStep yes;\nmaxCo {max_co_val:.4g};\n{alpha_co_line}maxDeltaT {max_delta_t_val:.6g};\n"
+                "writeFormat ascii;\nwritePrecision 8;\ntimeFormat general;\ntimePrecision 8;\nrunTimeModifiable true;\n"
+            )
+        else:
+            ctrl_text = (
+                'FoamFile { version 2.0; format ascii; class dictionary; object controlDict; }\n'
+                f"application {solver_stem};\nstartFrom startTime;\nstartTime 0;\nstopAt endTime;\n"
+                f"endTime {end_t_val:.6g};\ndeltaT {dt_val:.6g};\nwriteControl timeStep;\nwriteInterval {w_int};\npurgeWrite 0;\nwriteFormat ascii;\n"
+                "writePrecision 8;\ntimeFormat general;\ntimePrecision 8;\nrunTimeModifiable true;\n"
+            )
     else:
         ctrl_text = (
             'FoamFile { version 2.0; format ascii; class dictionary; object controlDict; }\n'
@@ -3866,6 +4037,9 @@ def call_openfoam_solver(data: Mapping[str, Any]) -> PhysicsResult:
     }
     if mesh_quality is not None:
         result["mesh_quality"] = mesh_quality
+    courant_history = parse_openfoam_courant_history(log)
+    if courant_history.get("available"):
+        result["courant_history"] = courant_history
 
     inlet_area = height * depth
     mass_flow_kg_s = round(fluid["rho"] * velocity * inlet_area, 6)
@@ -5816,6 +5990,301 @@ End
     }, physics_type=physics_type, input_data={"physics_type": physics_type, "mesh_size": mesh_size, "parallel_cores": actual_cores}, solver="ElmerFEM")
 
 
+def call_precice_fsi_solver(data: Mapping[str, Any]) -> PhysicsResult:
+    """Execute genuine 2-Way Fluid-Structure Interaction via preCICE v3 (OpenFOAM + CalculiX ccx_preCICE)."""
+    from backend.precice_coupling import run_precice_coupled_simulation
+
+    cb = getattr(_STREAM_STATE, "callback", None)
+    return run_precice_coupled_simulation(data, stream_callback=cb)
+
+
+def call_openfoam_multiregion_cht_solver(data: Mapping[str, Any]) -> PhysicsResult:
+    """Execute genuine native OpenFOAM multi-region CHT (chtMultiRegionSimpleFoam / chtMultiRegionFoam)."""
+    from backend.precice_coupling import run_openfoam_multiregion_cht
+
+    cb = getattr(_STREAM_STATE, "callback", None)
+    return run_openfoam_multiregion_cht(data, stream_callback=cb)
+
+
+_ALLOWED_RESUME_SOLVERS = {
+    "simpleFoam",
+    "pimpleFoam",
+    "pisoFoam",
+    "icoFoam",
+    "rhoSimpleFoam",
+    "rhoPimpleFoam",
+    "sonicFoam",
+    "interFoam",
+    "buoyantSimpleFoam",
+    "buoyantBoussinesqSimpleFoam",
+    "buoyantBoussinesqPimpleFoam",
+    "buoyantPimpleFoam",
+    "chtMultiRegionSimpleFoam",
+    "chtMultiRegionFoam",
+}
+
+
+def _allowed_job_storage_roots() -> List[Path]:
+    return [
+        Path(p).resolve()
+        for p in (
+            os.getenv("NASEER_JOB_DIR", ""),
+            os.getenv("OPENFOAM_CASE_ROOT", ""),
+            os.getenv("CAE_WORK_DIR", ""),
+            "/app/jobs",
+            "/shared_jobs",
+            str(Path.cwd() / "jobs"),
+        )
+        if p
+    ]
+
+
+def find_openfoam_checkpoints(case_dir: Path) -> List[Tuple[float, Path]]:
+    """Return sorted numeric OpenFOAM time checkpoint directories strictly greater than 0."""
+    checkpoints: List[Tuple[float, Path]] = []
+    if not case_dir.is_dir():
+        return checkpoints
+    for child in case_dir.iterdir():
+        if not child.is_dir():
+            continue
+        try:
+            t_val = float(child.name)
+        except ValueError:
+            continue
+        if math.isfinite(t_val) and t_val > 0.0:
+            checkpoints.append((t_val, child))
+    checkpoints.sort(key=lambda item: item[0])
+    return checkpoints
+
+
+def _update_controldict_for_resume(
+    ctrl_text: str,
+    *,
+    new_end_time: float,
+    adaptive_time_stepping: Optional[bool] = None,
+    max_co: Optional[float] = None,
+    max_delta_t: Optional[float] = None,
+) -> str:
+    """Update system/controlDict strictly for latestTime checkpoint continuation."""
+    updated = ctrl_text
+    if re.search(r"\bstartFrom\s+\w+\s*;", updated):
+        updated = re.sub(r"\bstartFrom\s+\w+\s*;", "startFrom latestTime;", updated, count=1)
+    else:
+        updated = "startFrom latestTime;\n" + updated
+
+    end_time_str = f"{int(round(new_end_time))}" if abs(new_end_time - round(new_end_time)) < 1e-9 and new_end_time >= 10.0 else f"{new_end_time:.6g}"
+    if re.search(r"\bendTime\s+[^\s;]+\s*;", updated):
+        updated = re.sub(r"\bendTime\s+[^\s;]+\s*;", f"endTime {end_time_str};", updated, count=1)
+    else:
+        updated = updated.rstrip() + f"\nendTime {end_time_str};\n"
+
+    if adaptive_time_stepping is not None:
+        val = "yes" if adaptive_time_stepping else "no"
+        if re.search(r"\badjustTimeStep\s+\w+\s*;", updated):
+            updated = re.sub(r"\badjustTimeStep\s+\w+\s*;", f"adjustTimeStep {val};", updated, count=1)
+        else:
+            updated = updated.rstrip() + f"\nadjustTimeStep {val};\n"
+        if adaptive_time_stepping and re.search(r"\bwriteControl\s+\w+\s*;", updated):
+            updated = re.sub(r"\bwriteControl\s+\w+\s*;", "writeControl adjustableRunTime;", updated, count=1)
+
+    if max_co is not None:
+        co_clamped = max(0.05, min(10.0, float(max_co)))
+        if re.search(r"\bmaxCo\s+[^\s;]+\s*;", updated):
+            updated = re.sub(r"\bmaxCo\s+[^\s;]+\s*;", f"maxCo {co_clamped:.4g};", updated, count=1)
+        else:
+            updated = updated.rstrip() + f"\nmaxCo {co_clamped:.4g};\n"
+
+    if max_delta_t is not None:
+        dt_clamped = max(1e-6, float(max_delta_t))
+        if re.search(r"\bmaxDeltaT\s+[^\s;]+\s*;", updated):
+            updated = re.sub(r"\bmaxDeltaT\s+[^\s;]+\s*;", f"maxDeltaT {dt_clamped:.6g};", updated, count=1)
+        else:
+            updated = updated.rstrip() + f"\nmaxDeltaT {dt_clamped:.6g};\n"
+
+    return updated
+
+
+def resume_openfoam_case(parent_case_dir: str, resume_params: Mapping[str, Any]) -> PhysicsResult:
+    """Clone an existing OpenFOAM case directory and continue solving from its latest numeric checkpoint (Zero-Mock)."""
+    started = perf_counter()
+    parent_path = Path(parent_case_dir).resolve()
+    allowed_roots = _allowed_job_storage_roots()
+    if not any(parent_path == root or parent_path.is_relative_to(root) for root in allowed_roots):
+        raise PermissionError("INVALID_CASE_PATH: Parent case directory lies outside allowed job storage.")
+    if not parent_path.is_dir():
+        raise FileNotFoundError(f"Parent OpenFOAM case directory does not exist: {parent_path}")
+
+    ctrl_path = parent_path / "system" / "controlDict"
+    if not ctrl_path.is_file():
+        raise ValueError("NO_CHECKPOINT_AVAILABLE: Parent case has no system/controlDict (not an OpenFOAM case).")
+
+    checkpoints = find_openfoam_checkpoints(parent_path)
+    if not checkpoints:
+        raise ValueError(
+            "NO_CHECKPOINT_AVAILABLE: Parent case has no numeric time directory > 0 to resume from."
+        )
+    latest_time, _latest_dir = checkpoints[-1]
+
+    ctrl_text = ctrl_path.read_text(encoding="utf-8", errors="replace")
+    app_match = re.search(r"\bapplication\s+([A-Za-z0-9_]+)\s*;", ctrl_text)
+    solver_name = app_match.group(1) if app_match else ""
+    if solver_name not in _ALLOWED_RESUME_SOLVERS:
+        raise ValueError(
+            f"UNSUPPORTED_RESUME_SOLVER: Solver '{solver_name or 'unknown'}' in controlDict is not an allowlisted OpenFOAM binary."
+        )
+
+    extra_end_time = resume_params.get("extra_end_time")
+    extra_iterations = resume_params.get("extra_iterations")
+    if extra_end_time is not None and float(extra_end_time) > 0:
+        new_end_time = latest_time + float(extra_end_time)
+    elif extra_iterations is not None and int(extra_iterations) > 0:
+        new_end_time = latest_time + float(int(extra_iterations))
+    else:
+        # Infer steady iteration continuation vs transient physical time continuation
+        is_integer_step = abs(latest_time - round(latest_time)) < 1e-9 and latest_time >= 5.0
+        new_end_time = latest_time + (max(50.0, latest_time) if is_integer_step else max(0.1, latest_time))
+
+    new_case_dir = parent_path.parent / f"{parent_path.name}-resume-{uuid.uuid4().hex[:8]}"
+
+    def _ignore_unsafe(_src: str, names: List[str]) -> List[str]:
+        ignored: List[str] = []
+        src_p = Path(_src)
+        for nm in names:
+            if nm == "VTK":
+                ignored.append(nm)
+                continue
+            cand = src_p / nm
+            if cand.is_symlink():
+                try:
+                    target = cand.resolve()
+                    if not target.is_relative_to(parent_path):
+                        ignored.append(nm)
+                except OSError:
+                    ignored.append(nm)
+        return ignored
+
+    shutil.copytree(parent_path, new_case_dir, symlinks=False, ignore=_ignore_unsafe)
+
+    adaptive_arg = resume_params.get("adaptive_time_stepping")
+    updated_ctrl = _update_controldict_for_resume(
+        ctrl_text,
+        new_end_time=new_end_time,
+        adaptive_time_stepping=(bool(adaptive_arg) if adaptive_arg is not None else None),
+        max_co=(float(resume_params["max_co"]) if resume_params.get("max_co") is not None else None),
+        max_delta_t=(float(resume_params["max_delta_t"]) if resume_params.get("max_delta_t") is not None else None),
+    )
+    (new_case_dir / "system" / "controlDict").write_text(updated_ctrl, encoding="utf-8")
+
+    env = _openfoam_env()
+    executable = shutil.which(solver_name, path=env.get("PATH")) or shutil.which(solver_name)
+    if not executable:
+        raise RuntimeError(
+            f"OpenFOAM solver binary '{solver_name}' is not installed on PATH inside this worker container."
+        )
+
+    is_multiregion = solver_name in {"chtMultiRegionSimpleFoam", "chtMultiRegionFoam"}
+    timeout_s = max(60, int(os.getenv("OPENFOAM_TIMEOUT_SECONDS", "300")))
+    proc = _run_streaming_command(
+        [executable],
+        cwd=new_case_dir,
+        env=env,
+        timeout=timeout_s,
+        log_path=new_case_dir / "solver.log",
+        append_log=True,
+        solver_kind="openfoam",
+        end_time=new_end_time,
+    )
+    if proc.returncode != 0:
+        raise RuntimeError(
+            f"Resumed {solver_name} failed (rc={proc.returncode}): {(proc.stdout or '')[-600:]}"
+        )
+
+    if not is_multiregion:
+        verify_openfoam_convergence(new_case_dir, solver_name)
+
+    foam_to_vtk = shutil.which("foamToVTK", path=env.get("PATH")) or shutil.which("foamToVTK")
+    if foam_to_vtk:
+        vtk_cmd = [foam_to_vtk, "-allRegions", "-latestTime"] if is_multiregion else [foam_to_vtk, "-latestTime"]
+        subprocess.run(vtk_cmd, cwd=new_case_dir, env=env, text=True, capture_output=True, timeout=120, check=False)
+
+    full_log = (new_case_dir / "solver.log").read_text(encoding="utf-8", errors="replace") if (new_case_dir / "solver.log").exists() else (proc.stdout or "")
+    residuals = parse_openfoam_residuals(full_log)
+    courant_history = parse_openfoam_courant_history(full_log)
+    new_checkpoints = find_openfoam_checkpoints(new_case_dir)
+    final_time = new_checkpoints[-1][0] if new_checkpoints else new_end_time
+
+    physics_type = "CHT_MultiRegion" if is_multiregion else str(resume_params.get("physics_type") or "CFD_Incompressible")
+    vtk_payload: Dict[str, Any] = {}
+    if not is_multiregion:
+        try:
+            vtk_dir = new_case_dir / "VTK"
+            if vtk_dir.is_dir():
+                vtk_files = sorted(
+                    list(vtk_dir.rglob("*.vtu")) + list(vtk_dir.rglob("*.vtk")),
+                    key=lambda p: p.stat().st_mtime,
+                )
+                if vtk_files:
+                    extracted = _extract_vtk_from_meshio_file(vtk_files[-1])
+                    if isinstance(extracted, dict):
+                        vtk_payload = extracted
+        except Exception:
+            vtk_payload = {}
+
+    metrics: Dict[str, Any] = {}
+    if not is_multiregion:
+        try:
+            metrics = compute_openfoam_metrics(new_case_dir)
+        except Exception:
+            metrics = {}
+
+    elapsed_ms = round((perf_counter() - started) * 1000.0, 3)
+    merged: Dict[str, Any] = {
+        "status": "SOLVED_REALTIME",
+        "solver": "OpenFOAM",
+        "solver_variant": solver_name,
+        "case_directory": str(new_case_dir),
+        "parent_case_directory": str(parent_path),
+        "resumed_from_time": latest_time,
+        "final_time": final_time,
+        "residuals": residuals,
+        "convergence": {
+            "converged": bool(residuals and all(item["values"] and item["values"][-1] < 1e-4 for item in residuals.values())),
+            "residuals": residuals,
+        },
+        "metrics": metrics,
+        "vtk_data": vtk_payload,
+        "logs": full_log.splitlines()[-150:],
+        "artifacts": {
+            "case_directory": str(new_case_dir),
+            "parent_case_directory": str(parent_path),
+            "log": str(new_case_dir / "solver.log"),
+        },
+    }
+    if courant_history.get("available"):
+        merged["courant_history"] = courant_history
+
+    response = {
+        "physics_type": physics_type,
+        "recommended_solver": _recommended_engine(physics_type),
+        "status": "SOLVED_REALTIME",
+        "process_time_ms": elapsed_ms,
+        "process_time": round(elapsed_ms / 1000.0, 3),
+        "case_directory": str(new_case_dir),
+        "resumed_from_time": latest_time,
+        "final_time": final_time,
+        "vtk_data": vtk_payload,
+        "data": merged,
+    }
+    if courant_history.get("available"):
+        response["courant_history"] = courant_history
+    return canonicalize_result(
+        response,
+        physics_type=physics_type,
+        input_data=dict(resume_params),
+        solver="OpenFOAM",
+    )
+
+
 def execute_simulation(data: Dict[str, Any]) -> PhysicsResult:
     started = perf_counter()
     physics_type = classify_physics(data)
@@ -5824,6 +6293,8 @@ def execute_simulation(data: Dict[str, Any]) -> PhysicsResult:
             "CFD_Incompressible": call_openfoam_solver,
             "CFD_Compressible": call_openfoam_compressible_solver,
             "CHT_Coupled": call_openfoam_solver,
+            "CHT_MultiRegion": call_openfoam_multiregion_cht_solver,
+            "FSI_2Way": call_precice_fsi_solver,
             "Multiphase_VOF": call_openfoam_solver,
             "Structural_Static": call_calculix_solver,
             "Structural_Dynamic": call_calculix_solver,
@@ -5853,6 +6324,8 @@ def execute_simulation(data: Dict[str, Any]) -> PhysicsResult:
         }
         if isinstance(merged.get("mesh_quality"), Mapping):
             response["mesh_quality"] = dict(merged["mesh_quality"])
+        if isinstance(merged.get("courant_history"), Mapping):
+            response["courant_history"] = dict(merged["courant_history"])
         response["academic_report"] = generate_academic_report(response)
         return canonicalize_result(
             response,
@@ -5864,12 +6337,19 @@ def execute_simulation(data: Dict[str, Any]) -> PhysicsResult:
         elapsed_ms = round((perf_counter() - started) * 1000, 3)
         failure: Dict[str, Any] = {}
         err_data: Dict[str, Any] = {}
+        exc_name = type(exc).__name__
         if isinstance(exc, OpenFOAMVerificationError):
             failure["errors"] = [{"code": "OPENFOAM_VERIFICATION_FAILED", "message": str(exc)}]
         elif isinstance(exc, MeshQualityGateError):
             failure["errors"] = [{"code": "MESH_QUALITY_GATE_FAILED", "message": str(exc)}]
             failure["mesh_quality"] = dict(exc.mesh_quality)
             err_data["mesh_quality"] = dict(exc.mesh_quality)
+        elif exc_name == "PreciceRuntimeUnavailableError":
+            failure["errors"] = [{"code": "PRECICE_RUNTIME_UNAVAILABLE", "message": str(exc)}]
+            if hasattr(exc, "missing_components"):
+                err_data["missing_components"] = list(getattr(exc, "missing_components") or [])
+        elif exc_name == "MultiRegionChtError":
+            failure["errors"] = [{"code": "MULTIREGION_CHT_FAILED", "message": str(exc)}]
         return canonicalize_result({
             "physics_type": physics_type,
             "recommended_solver": _recommended_engine(physics_type),
@@ -5880,7 +6360,7 @@ def execute_simulation(data: Dict[str, Any]) -> PhysicsResult:
             "data": err_data,
             "error": (
                 str(exc)
-                if isinstance(exc, (OpenFOAMVerificationError, MeshQualityGateError))
+                if (isinstance(exc, (OpenFOAMVerificationError, MeshQualityGateError)) or exc_name in {"PreciceRuntimeUnavailableError", "MultiRegionChtError"})
                 else f"Universal dispatcher failed ({physics_type}): {exc}"
             ),
             **failure,
@@ -5940,6 +6420,9 @@ def run_simulation_task(self, data: Dict[str, Any]) -> PhysicsResult:
         cur_iter = int(payload.get("current_iteration") or 0)
         msg = str(payload.get("status_message") or f"Running {_recommended_engine(physics_type)}")
         live_tel = payload.get("telemetry") if isinstance(payload.get("telemetry"), dict) else sample_node_telemetry()
+        extra_meta: Dict[str, Any] = {}
+        if isinstance(payload.get("live_courant"), dict):
+            extra_meta["live_courant"] = payload["live_courant"]
         _task_progress(
             self,
             pct,
@@ -5949,6 +6432,7 @@ def run_simulation_task(self, data: Dict[str, Any]) -> PhysicsResult:
             current_iteration=cur_iter,
             physics_type=physics_type,
             telemetry=live_tel,
+            **extra_meta,
         )
         _record_job_state(task_id, "RUNNING", progress=pct, logs=live_logs)
 
@@ -5978,6 +6462,60 @@ def run_simulation_task(self, data: Dict[str, Any]) -> PhysicsResult:
         task_id, "COMPLETED", progress=100,
         logs=result.get("logs") if isinstance(result, dict) else None, result=result,
     )
+    return result
+
+
+@celery_app.task(
+    name="universal_dispatcher.resume_simulation",
+    bind=True,
+    soft_time_limit=int(os.getenv("CAE_TASK_SOFT_TIME_LIMIT_SECONDS", "900")),
+    time_limit=int(os.getenv("CAE_TASK_TIME_LIMIT_SECONDS", "960")),
+)
+def resume_simulation_task(self, parent_case_dir: str, resume_params: Dict[str, Any]) -> PhysicsResult:
+    """Resume an OpenFOAM simulation from its latest numeric checkpoint inside the worker container."""
+    task_id = getattr(self.request, "id", None)
+    _record_job_state(task_id, "RUNNING", progress=15)
+    _task_progress(self, 15, "Cloning parent case & loading latestTime checkpoint")
+
+    def _live_stream_callback(payload: Dict[str, Any]) -> None:
+        pct = int(payload.get("progress", 40))
+        live_logs = payload.get("logs") if isinstance(payload.get("logs"), list) else []
+        live_res = payload.get("residuals") if isinstance(payload.get("residuals"), dict) else {}
+        cur_iter = int(payload.get("current_iteration") or 0)
+        msg = str(payload.get("status_message") or "Resuming OpenFOAM checkpoint")
+        live_tel = payload.get("telemetry") if isinstance(payload.get("telemetry"), dict) else sample_node_telemetry()
+        extra_meta: Dict[str, Any] = {}
+        if isinstance(payload.get("live_courant"), dict):
+            extra_meta["live_courant"] = payload["live_courant"]
+        _task_progress(
+            self,
+            pct,
+            msg,
+            logs=live_logs,
+            live_residuals=live_res,
+            current_iteration=cur_iter,
+            telemetry=live_tel,
+            **extra_meta,
+        )
+        _record_job_state(task_id, "RUNNING", progress=pct, logs=live_logs)
+
+    _STREAM_STATE.callback = _live_stream_callback
+    try:
+        result = resume_openfoam_case(parent_case_dir, resume_params)
+    except Exception as exc:
+        msg = f"Checkpoint resume failed: {exc}"
+        err_res: Dict[str, Any] = {"status": "error", "error": msg, "logs": [msg]}
+        _record_job_state(task_id, "FAILED", progress=100, logs=[msg], result=err_res, error=msg)
+        return err_res
+    finally:
+        _STREAM_STATE.callback = None
+
+    solver_logs = []
+    if isinstance(result.get("data"), Mapping) and isinstance(result["data"].get("logs"), list):
+        solver_logs = result["data"]["logs"]
+    result["logs"] = solver_logs or ["Resumed simulation completed & verified"]
+    _task_progress(self, 100, "Resumed simulation completed")
+    _record_job_state(task_id, "COMPLETED", progress=100, logs=result["logs"], result=result)
     return result
 
 

@@ -44,7 +44,7 @@ import { ViewportCanvas } from './components/ViewportCanvas';
 import { LiveJobTelemetry } from './components/ViewportHealthDashboard';
 import { CadModelStats, BoundaryMarker } from './components/Interactive3DViewport';
 import { PropertiesPanel, PanelDocument, MeshPreviewSummary } from './components/PropertiesPanel';
-import { SolverConsole, ResidualSeries } from './components/SolverConsole';
+import { SolverConsole, ResidualSeries, LiveCourantTelemetry } from './components/SolverConsole';
 import {
   ConsoleIssue,
   ConsoleTab,
@@ -134,6 +134,7 @@ export default function App() {
   const [solverCurrentIteration, setSolverCurrentIteration] = useState<number | null>(null);
   const [activeTaskId, setActiveTaskId] = useState<string | null>(null);
   const [liveJobTelemetry, setLiveJobTelemetry] = useState<LiveJobTelemetry | null>(null);
+  const [liveCourant, setLiveCourant] = useState<LiveCourantTelemetry | null>(null);
   const [jobWallClockSec, setJobWallClockSec] = useState<number | null>(null);
   const [lastCompletedDurationSec, setLastCompletedDurationSec] = useState<number | null>(null);
   const [meshStudyRunning, setMeshStudyRunning] = useState<boolean>(false);
@@ -231,6 +232,7 @@ export default function App() {
   setSolverJobStatus('queued');
   setSolverProgress(null);
   setSolverCurrentIteration(null);
+  setLiveCourant(null);
   setResults(null);
   setSolverResidualSeries([]);
   activeTaskIdRef.current = null;
@@ -292,6 +294,9 @@ export default function App() {
         }
         if (snap?.telemetry && typeof snap.telemetry === 'object') {
           setLiveJobTelemetry(snap.telemetry as LiveJobTelemetry);
+        }
+        if (snap?.live_courant && typeof snap.live_courant === 'object') {
+          setLiveCourant(snap.live_courant as LiveCourantTelemetry);
         }
         if (Array.isArray(snap?.logs) && snap.logs.length > 0) {
           latestLogs = snap.logs.map(String);
@@ -379,6 +384,13 @@ export default function App() {
       completedAt: optionalText(job?.completed_at),
       recordedAt: new Date().toISOString(),
     };
+    const courantHist = payload?.courant_history ?? solverData?.courant_history;
+    if (courantHist && typeof courantHist === 'object' && courantHist.available) {
+      setLiveCourant({
+        co_max: typeof courantHist.max_co_final === 'number' ? courantHist.max_co_final : courantHist.max_co_peak,
+        delta_t: typeof courantHist.final_delta_t === 'number' ? courantHist.final_delta_t : null,
+      });
+    }
     setCurrentProject(project => project ? {
       ...project,
       normalizedSolverResult: normalized,
@@ -388,6 +400,175 @@ export default function App() {
     setSolverJobStatus('completed');
     setSolverProgress(100);
     return payload;
+  };
+
+  const handleResumeCheckpoint = async (parentTaskId: string) => {
+    if (!currentProject || !parentTaskId || isSolverRunning) return;
+    const runId = ++runIdRef.current;
+    const assertActive = () => {
+      if (runIdRef.current !== runId) throw new SimulationCancelledError();
+    };
+    setSolverJobStatus('queued');
+    setSolverProgress(null);
+    setSolverCurrentIteration(null);
+    setLiveCourant(null);
+    let latestLogs = [
+      `[${new Date().toISOString()}] Requesting OpenFOAM latestTime checkpoint resume from parent job ${parentTaskId}...`,
+    ];
+    setSolverLogs(latestLogs);
+
+    try {
+      const resumeBody: Record<string, unknown> = {
+        execution_mode: simulationInputs.executionMode,
+      };
+      if (simulationInputs.timeMode === 'transient' && simulationInputs.endTime.trim() !== '' && Number(simulationInputs.endTime) > 0) {
+        resumeBody.extra_end_time = Number(simulationInputs.endTime);
+      } else if (simulationInputs.solverIterations.trim() !== '' && Number(simulationInputs.solverIterations) > 0) {
+        resumeBody.extra_iterations = Math.round(Number(simulationInputs.solverIterations));
+      }
+      if (simulationInputs.adaptiveTimeStepping) {
+        resumeBody.adaptive_time_stepping = true;
+        if (simulationInputs.maxCo.trim() !== '' && Number(simulationInputs.maxCo) > 0) {
+          resumeBody.max_co = Number(simulationInputs.maxCo);
+        }
+        if (simulationInputs.maxDeltaT.trim() !== '' && Number(simulationInputs.maxDeltaT) > 0) {
+          resumeBody.max_delta_t = Number(simulationInputs.maxDeltaT);
+        }
+      }
+
+      const response = await fetch(`/api/jobs/${encodeURIComponent(parentTaskId)}/resume`, {
+        method: 'POST',
+        headers: withEnterpriseAuthHeaders({ 'Content-Type': 'application/json' }),
+        body: JSON.stringify(resumeBody),
+      });
+      const submitPayload = await readJson(response);
+      assertActive();
+      if (!response.ok || submitPayload?.success === false) {
+        throw new Error(extractApiError(submitPayload, `Checkpoint resume failed (${response.status})`));
+      }
+
+      const isDirect = simulationInputs.executionMode === 'direct' || (!submitPayload?.task_id && Boolean(submitPayload?.result));
+      let job: any;
+      let childTaskId: string | undefined = submitPayload?.task_id;
+
+      if (isDirect) {
+        job = { status: 'COMPLETED', result: submitPayload?.result ?? submitPayload, logs: [] };
+      } else {
+        if (!childTaskId) throw new Error('Backend did not return a child task_id for checkpoint resume');
+        activeTaskIdRef.current = childTaskId;
+        setActiveTaskId(childTaskId);
+        setLiveJobTelemetry(null);
+        setJobWallClockSec(0);
+
+        simAbortRef.current?.abort();
+        const abortController = new AbortController();
+        simAbortRef.current = abortController;
+
+        try {
+          job = await streamJobUntilDone(childTaskId, {
+            signal: abortController.signal,
+            pollIntervalMs: 1000,
+            onProgress: (snap: any) => {
+              if (runIdRef.current !== runId) return;
+              const st = String(snap?.status ?? 'QUEUED').toUpperCase();
+              setSolverJobStatus(
+                st === 'RUNNING' ? 'running' :
+                st === 'COMPLETED' ? 'completed' :
+                st === 'FAILED' ? 'failed' :
+                st === 'CANCELLED' ? 'cancelled' :
+                'queued'
+              );
+              if (typeof snap?.progress === 'number') setSolverProgress(snap.progress);
+              if (typeof snap?.current_iteration === 'number' && snap.current_iteration > 0) {
+                setSolverCurrentIteration(snap.current_iteration);
+              }
+              if (typeof snap?.wall_clock_sec === 'number' && Number.isFinite(snap.wall_clock_sec)) {
+                setJobWallClockSec(snap.wall_clock_sec);
+              }
+              if (snap?.telemetry && typeof snap.telemetry === 'object') {
+                setLiveJobTelemetry(snap.telemetry as LiveJobTelemetry);
+              }
+              if (snap?.live_courant && typeof snap.live_courant === 'object') {
+                setLiveCourant(snap.live_courant as LiveCourantTelemetry);
+              }
+              if (Array.isArray(snap?.logs) && snap.logs.length > 0) {
+                latestLogs = snap.logs.map(String);
+                setSolverLogs(latestLogs);
+              }
+              if (snap?.live_residuals && typeof snap.live_residuals === 'object') {
+                const liveSeries: ResidualSeries[] = Object.entries(snap.live_residuals)
+                  .map(([name, raw]: [string, any]) => {
+                    const iters: number[] = Array.isArray(raw?.iterations) ? raw.iterations : [];
+                    const vals: number[] = Array.isArray(raw?.values) ? raw.values : [];
+                    const points = vals
+                      .map((value, idx) => ({ iteration: Number(iters[idx] ?? idx + 1), value: Number(value) }))
+                      .filter((pt) => Number.isFinite(pt.iteration) && Number.isFinite(pt.value) && pt.value > 0);
+                    return { name, points };
+                  })
+                  .filter((s) => s.points.length >= 2);
+                if (liveSeries.length > 0) setSolverResidualSeries(liveSeries);
+              }
+            },
+          });
+        } finally {
+          if (simAbortRef.current === abortController) simAbortRef.current = null;
+        }
+        assertActive();
+        activeTaskIdRef.current = null;
+        setActiveTaskId(null);
+        const finalStatus = String(job?.status ?? 'FAILED').toUpperCase();
+        if (finalStatus !== 'COMPLETED') {
+          throw new Error(extractApiError(job, `Resumed job ${finalStatus.toLowerCase()}`));
+        }
+      }
+
+      const payload = job.result && typeof job.result === 'object' ? job.result : {};
+      const solverData = payload?.data?.solver_results ?? payload?.data ?? payload;
+      setResults({
+        ...payload,
+        ...solverData,
+        temperature_matrix: toRealTemperatureMatrix(solverData?.temperature_matrix),
+      });
+      const courantHist = payload?.courant_history ?? solverData?.courant_history;
+      if (courantHist && typeof courantHist === 'object' && courantHist.available) {
+        setLiveCourant({
+          co_max: typeof courantHist.max_co_final === 'number' ? courantHist.max_co_final : courantHist.max_co_peak,
+          delta_t: typeof courantHist.final_delta_t === 'number' ? courantHist.final_delta_t : null,
+        });
+      }
+      const normalized = normalizeSolverResponse(payload, currentProject);
+      normalized.logs = latestLogs;
+      setSolverResidualSeries(normalized.residualSeries ?? []);
+      const simulationRun: SimulationRunRecord = {
+        taskId: childTaskId || (typeof job?.task_id === 'string' ? job.task_id : undefined),
+        executionMode: isDirect ? 'direct' : 'celery',
+        submittedRequest: { action: 'resume', parent_task_id: parentTaskId, ...resumeBody },
+        result: payload,
+        logs: latestLogs,
+        recordedAt: new Date().toISOString(),
+      };
+      setCurrentProject((project) =>
+        project
+          ? {
+              ...project,
+              normalizedSolverResult: normalized,
+              simulationRun,
+              scriptExecutionLog: [...(project.scriptExecutionLog || []), ...latestLogs],
+            }
+          : project,
+      );
+      setSolverJobStatus('completed');
+      setSolverProgress(100);
+      setSaveToast(`Checkpoint resumed from t=${submitPayload?.resumed_from_time ?? 'latestTime'} and completed.`);
+      setTimeout(() => setSaveToast(null), 4000);
+    } catch (err) {
+      if (err instanceof SimulationCancelledError) return;
+      const msg = err instanceof Error ? err.message : 'Checkpoint resume failed';
+      setSolverJobStatus('failed');
+      setSolverLogs((prev) => [...prev, `[${new Date().toISOString()}] ERROR: ${msg}`]);
+      recordIssue(msg);
+      setConsoleTab('errors');
+    }
   };
 
   // Apply computed nanofluid & flow regime directly to the active project & solver inputs
@@ -1994,6 +2175,9 @@ export default function App() {
               status={solverJobStatus}
               progress={solverProgress}
               currentIteration={solverCurrentIteration}
+              liveCourant={liveCourant}
+              canResumeCheckpoint={Boolean(activeSolverTaskId && !isSolverRunning)}
+              onResumeCheckpoint={activeSolverTaskId ? () => handleResumeCheckpoint(activeSolverTaskId) : undefined}
               issues={consoleIssues}
               residualSeries={solverResidualSeries}
               onClearIssues={() => setConsoleIssues([])}
@@ -2031,6 +2215,7 @@ export default function App() {
           onPrepareAssembly={handlePrepareAssembly}
           lastTaskId={activeSolverTaskId}
           onDownloadCaseArchive={handleDownloadSolverCase}
+          onResumeCheckpoint={handleResumeCheckpoint}
           actions={{
             importModel: () => setIsUploadModalOpen(true),
             openMeshGenerator: () => setIsMeshGeneratorOpen(true),

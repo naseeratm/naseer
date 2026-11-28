@@ -13,6 +13,8 @@ export type SimulationTypeOption =
   | 'CFD_Incompressible'
   | 'CFD_Compressible'
   | 'CHT_Coupled'
+  | 'CHT_MultiRegion'
+  | 'FSI_2Way'
   | 'Multiphase_VOF'
   | 'Structural_Static'
   | 'Structural_Dynamic'
@@ -96,6 +98,15 @@ export interface SimulationInputs {
   timeMode: 'steady' | 'transient';
   timeStep: string;
   endTime: string;
+  adaptiveTimeStepping: boolean;
+  maxCo: string;
+  maxDeltaT: string;
+  // Multiphysics Coupling (preCICE 2-Way FSI & Multi-Region CHT)
+  couplingScheme: 'parallel-implicit' | 'serial-implicit';
+  couplingMaxIterations: string;
+  couplingRelTol: string;
+  solidThickness: string;
+  solidConductivity: string;
   gravityEnabled: boolean;
   gravityY: string;
   solverIterations: string;
@@ -180,6 +191,14 @@ export const DEFAULT_SIMULATION_INPUTS: SimulationInputs = {
   timeMode: 'steady',
   timeStep: '',
   endTime: '',
+  adaptiveTimeStepping: false,
+  maxCo: '',
+  maxDeltaT: '',
+  couplingScheme: 'parallel-implicit',
+  couplingMaxIterations: '',
+  couplingRelTol: '',
+  solidThickness: '',
+  solidConductivity: '',
   gravityEnabled: false,
   gravityY: '-9.81',
   solverIterations: '',
@@ -226,6 +245,8 @@ export const SIMULATION_TYPE_OPTIONS: { value: SimulationTypeOption; label: stri
   { value: 'CFD_Incompressible', label: 'CFD · Incompressible (OpenFOAM simpleFoam / pimpleFoam)' },
   { value: 'CFD_Compressible', label: 'CFD · Compressible (OpenFOAM rhoSimpleFoam)' },
   { value: 'CHT_Coupled', label: 'CHT · Conjugate Heat Transfer (OpenFOAM buoyantSimpleFoam)' },
+  { value: 'CHT_MultiRegion', label: 'CHT · Multi-Region Fluid+Solid (OpenFOAM chtMultiRegionSimpleFoam)' },
+  { value: 'FSI_2Way', label: 'FSI · 2-Way Coupled Fluid-Structure (preCICE OpenFOAM + CalculiX)' },
   { value: 'Multiphase_VOF', label: 'Multiphase · Volume of Fluid (OpenFOAM interFoam)' },
   { value: 'Structural_Static', label: 'Structural · Static FEA (CalculiX ccx)' },
   { value: 'Structural_Dynamic', label: 'Structural · Modal / Frequency (CalculiX ccx)' },
@@ -242,7 +263,8 @@ export function defaultSimulationTypeForField(field?: string): SimulationTypeOpt
   const f = (field || '').toLowerCase();
   if (f === 'cfd' || f === 'supersonic') return f === 'supersonic' ? 'CFD_Compressible' : 'CFD_Incompressible';
   if (f === 'fea') return 'Structural_Static';
-  if (f === 'fsi' || f === 'multiphysics') return 'CHT_Coupled';
+  if (f === 'fsi') return 'FSI_2Way';
+  if (f === 'multiphysics') return 'CHT_MultiRegion';
   if (f === 'pcm') return 'Multiphase_VOF';
   return 'Thermal_Transient';
 }
@@ -251,6 +273,8 @@ export const isCfdFamily = (type: SimulationTypeOption): boolean =>
   type === 'CFD_Incompressible' ||
   type === 'CFD_Compressible' ||
   type === 'CHT_Coupled' ||
+  type === 'CHT_MultiRegion' ||
+  type === 'FSI_2Way' ||
   type === 'Multiphase_VOF';
 
 export const isStructuralFamily = (type: SimulationTypeOption): boolean =>
@@ -264,7 +288,11 @@ export const isThermalFamily = (type: SimulationTypeOption): boolean =>
   type === 'Thermal_Transient' ||
   type === 'Thermal_Radiation' ||
   type === 'Thermal_Structural' ||
-  type === 'CHT_Coupled';
+  type === 'CHT_Coupled' ||
+  type === 'CHT_MultiRegion';
+
+export const isMultiphysicsCoupling = (type: SimulationTypeOption): boolean =>
+  type === 'CHT_MultiRegion' || type === 'FSI_2Way';
 
 export const isElmerFamily = (type: SimulationTypeOption): boolean =>
   type === 'Electromagnetic' || type === 'Acoustics';
@@ -353,6 +381,31 @@ export function getMissingSimulationInputs(inputs: SimulationInputs): string[] {
     }
   }
 
+  if (inputs.simulationType === 'CHT_MultiRegion') {
+    const hasSolidK =
+      (isFiniteNumberString(inputs.solidConductivity) && Number(inputs.solidConductivity) > 0) ||
+      (isFiniteNumberString(inputs.thermalConductivity) && Number(inputs.thermalConductivity) > 0);
+    if (!hasSolidK) {
+      missing.push('Solid Thermal Conductivity');
+    }
+  }
+
+  if (inputs.simulationType === 'FSI_2Way') {
+    if (!isFiniteNumberString(inputs.youngModulus) || Number(inputs.youngModulus) <= 0) {
+      missing.push("Solid Young's Modulus");
+    }
+    if (
+      !isFiniteNumberString(inputs.poissonRatio) ||
+      Number(inputs.poissonRatio) < 0 ||
+      Number(inputs.poissonRatio) >= 0.5
+    ) {
+      missing.push("Solid Poisson's Ratio");
+    }
+    if (!isFiniteNumberString(inputs.density) || Number(inputs.density) <= 0) {
+      missing.push('Solid Density');
+    }
+  }
+
   if (isElmerFamily(inputs.simulationType)) {
     if (!isFiniteNumberString(inputs.bcLeft)) {
       missing.push(inputs.simulationType === 'Acoustics' ? 'Source Sound Pressure (Pa)' : 'Source Potential (V)');
@@ -402,12 +455,47 @@ export function buildSimulationRequest(inputs: SimulationInputs): Record<string,
   }
 
   // Solution Controls
-  if (inputs.timeMode === 'transient') {
+  if (inputs.timeMode === 'transient' || inputs.adaptiveTimeStepping) {
     if (isFiniteNumberString(inputs.timeStep) && Number(inputs.timeStep) > 0) {
       request.time_step = Number(inputs.timeStep);
     }
     if (isFiniteNumberString(inputs.endTime) && Number(inputs.endTime) > 0) {
       request.end_time = Number(inputs.endTime);
+    }
+    if (inputs.adaptiveTimeStepping) {
+      request.adaptive_time_stepping = true;
+      if (isFiniteNumberString(inputs.maxCo) && Number(inputs.maxCo) > 0) {
+        request.max_co = Number(inputs.maxCo);
+      }
+      if (isFiniteNumberString(inputs.maxDeltaT) && Number(inputs.maxDeltaT) > 0) {
+        request.max_delta_t = Number(inputs.maxDeltaT);
+      }
+    }
+  }
+  if (isMultiphysicsCoupling(inputs.simulationType)) {
+    if (isFiniteNumberString(inputs.solidThickness) && Number(inputs.solidThickness) > 0) {
+      request.solid_thickness = Number(inputs.solidThickness);
+    }
+    if (isFiniteNumberString(inputs.solidConductivity) && Number(inputs.solidConductivity) > 0) {
+      request.solid_conductivity_k = Number(inputs.solidConductivity);
+    }
+    if (inputs.simulationType === 'FSI_2Way') {
+      request.coupling_scheme = inputs.couplingScheme || 'parallel-implicit';
+      if (isFiniteNumberString(inputs.couplingMaxIterations) && Number(inputs.couplingMaxIterations) > 0) {
+        request.coupling_max_iterations = Math.round(Number(inputs.couplingMaxIterations));
+      }
+      if (isFiniteNumberString(inputs.couplingRelTol) && Number(inputs.couplingRelTol) > 0) {
+        request.coupling_rel_tol = Number(inputs.couplingRelTol);
+      }
+      if (isFiniteNumberString(inputs.youngModulus) && Number(inputs.youngModulus) > 0) {
+        request.young_modulus = Number(inputs.youngModulus);
+      }
+      if (isFiniteNumberString(inputs.poissonRatio)) {
+        request.poisson_ratio = Number(inputs.poissonRatio);
+      }
+      if (isFiniteNumberString(inputs.density) && Number(inputs.density) > 0) {
+        request.density = Number(inputs.density);
+      }
     }
   }
   if (inputs.gravityEnabled && isFiniteNumberString(inputs.gravityY)) {

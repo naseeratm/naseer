@@ -56,8 +56,10 @@ from universal_dispatcher import (
     classify_physics,
     compute_wall_clock_sec,
     execute_simulation,
+    find_openfoam_checkpoints,
     preview_cad_geometry,
     probe_worker_capabilities,
+    resume_openfoam_case,
     sample_node_telemetry,
 )
 from vv_regression_suite import (
@@ -115,6 +117,8 @@ class PhysicsType(str, Enum):
     THERMAL_RADIATION = "Thermal_Radiation"
     THERMAL_STRUCTURAL = "Thermal_Structural"
     CHT_COUPLED = "CHT_Coupled"
+    CHT_MULTIREGION = "CHT_MultiRegion"
+    FSI_2WAY = "FSI_2Way"
     MULTIPHASE_VOF = "Multiphase_VOF"
     ELECTROMAGNETIC = "Electromagnetic"
     ACOUSTICS = "Acoustics"
@@ -223,6 +227,16 @@ class SimulationRequest(BaseModel):
         default=False,
         description="Explicitly allow OpenFOAM solver launch when checkMesh returns a FAIL verdict.",
     )
+    # Directive 07: Adaptive Courant time-stepping & Multiphysics Coupling (preCICE 2-Way FSI / Multi-Region CHT)
+    adaptive_time_stepping: Optional[bool] = Field(default=False)
+    max_co: Optional[float] = Field(default=None, gt=0.0, le=10.0)
+    max_alpha_co: Optional[float] = Field(default=None, gt=0.0, le=5.0)
+    max_delta_t: Optional[float] = Field(default=None, gt=0.0)
+    coupling_scheme: Optional[str] = Field(default=None, pattern="^(parallel-implicit|serial-implicit)$")
+    coupling_max_iterations: Optional[int] = Field(default=None, ge=1, le=200)
+    coupling_rel_tol: Optional[float] = Field(default=None, gt=0.0, lt=1.0)
+    solid_thickness: Optional[float] = Field(default=None, gt=0.0)
+    solid_conductivity_k: Optional[float] = Field(default=None, gt=0.0)
 
     @field_validator(
         "velocity", "pressure", "displacement", "temperature", "width_x", "height_y", "depth_z",
@@ -230,6 +244,8 @@ class SimulationRequest(BaseModel):
         "bc_left_temp", "bc_right_temp", "bc_top_temp", "bc_bottom_temp",
         "yield_stress_pa", "tangent_modulus_pa", "hyper_c10_pa", "hyper_d1_inv_pa",
         "friction_coeff", "mrf_omega_rad_s", "mrf_radius",
+        "max_co", "max_alpha_co", "max_delta_t", "coupling_rel_tol",
+        "solid_thickness", "solid_conductivity_k",
     )
     @classmethod
     def validate_finite_numbers(cls, value: Optional[float], info: ValidationInfo) -> Optional[float]:
@@ -835,6 +851,8 @@ def _build_live_job_snapshot(task_id: str) -> Optional[Dict[str, Any]]:
                     job["completed_count"] = meta["completed_count"]
                 if isinstance(meta.get("total_count"), int):
                     job["total_count"] = meta["total_count"]
+                if isinstance(meta.get("live_courant"), dict) and meta["live_courant"]:
+                    job["live_courant"] = meta["live_courant"]
                 if isinstance(meta.get("telemetry"), dict) and meta["telemetry"]:
                     tel = dict(meta["telemetry"])
                     if job_wall is not None:
@@ -1181,6 +1199,148 @@ async def cancel_job(task_id: str, http_request: Request):
         ip_address=client_ip,
     )
     return {"success": True, "task_id": task_id, "status": "CANCELLED", "job": updated}
+
+
+class JobResumeRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    extra_end_time: Optional[float] = Field(default=None, gt=0.0, le=1e6)
+    extra_iterations: Optional[int] = Field(default=None, ge=1, le=50000)
+    adaptive_time_stepping: Optional[bool] = None
+    max_co: Optional[float] = Field(default=None, gt=0.0, le=10.0)
+    max_delta_t: Optional[float] = Field(default=None, gt=0.0, le=1e4)
+    execution_mode: ExecutionMode = ExecutionMode.CELERY
+
+
+@app.post("/api/jobs/{task_id}/resume", status_code=status.HTTP_202_ACCEPTED)
+async def resume_job(
+    task_id: str,
+    http_request: Request,
+    resume_req: Optional[JobResumeRequest] = None,
+):
+    """Continue an OpenFOAM job from its latest numeric checkpoint (latestTime) without mutating the parent case."""
+    actor = security_service.resolve_actor(http_request.headers.get("authorization"), require_role="engineer")
+    client_ip = http_request.client.host if http_request.client else "local"
+
+    parent_job = job_repository.get(task_id)
+    if not parent_job:
+        raise HTTPException(
+            status_code=404,
+            detail={"success": False, "code": "JOB_NOT_FOUND", "error": f"Job {task_id} not found."},
+        )
+
+    case_dir = _resolve_confined_job_case_dir(task_id)
+    if not (case_dir / "system" / "controlDict").is_file():
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "success": False,
+                "code": "NO_CHECKPOINT_AVAILABLE",
+                "error": "Job case directory does not contain an OpenFOAM system/controlDict checkpoint.",
+            },
+        )
+
+    checkpoints = find_openfoam_checkpoints(case_dir)
+    if not checkpoints:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "success": False,
+                "code": "NO_CHECKPOINT_AVAILABLE",
+                "error": "No numeric OpenFOAM checkpoint directory (> 0) found to resume from.",
+            },
+        )
+    latest_time = checkpoints[-1][0]
+
+    req = resume_req or JobResumeRequest()
+    parent_payload = parent_job.get("payload") if isinstance(parent_job.get("payload"), dict) else {}
+    resume_params: Dict[str, Any] = {
+        "parent_task_id": task_id,
+        "resumed_from_time": latest_time,
+        "physics_type": parent_payload.get("physics_type") or parent_payload.get("simulation_type") or "CFD_Incompressible",
+        "project_id": parent_payload.get("project_id") or parent_job.get("project_id") or "",
+    }
+    if req.extra_end_time is not None:
+        resume_params["extra_end_time"] = req.extra_end_time
+    if req.extra_iterations is not None:
+        resume_params["extra_iterations"] = req.extra_iterations
+    if req.adaptive_time_stepping is not None:
+        resume_params["adaptive_time_stepping"] = req.adaptive_time_stepping
+    if req.max_co is not None:
+        resume_params["max_co"] = req.max_co
+    if req.max_delta_t is not None:
+        resume_params["max_delta_t"] = req.max_delta_t
+
+    new_task_id = str(uuid.uuid4())
+    security_service.record_audit(
+        actor_email=actor["email"],
+        actor_role=actor["role"],
+        workspace_id=actor.get("workspace_id", "ws-default"),
+        action="simulation.resume",
+        resource=f"job:{task_id}",
+        status="allowed",
+        detail={
+            "child_task_id": new_task_id,
+            "resumed_from_time": latest_time,
+            "extra_end_time": req.extra_end_time,
+            "extra_iterations": req.extra_iterations,
+            "adaptive_time_stepping": req.adaptive_time_stepping,
+        },
+        ip_address=client_ip,
+    )
+
+    if req.execution_mode == ExecutionMode.DIRECT:
+        try:
+            res = resume_openfoam_case(str(case_dir), resume_params)
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=422,
+                detail={"success": False, "code": "NO_CHECKPOINT_AVAILABLE", "error": str(exc)},
+            ) from exc
+        except PermissionError as exc:
+            raise HTTPException(
+                status_code=403,
+                detail={"success": False, "code": "INVALID_CASE_PATH", "error": str(exc)},
+            ) from exc
+        except Exception as exc:
+            raise HTTPException(
+                status_code=500,
+                detail={"success": False, "code": "RESUME_FAILED", "error": str(exc)},
+            ) from exc
+        return JSONResponse(
+            status_code=status.HTTP_200_OK,
+            content={
+                "success": True,
+                "task_id": new_task_id,
+                "parent_task_id": task_id,
+                "resumed_from_time": latest_time,
+                "status": "COMPLETED",
+                "result": res,
+            },
+        )
+
+    child_record_payload = {
+        **parent_payload,
+        "action": "resume",
+        "parent_task_id": task_id,
+        "resumed_from_time": latest_time,
+        "extra_end_time": req.extra_end_time,
+        "extra_iterations": req.extra_iterations,
+    }
+    job_repository.create(new_task_id, child_record_payload)
+    celery_app.send_task(
+        "universal_dispatcher.resume_simulation",
+        args=[str(case_dir), resume_params],
+        task_id=new_task_id,
+    )
+    return {
+        "success": True,
+        "task_id": new_task_id,
+        "parent_task_id": task_id,
+        "resumed_from_time": latest_time,
+        "status": "QUEUED",
+        "message": f"Resuming OpenFOAM case from checkpoint t={latest_time} as job {new_task_id}.",
+    }
 
 
 def _resolve_confined_job_case_dir(task_id: str) -> Path:

@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { Terminal, LineChart, AlertTriangle, XCircle, ChevronDown, ChevronUp, Trash2 } from 'lucide-react';
+import { Terminal, LineChart, AlertTriangle, XCircle, ChevronDown, ChevronUp, Trash2, RotateCcw } from 'lucide-react';
 import { ConsoleIssue, ConsoleTab, JobStatus } from '../types/studio';
 
 export interface ResidualSeriesPoint {
@@ -13,6 +13,13 @@ export interface ResidualSeries {
   points: ResidualSeriesPoint[];
 }
 
+export interface LiveCourantTelemetry {
+  co_mean?: number | null;
+  co_max?: number | null;
+  delta_t?: number | null;
+  time?: number | null;
+}
+
 interface SolverConsoleProps {
   tab: ConsoleTab;
   onTabChange: (tab: ConsoleTab) => void;
@@ -20,6 +27,9 @@ interface SolverConsoleProps {
   status: JobStatus;
   progress?: number | null;
   currentIteration?: number | null;
+  liveCourant?: LiveCourantTelemetry | null;
+  canResumeCheckpoint?: boolean;
+  onResumeCheckpoint?: () => void;
   issues: ConsoleIssue[];
   residualSeries?: ResidualSeries[];
   onClearIssues: () => void;
@@ -114,6 +124,9 @@ export const SolverConsole: React.FC<SolverConsoleProps> = ({
   status,
   progress = null,
   currentIteration = null,
+  liveCourant = null,
+  canResumeCheckpoint = false,
+  onResumeCheckpoint,
   issues,
   residualSeries = [],
   onClearIssues,
@@ -207,8 +220,25 @@ export const SolverConsole: React.FC<SolverConsoleProps> = ({
         <span className="ml-auto mr-2 font-mono text-[10px] text-slate-500 tabular-nums">
           job: {status}
           {typeof currentIteration === 'number' && currentIteration > 0 && ` · iter #${currentIteration}`}
+          {typeof liveCourant?.co_max === 'number' && Number.isFinite(liveCourant.co_max) && (
+            <span className="ml-1.5 text-cyan-300">{`· Co_max ${liveCourant.co_max.toFixed(3)}`}</span>
+          )}
+          {typeof liveCourant?.delta_t === 'number' && Number.isFinite(liveCourant.delta_t) && liveCourant.delta_t > 0 && (
+            <span className="ml-1.5 text-sky-300">{`· Δt ${liveCourant.delta_t.toExponential(2)}s`}</span>
+          )}
           {typeof progress === 'number' && ` · ${Math.min(100, Math.max(0, Math.round(progress)))}%`}
         </span>
+        {canResumeCheckpoint && onResumeCheckpoint && (
+          <button
+            type="button"
+            onClick={onResumeCheckpoint}
+            title="Continue OpenFOAM run from latestTime checkpoint"
+            className="mr-1.5 inline-flex items-center gap-1 rounded border border-sky-500/40 bg-sky-500/10 px-1.5 py-0.5 text-[10px] font-medium text-sky-200 hover:bg-sky-500/20"
+          >
+            <RotateCcw className="h-3 w-3" />
+            <span>Resume (latestTime)</span>
+          </button>
+        )}
         {tab === 'errors' && combinedIssues.length > 0 && (
           <button onClick={onClearIssues} title="Clear errors" className="mr-1 rounded p-1 text-slate-500 hover:bg-slate-800 hover:text-slate-200">
             <Trash2 className="h-3.5 w-3.5" />

@@ -73,10 +73,15 @@ RUN pip install -r worker-requirements.txt
 
 COPY main.py file_parser.py physics_solver.py universal_dispatcher.py cae_repository.py vv_regression_suite.py enterprise_security.py object_storage.py ./
 COPY backend/ ./backend/
+COPY scripts/install-precice-ubuntu22.sh /usr/local/bin/install-precice-ubuntu22.sh
 COPY docker-entrypoint-worker.sh /usr/local/bin/docker-entrypoint-worker.sh
-RUN sed -i 's/\r$//' /usr/local/bin/docker-entrypoint-worker.sh && \
-    chmod +x /usr/local/bin/docker-entrypoint-worker.sh && \
+RUN sed -i 's/\r$//' /usr/local/bin/docker-entrypoint-worker.sh /usr/local/bin/install-precice-ubuntu22.sh && \
+    chmod +x /usr/local/bin/docker-entrypoint-worker.sh /usr/local/bin/install-precice-ubuntu22.sh && \
     echo "source /usr/lib/openfoam/openfoam2406/etc/bashrc" >> /etc/bash.bashrc
+
+# 6. Optional preCICE v3 + ccx_preCICE + OpenFOAM adapter layer (opt-in via --build-arg INSTALL_PRECICE=1)
+ARG INSTALL_PRECICE=0
+RUN if [ "$INSTALL_PRECICE" = "1" ]; then /usr/local/bin/install-precice-ubuntu22.sh; fi
 
 ENV WM_PROJECT_DIR=/usr/lib/openfoam/openfoam2406 \
     WM_PROJECT_VERSION=v2406 \

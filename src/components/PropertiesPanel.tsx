@@ -18,6 +18,7 @@ import {
   Loader2,
   Play,
   Download,
+  RotateCcw,
 } from 'lucide-react';
 import {
   BoundaryCondition,
@@ -41,6 +42,7 @@ import {
   isCfdFamily,
   isElmerFamily,
   isFiniteNumberString,
+  isMultiphysicsCoupling,
   isStructuralFamily,
   isThermalFamily,
 } from '../types/studio';
@@ -115,6 +117,7 @@ interface PropertiesPanelProps {
   onPrepareAssembly?: (conformalCht: boolean) => void;
   lastTaskId?: string | null;
   onDownloadCaseArchive?: (taskId: string) => void;
+  onResumeCheckpoint?: (taskId: string) => void;
 }
 
 const STEP_TITLES: Record<WorkflowStep, string> = {
@@ -284,6 +287,7 @@ export const PropertiesPanel: React.FC<PropertiesPanelProps> = ({
   onPrepareAssembly,
   lastTaskId = null,
   onDownloadCaseArchive,
+  onResumeCheckpoint,
 }) => {
   const [enclosureUpstream, setEnclosureUpstream] = useState<string>('3.0');
   const [enclosureDownstream, setEnclosureDownstream] = useState<string>('6.0');
@@ -540,10 +544,103 @@ export const PropertiesPanel: React.FC<PropertiesPanelProps> = ({
               <NumberField id="in-ambient-c" label="Ambient Temp" unit="°C" value={inputs.ambientTempC} placeholder="25" disabled={inputsLocked} onChange={(ambientTempC) => onInputsChange({ ambientTempC })} />
             </>
           )}
-          <NumberField id="in-bc-left" label="Left Temp" unit={temperatureUnitLabel} value={inputs.bcLeft} placeholder={inputs.simulationType === 'CHT_Coupled' ? 'Optional' : 'Required'} disabled={inputsLocked} onChange={(bcLeft) => onInputsChange({ bcLeft })} />
-          <NumberField id="in-bc-right" label="Right Temp" unit={temperatureUnitLabel} value={inputs.bcRight} placeholder={inputs.simulationType === 'CHT_Coupled' ? 'Optional' : 'Required'} disabled={inputsLocked} onChange={(bcRight) => onInputsChange({ bcRight })} />
-          <NumberField id="in-bc-top" label="Top Temp" unit={temperatureUnitLabel} value={inputs.bcTop} placeholder={inputs.simulationType === 'CHT_Coupled' ? 'Optional' : 'Required'} disabled={inputsLocked} onChange={(bcTop) => onInputsChange({ bcTop })} />
-          <NumberField id="in-bc-bottom" label="Bottom Temp" unit={temperatureUnitLabel} value={inputs.bcBottom} placeholder={inputs.simulationType === 'CHT_Coupled' ? 'Optional' : 'Required'} disabled={inputsLocked} onChange={(bcBottom) => onInputsChange({ bcBottom })} />
+          <NumberField id="in-bc-left" label="Left Temp" unit={temperatureUnitLabel} value={inputs.bcLeft} placeholder={inputs.simulationType === 'CHT_Coupled' || inputs.simulationType === 'CHT_MultiRegion' ? 'Optional' : 'Required'} disabled={inputsLocked} onChange={(bcLeft) => onInputsChange({ bcLeft })} />
+          <NumberField id="in-bc-right" label="Right Temp" unit={temperatureUnitLabel} value={inputs.bcRight} placeholder={inputs.simulationType === 'CHT_Coupled' || inputs.simulationType === 'CHT_MultiRegion' ? 'Optional' : 'Required'} disabled={inputsLocked} onChange={(bcRight) => onInputsChange({ bcRight })} />
+          <NumberField id="in-bc-top" label="Top Temp" unit={temperatureUnitLabel} value={inputs.bcTop} placeholder={inputs.simulationType === 'CHT_Coupled' || inputs.simulationType === 'CHT_MultiRegion' ? 'Optional' : 'Required'} disabled={inputsLocked} onChange={(bcTop) => onInputsChange({ bcTop })} />
+          <NumberField id="in-bc-bottom" label="Bottom Temp" unit={temperatureUnitLabel} value={inputs.bcBottom} placeholder={inputs.simulationType === 'CHT_Coupled' || inputs.simulationType === 'CHT_MultiRegion' ? 'Optional' : 'Required'} disabled={inputsLocked} onChange={(bcBottom) => onInputsChange({ bcBottom })} />
+        </Section>
+      )}
+
+      {isMultiphysicsCoupling(inputs.simulationType) && (
+        <Section
+          title={
+            inputs.simulationType === 'FSI_2Way'
+              ? '2-Way FSI Coupling (preCICE v3)'
+              : 'Multi-Region CHT (OpenFOAM)'
+          }
+        >
+          <NumberField
+            id="in-solid-thickness"
+            label="Solid Thickness"
+            unit="m"
+            value={inputs.solidThickness}
+            placeholder="0.05"
+            disabled={inputsLocked}
+            onChange={(solidThickness) => onInputsChange({ solidThickness })}
+          />
+          {inputs.simulationType === 'CHT_MultiRegion' && (
+            <NumberField
+              id="in-solid-k"
+              label="Solid Cond. ks"
+              unit="W/m·K"
+              value={inputs.solidConductivity}
+              placeholder="205 (Al)"
+              disabled={inputsLocked}
+              onChange={(solidConductivity) => onInputsChange({ solidConductivity })}
+            />
+          )}
+          {inputs.simulationType === 'FSI_2Way' && (
+            <>
+              <NumberField
+                id="in-fsi-young"
+                label="Solid Young's E"
+                unit="Pa"
+                value={inputs.youngModulus}
+                disabled={inputsLocked}
+                onChange={(youngModulus) => onInputsChange({ youngModulus })}
+              />
+              <NumberField
+                id="in-fsi-poisson"
+                label="Solid Poisson ν"
+                unit="-"
+                value={inputs.poissonRatio}
+                disabled={inputsLocked}
+                onChange={(poissonRatio) => onInputsChange({ poissonRatio })}
+              />
+              <NumberField
+                id="in-fsi-density"
+                label="Solid Density ρs"
+                unit="kg/m³"
+                value={inputs.density}
+                disabled={inputsLocked}
+                onChange={(density) => onInputsChange({ density })}
+              />
+              <Field label="Coupling Scheme" htmlFor="in-coupling-scheme">
+                <select
+                  id="in-coupling-scheme"
+                  value={inputs.couplingScheme}
+                  disabled={inputsLocked}
+                  onChange={(e) =>
+                    onInputsChange({
+                      couplingScheme: e.target.value as 'parallel-implicit' | 'serial-implicit',
+                    })
+                  }
+                  className={inputClass}
+                >
+                  <option value="parallel-implicit">Parallel-Implicit (IQN-ILS)</option>
+                  <option value="serial-implicit">Serial-Implicit (IQN-ILS)</option>
+                </select>
+              </Field>
+              <NumberField
+                id="in-coupling-iters"
+                label="Max Sub-Iters"
+                unit="#"
+                value={inputs.couplingMaxIterations}
+                placeholder="30"
+                disabled={inputsLocked}
+                onChange={(couplingMaxIterations) => onInputsChange({ couplingMaxIterations })}
+              />
+              <NumberField
+                id="in-coupling-tol"
+                label="Interface Tol."
+                unit="-"
+                value={inputs.couplingRelTol}
+                placeholder="1e-3"
+                disabled={inputsLocked}
+                onChange={(couplingRelTol) => onInputsChange({ couplingRelTol })}
+              />
+            </>
+          )}
         </Section>
       )}
 
@@ -1378,6 +1475,22 @@ export const PropertiesPanel: React.FC<PropertiesPanelProps> = ({
             <>
               <NumberField id="ctrl-dt" label="Time Step Δt" unit="s" value={inputs.timeStep} placeholder="0.01" disabled={inputsLocked} onChange={(timeStep) => onInputsChange({ timeStep })} />
               <NumberField id="ctrl-end-t" label="End Time" unit="s" value={inputs.endTime} placeholder="1.0" disabled={inputsLocked} onChange={(endTime) => onInputsChange({ endTime })} />
+              <label className="flex items-center justify-between pt-1 text-[11px] text-slate-300 cursor-pointer border-t border-slate-800/80">
+                <span>Adaptive Time-Stepping (CFL / maxCo)</span>
+                <input
+                  type="checkbox"
+                  checked={Boolean(inputs.adaptiveTimeStepping)}
+                  disabled={inputsLocked}
+                  onChange={(e) => onInputsChange({ adaptiveTimeStepping: e.target.checked })}
+                  className="accent-sky-500"
+                />
+              </label>
+              {inputs.adaptiveTimeStepping && (
+                <>
+                  <NumberField id="ctrl-max-co" label="Max Courant (Co)" unit="-" value={inputs.maxCo} placeholder="0.8" disabled={inputsLocked} onChange={(maxCo) => onInputsChange({ maxCo })} />
+                  <NumberField id="ctrl-max-dt" label="Max Δt Limit" unit="s" value={inputs.maxDeltaT} placeholder="0.05" disabled={inputsLocked} onChange={(maxDeltaT) => onInputsChange({ maxDeltaT })} />
+                </>
+              )}
             </>
           )}
           <label className="flex items-center justify-between pt-1 text-[11px] text-slate-300 cursor-pointer">
@@ -1413,6 +1526,20 @@ export const PropertiesPanel: React.FC<PropertiesPanelProps> = ({
           <NumberField id="ctrl-uru" label="Relaxation (U)" unit="-" value={inputs.relaxationU} placeholder="0.7" disabled={inputsLocked} onChange={(relaxationU) => onInputsChange({ relaxationU })} />
           <NumberField id="ctrl-urt" label="Relaxation (T)" unit="-" value={inputs.relaxationT} placeholder="0.8" disabled={inputsLocked} onChange={(relaxationT) => onInputsChange({ relaxationT })} />
         </Section>
+        {lastTaskId && onResumeCheckpoint && (
+          <Section title="Checkpoint & Restart (latestTime)">
+            <p className="text-[10.5px] leading-snug text-slate-400">
+              Clone the completed OpenFOAM case and continue solving from its latest numeric checkpoint without mutating parent job files.
+            </p>
+            <ActionButton
+              accent
+              disabled={inputsLocked}
+              icon={<RotateCcw className="h-3.5 w-3.5" />}
+              label="Resume Checkpoint (latestTime)"
+              onClick={() => onResumeCheckpoint(lastTaskId)}
+            />
+          </Section>
+        )}
       </>
     );
   } else {
