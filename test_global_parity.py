@@ -97,9 +97,9 @@ class GlobalParityAuditTest(unittest.TestCase):
             (case_dir / "system" / "controlDict").write_text("application simpleFoam;\n", encoding="utf-8")
             (case_dir / "solver.log").write_text("SIMPLE solution converged\n", encoding="utf-8")
 
-            self.assertTrue(str(case_dir).startswith(str(allowed_root) + "/"))
+            self.assertTrue(case_dir.is_relative_to(allowed_root))
             outside = Path("/etc").resolve()
-            self.assertFalse(str(outside).startswith(str(allowed_root) + "/"))
+            self.assertFalse(outside.is_relative_to(allowed_root))
 
             buf = io.BytesIO()
             with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_DEFLATED) as zf:

@@ -103,10 +103,39 @@ const solverVersionTag = (
   return 'READY';
 };
 
-export const SIMSCALE_AUDIT_REPORT_TEXT = `# تقرير التدقيق الهندسي الشامل: التوجيه الصارم نحو حاويات المحاكاة Docker (:8000)
+const formatLiveSolverVersion = (
+  liveStatus: LiveCloudStatus | null,
+  solverKey: 'openfoam' | 'calculix' | 'gmsh' | 'elmer',
+): string => {
+  if (!liveStatus?.pythonConnected) {
+    return 'Version probed live when Docker worker is online';
+  }
+  const entry = liveStatus.pythonDetails?.solvers?.[solverKey];
+  if (!isSolverAvailable(entry)) {
+    return 'Unavailable / binary not detected on active worker';
+  }
+  if (typeof entry === 'object' && entry?.version) {
+    return String(entry.version).trim();
+  }
+  return 'Installed (version string not reported)';
+};
+
+export const buildPlatformAuditReport = (liveStatus: LiveCloudStatus | null): string => {
+  const endpoint = liveStatus?.config?.backendUrl || 'http://127.0.0.1:8000';
+  const connectionState = liveStatus?.pythonConnected
+    ? `متصل بالخادم الحي (${endpoint}) — Workers: ${liveStatus.pythonDetails?.workers_online ?? '—'}`
+    : 'بانتظار الاتصال بحاوية Docker (:8000) — Version probed live when Docker worker is online';
+
+  const openfoamVer = formatLiveSolverVersion(liveStatus, 'openfoam');
+  const calculixVer = formatLiveSolverVersion(liveStatus, 'calculix');
+  const gmshVer = formatLiveSolverVersion(liveStatus, 'gmsh');
+  const elmerVer = formatLiveSolverVersion(liveStatus, 'elmer');
+
+  return `# تقرير التدقيق الهندسي الشامل: التوجيه الصارم نحو حاويات المحاكاة Docker (:8000)
 
 **المشروع:** منصة NASEER Universal CAE Studio  
-**الحالة:** موجهة بالكامل نحو حاويات Docker (:8000) مع سياسة Zero-Mock
+**حالة الاتصال الحي:** ${connectionState}  
+**السياسة العددية:** موجهة بالكامل نحو حاويات Docker (:8000) مع سياسة Zero-Mock الصارمة
 
 ---
 
@@ -118,12 +147,15 @@ export const SIMSCALE_AUDIT_REPORT_TEXT = `# تقرير التدقيق الهن�
 2. **بوابة التوجيه الصارم (Port 3000 -> Docker Port 8000):**
    * جميع مهام المحاكاة والتشبيك والمسح البارامتري وحزمة التحقق الدولية V&V تُوجَّه من بوابة Express (:3000) مباشرة إلى FastAPI / Celery / Redis على المنفذ :8000 بدون أي محرك احتياطي صامت أو أرقام عشوائية.
 
-3. **حزمة المحركات الفيزيائية الحقيقية داخل Docker:**
-   * **OpenFOAM v2406**: الموائع غير القابلة والانضغاطية (simpleFoam / rhoSimpleFoam) والديناميكا الهوائية الخارجية (snappyHexMesh) والاقتران الحراري (chtMultiRegionFoam) وتعدد الأطوار (interFoam).
-   * **CalculiX v2.21**: التحليل الإنشائي الساكن والديناميكي والانبعاج والإجهاد الحراري (C3D8 / C3D20R / C3D8T / SPOOLES).
-   * **Gmsh + meshio**: التشبيك الثلاثي الأبعاد التلقائي لملفات STL / STEP والنطاقات البارامترية.
-   * **ElmerFEM**: المجالات الكهرومغناطيسية والصوتية.
+3. **حزمة المحركات الفيزيائية الحقيقية داخل Docker (إصدارات مفحوصة حياً عبر /api/health):**
+   * **OpenFOAM** (${openfoamVer}): الموائع غير القابلة والانضغاطية (simpleFoam / rhoSimpleFoam) والديناميكا الهوائية الخارجية (snappyHexMesh) والاقتران الحراري (chtMultiRegionFoam) وتعدد الأطوار (interFoam).
+   * **CalculiX (ccx)** (${calculixVer}): التحليل الإنشائي الساكن والديناميكي والانبعاج والإجهاد الحراري (C3D8 / C3D20R / C3D8T / SPOOLES).
+   * **Gmsh + meshio** (${gmshVer}): التشبيك الثلاثي الأبعاد التلقائي لملفات STL / STEP والنطاقات البارامترية.
+   * **ElmerFEM** (${elmerVer}): المجالات الكهرومغناطيسية والصوتية.
 `;
+};
+
+export const SIMSCALE_AUDIT_REPORT_TEXT = buildPlatformAuditReport(null);
 
 export const AUDIT_REPORT_TEXT = `# وثيقة التدقيق المعماري والنزاهة العددية (Zero-Mock Architecture)
 ## System Architecture & Solver Routing Verification
@@ -340,11 +372,13 @@ export const AuditReportModal: React.FC<AuditReportModalProps> = ({ isOpen, onCl
     URL.revokeObjectURL(url);
   };
 
+  const platformAuditText = buildPlatformAuditReport(liveStatus);
+
   const currentText =
     activeTab === 'vv'
-      ? vvCertificateMd || SIMSCALE_AUDIT_REPORT_TEXT
+      ? vvCertificateMd || platformAuditText
       : activeTab === 'simscale'
-        ? SIMSCALE_AUDIT_REPORT_TEXT
+        ? platformAuditText
         : AUDIT_REPORT_TEXT;
 
   const handleCopy = () => {
@@ -499,16 +533,20 @@ export const AuditReportModal: React.FC<AuditReportModalProps> = ({ isOpen, onCl
           </div>
           <div className="flex items-center gap-2 text-slate-300">
             <Cpu className="w-3.5 h-3.5 text-amber-400 shrink-0" />
-            <span className="truncate" title={solverVersionTag(solvers?.openfoam)}>
-              OpenFOAM: {isSolverAvailable(solvers?.openfoam) ? 'READY' : 'N/A'} | CCX:{' '}
-              {isSolverAvailable(solvers?.calculix) ? 'READY' : 'N/A'}
+            <span
+              className="truncate"
+              title={`OpenFOAM: ${solverVersionTag(solvers?.openfoam)} | CalculiX: ${solverVersionTag(solvers?.calculix)}`}
+            >
+              OpenFOAM: {solverVersionTag(solvers?.openfoam)} | CCX: {solverVersionTag(solvers?.calculix)}
             </span>
           </div>
           <div className="flex items-center gap-2 text-slate-300">
             <Server className="w-3.5 h-3.5 text-purple-400 shrink-0" />
-            <span className="truncate">
-              Gmsh: {isSolverAvailable(solvers?.gmsh) ? 'READY' : 'N/A'} | Elmer:{' '}
-              {isSolverAvailable(solvers?.elmer) ? 'READY' : 'N/A'}
+            <span
+              className="truncate"
+              title={`Gmsh: ${solverVersionTag(solvers?.gmsh)} | Elmer: ${solverVersionTag(solvers?.elmer)}`}
+            >
+              Gmsh: {solverVersionTag(solvers?.gmsh)} | Elmer: {solverVersionTag(solvers?.elmer)}
             </span>
           </div>
         </div>

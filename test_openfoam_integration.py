@@ -26,6 +26,18 @@ def _fake_openfoam_run(solver_output: str, write_time_directory: bool = True):
     return fake_run
 
 
+def _fake_streaming_runner(fake_run):
+    def fake_stream(command, cwd, log_path=None, append_log=True, **_kwargs):
+        proc = fake_run(command, cwd)
+        if log_path is not None:
+            mode = "a" if append_log else "w"
+            with Path(log_path).open(mode, encoding="utf-8") as stream:
+                stream.write(proc.stdout or "")
+                stream.write(proc.stderr or "")
+        return proc
+    return fake_stream
+
+
 class TestOpenFOAMVerificationGate(unittest.TestCase):
     def _case(self, log: str, time_dirs=("0",)) -> Path:
         directory = tempfile.TemporaryDirectory()
@@ -75,9 +87,11 @@ class TestOpenFOAMVerificationGate(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             case_root = Path(temporary) / "jobs"
             case_root.mkdir()
+            fake_run = _fake_openfoam_run(solver_output, write_time_directory)
             with patch.dict(os.environ, {"OPENFOAM_CASE_ROOT": str(case_root)}), \
-                    patch("universal_dispatcher.shutil.which", side_effect=lambda name: f"/usr/bin/{name}"), \
-                    patch("universal_dispatcher.subprocess.run", side_effect=_fake_openfoam_run(solver_output, write_time_directory)):
+                    patch("universal_dispatcher.shutil.which", side_effect=lambda name, *args, **kwargs: f"/usr/bin/{name}"), \
+                    patch("universal_dispatcher.subprocess.run", side_effect=fake_run), \
+                    patch("universal_dispatcher._run_streaming_command", side_effect=_fake_streaming_runner(fake_run)):
                 try:
                     outcome = call_openfoam_solver({"simulation_type": "CFD_Compressible", "velocity": 120.0, "pressure": 101325.0})
                     error = None
@@ -231,8 +245,9 @@ class TestOpenFOAMIntegration(unittest.TestCase):
                 return subprocess.CompletedProcess(command, 0, stdout="Time = 100\nEnd\n", stderr="")
 
             with patch.dict(os.environ, {"OPENFOAM_CASE_ROOT": str(case_root)}), \
-                    patch("universal_dispatcher.shutil.which", side_effect=lambda name: f"/usr/bin/{name}"), \
-                    patch("universal_dispatcher.subprocess.run", side_effect=fake_cht_run):
+                    patch("universal_dispatcher.shutil.which", side_effect=lambda name, *args, **kwargs: f"/usr/bin/{name}"), \
+                    patch("universal_dispatcher.subprocess.run", side_effect=fake_cht_run), \
+                    patch("universal_dispatcher._run_streaming_command", side_effect=_fake_streaming_runner(fake_cht_run)):
                 outcome = call_openfoam_solver({
                     "simulation_type": "CHT_Coupled",
                     "geometry_mode": "corrugated_channel",

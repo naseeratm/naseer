@@ -1,7 +1,11 @@
 """
 ================================================================================
-ANSYS Engineering WorkBench - High-Performance FastAPI Backend Server (main.py)
-الخادم الخلفي المتكامل لمعالجة الشبيكات وحل المعادلات الفيزيائية الحتمية
+NASEER Universal CAE Studio - RETIRED LEGACY COMPATIBILITY MODULE (backend/main.py)
+--------------------------------------------------------------------------------
+STATUS: RETIRED LEGACY COMPATIBILITY ONLY.
+All active production API routes, RBAC enforcement, Redis worker heartbeats,
+async Celery jobs, SSE streaming, and real Docker solver execution live in the
+canonical root `main.py` served on port 8000.
 ================================================================================
 """
 
@@ -16,8 +20,12 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, ConfigDict
 import uvicorn
 
-from file_parser import parse_engineering_file
-from physics_solver import run_physics_simulation
+try:
+    from backend.file_parser import parse_engineering_file
+    from backend.physics_solver import run_physics_simulation
+except ImportError:
+    from file_parser import parse_engineering_file
+    from physics_solver import run_physics_simulation
 
 try:
     import ansys.mapdl.core as pymapdl
@@ -25,18 +33,37 @@ try:
 except ImportError:
     HAS_PYMAPDL = False
 
+
+def _resolve_allowed_origins() -> List[str]:
+    configured = (os.getenv("NASEER_ALLOWED_ORIGINS") or "").strip()
+    if configured:
+        origins = [o.strip().rstrip("/") for o in configured.split(",") if o.strip() and o.strip() != "*"]
+        if origins:
+            return origins
+    defaults = [
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+    ]
+    app_url = (os.getenv("APP_URL") or "").strip().rstrip("/")
+    if app_url and app_url.startswith(("http://", "https://")) and app_url not in defaults:
+        defaults.append(app_url)
+    return defaults
+
+
 app = FastAPI(
-    title="ANSYS Engineering WorkBench - Python Physics Backend",
-    description="خادم المعالجة الرياضية الحتمية وحل معادلات CFD/CHT/FEA وقراءة ملفات CAD والشبيكات.",
-    version="3.1.0"
+    title="NASEER Universal CAE Studio - Legacy Compatibility Backend (Retired)",
+    description="Retired legacy compatibility module. Route all requests to root main.py on Docker port 8000.",
+    version="3.1.0-retired",
 )
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=_resolve_allowed_origins(),
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type", "Accept", "X-Requested-With"],
 )
 
 

@@ -50,7 +50,8 @@ WORKDIR /app
 
 # 3. Isolated Python virtual environment for FastAPI/Celery/Gmsh/MeshIO/SciPy/NumPy
 RUN python3 -m venv /opt/venv
-ENV PATH="/opt/venv/bin:$PATH"
+ENV PATH="/opt/venv/bin:$PATH" \
+    PYTHONPATH="/app"
 
 COPY docker-requirements.txt ./requirements.txt
 RUN pip install --upgrade pip setuptools wheel && \

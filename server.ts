@@ -948,7 +948,19 @@ if (process.env.NODE_ENV !== 'production') {
   app.use(vite.middlewares);
 }
 
+let loggedDockerAuthority = false;
+
 async function ensureLocalPythonBackend(): Promise<void> {
+  if (process.env.NASEER_AUTO_SPAWN_LOCAL_BACKEND !== '1') {
+    if (!loggedDockerAuthority) {
+      loggedDockerAuthority = true;
+      console.log(
+        `[Python Backend] Docker backend (${activeCloudUrl}) is the sole solver authority; local uvicorn auto-spawn is disabled (set NASEER_AUTO_SPAWN_LOCAL_BACKEND=1 to opt in).`,
+      );
+    }
+    return;
+  }
+
   try {
     const localBackend = new URL(activeCloudUrl).hostname;
     if (localBackend !== '127.0.0.1' && localBackend !== 'localhost') return;

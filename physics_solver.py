@@ -2,8 +2,10 @@
 NASEER Universal CAE Studio - Legacy 2D Python Solver Gate
 All thermal, structural, fluid, and multiphysics solves must execute exclusively
 through OpenFOAM, CalculiX (ccx), or ElmerFEM via universal_dispatcher.py in Docker.
-Only Gmsh 2D meshing helper remains available here when gmsh is installed.
+Only Gmsh 2D meshing helper and Roache GCI utility remain available here.
 """
+
+from backend.physics_solver import calculate_roache_gci  # noqa: F401
 
 
 def solve_2d_thermal_dynamic(_json_data=None):

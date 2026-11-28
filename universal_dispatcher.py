@@ -23,6 +23,7 @@ import shutil
 import socket
 import struct
 import subprocess
+import sys
 import threading
 import time
 import uuid
@@ -31,6 +32,17 @@ from datetime import datetime, timezone
 from pathlib import Path
 from time import perf_counter
 from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple
+
+
+def _ensure_app_on_sys_path() -> str:
+    """Guarantee the application root directory is on sys.path for prefork Celery lazy imports."""
+    app_dir = str(Path(__file__).resolve().parent)
+    if app_dir not in sys.path:
+        sys.path.insert(0, app_dir)
+    return app_dir
+
+
+_ensure_app_on_sys_path()
 
 try:
     import redis as redis_lib
@@ -5533,6 +5545,7 @@ def run_mesh_study_task(
     key_result: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Execute 3-level Celik GCI mesh-independence study asynchronously inside the Celery worker."""
+    _ensure_app_on_sys_path()
     task_id = getattr(self.request, "id", None)
     logs: List[str] = [
         f"[{datetime.now(timezone.utc).isoformat()}] Starting 3-level mesh independence study ({physics_type}, key={key_result or 'default'})."
@@ -5655,6 +5668,7 @@ def run_mesh_study_task(
 )
 def run_vv_suite_task(self, selected_ids: Optional[List[str]] = None) -> Dict[str, Any]:
     """Execute international ASME/NAFEMS/NASA TMR V&V benchmarks asynchronously inside the worker."""
+    _ensure_app_on_sys_path()
     from vv_regression_suite import generate_vv_certificate_markdown, run_vv_suite
 
     task_id = getattr(self.request, "id", None)

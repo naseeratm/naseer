@@ -310,6 +310,18 @@ class _BoundTaskSelf:
         self.state_updates.append({"state": state, "meta": dict(meta)})
 
 
+def _invoke_bound_task(task_fn: Any, bound_self: Any, *args: Any, **kwargs: Any) -> Any:
+    """Invoke a Celery bind=True task cleanly whether real Celery or the local stub is active."""
+    run_method = getattr(task_fn, "run", None)
+    unbound = getattr(run_method, "__func__", None)
+    if callable(unbound):
+        return unbound(bound_self, *args, **kwargs)
+    wrapped = getattr(task_fn, "__wrapped__", None)
+    if callable(wrapped):
+        return wrapped(bound_self, *args, **kwargs)
+    return task_fn(bound_self, *args, **kwargs)
+
+
 class TestDirective01AsyncHeartbeatSSE(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
@@ -559,7 +571,8 @@ class TestDirective01AsyncHeartbeatSSE(unittest.TestCase):
             patch.object(universal_dispatcher, "_job_repository", return_value=self.repo),
             patch.object(universal_dispatcher, "execute_simulation", side_effect=_fake_structural_exec),
         ):
-            result = universal_dispatcher.run_mesh_study_task(
+            result = _invoke_bound_task(
+                universal_dispatcher.run_mesh_study_task,
                 bound_self,
                 {"simulation_type": "Structural_Static", "mesh_size": 0.1, "mesh": {"divisions": {"x": 4, "y": 4, "z": 4}}},
                 "Structural_Static",
@@ -596,7 +609,7 @@ class TestDirective01AsyncHeartbeatSSE(unittest.TestCase):
             patch.object(universal_dispatcher, "_job_repository", return_value=self.repo),
             patch.object(universal_dispatcher, "probe_worker_capabilities", return_value=empty_caps),
         ):
-            result = universal_dispatcher.run_vv_suite_task(bound_self, None)
+            result = _invoke_bound_task(universal_dispatcher.run_vv_suite_task, bound_self, None)
 
         self.assertTrue(result["success"])
         self.assertEqual(result["report"]["overall_status"], "SKIPPED_NO_SOLVERS")

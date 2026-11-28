@@ -682,7 +682,53 @@ def _build_live_job_snapshot(task_id: str) -> Optional[Dict[str, Any]]:
     if status_upper in {"QUEUED", "RUNNING"}:
         try:
             async_res = celery_app.AsyncResult(task_id)
-            meta = async_res.info if isinstance(async_res.info, dict) else {}
+            celery_state = str(getattr(async_res, "state", "") or "").upper()
+            raw_info = getattr(async_res, "info", None)
+
+            if celery_state in {"FAILURE", "REVOKED"}:
+                target_status = "CANCELLED" if celery_state == "REVOKED" else "FAILED"
+                if isinstance(raw_info, BaseException):
+                    err_msg = f"{type(raw_info).__name__}: {raw_info}"
+                elif isinstance(raw_info, dict):
+                    err_msg = str(
+                        raw_info.get("exc_message")
+                        or raw_info.get("error")
+                        or raw_info.get("message")
+                        or raw_info
+                    )
+                elif raw_info not in (None, ""):
+                    err_msg = str(raw_info)
+                else:
+                    err_msg = (
+                        "Celery task was revoked before completion."
+                        if celery_state == "REVOKED"
+                        else "Celery worker task failed unexpectedly."
+                    )
+
+                existing_logs = list(job.get("logs") or [])
+                sync_log = f"[{datetime.now(timezone.utc).isoformat()}] Celery state synced ({celery_state}): {err_msg}"
+                if not existing_logs or existing_logs[-1] != sync_log:
+                    existing_logs.append(sync_log)
+
+                updated = job_repository.update(
+                    task_id,
+                    status=target_status,
+                    logs=existing_logs,
+                    error=err_msg,
+                )
+                if isinstance(updated, dict):
+                    job = updated
+                else:
+                    job["status"] = target_status
+                    job["error"] = err_msg
+                    job["logs"] = existing_logs
+
+                final_wall = _compute_wall_clock_sec(job.get("created_at"), job.get("completed_at"))
+                if final_wall is not None:
+                    job["wall_clock_sec"] = final_wall
+                return job
+
+            meta = raw_info if isinstance(raw_info, dict) else {}
             if meta:
                 if isinstance(meta.get("progress"), (int, float)):
                     job["progress"] = max(int(job.get("progress") or 0), int(meta["progress"]))
