@@ -1,0 +1,13 @@
+{
+  "time_directory": "100",
+  "source": "/app/applet/jobs/openfoam-6211a5f9dba7/100/U",
+  "kind": "vector",
+  "components": [
+    1.0,
+    0.0,
+    0.0
+  ],
+  "minimum": 0.0,
+  "maximum": 1.0,
+  "mean": 0.3333333333333333
+}

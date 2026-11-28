@@ -88,6 +88,14 @@ class OpenFOAMVerificationError(RuntimeError):
     """Raised when the OpenFOAM verification gate rejects a finished solver run."""
 
 
+class MeshQualityGateError(RuntimeError):
+    """Raised when OpenFOAM checkMesh detects fatally poor mesh quality before solver launch."""
+
+    def __init__(self, message: str, mesh_quality: Optional[Dict[str, Any]] = None) -> None:
+        super().__init__(message)
+        self.mesh_quality: Dict[str, Any] = dict(mesh_quality or {})
+
+
 REDIS_URL = os.getenv("CELERY_BROKER_URL", "redis://redis:6379/0")
 celery_app = Celery(
     "universal_cae",
@@ -1093,6 +1101,79 @@ def _recommended_engine(physics_type: str) -> str:
     return engines.get(physics_type, "CalculiX / OpenFOAM Docker Engine")
 
 
+_OPENFOAM_BINARIES = {
+    "simpleFoam",
+    "pimpleFoam",
+    "pisoFoam",
+    "icoFoam",
+    "rhoSimpleFoam",
+    "rhoPimpleFoam",
+    "sonicFoam",
+    "interFoam",
+    "buoyantSimpleFoam",
+    "buoyantPimpleFoam",
+    "chtMultiRegionSimpleFoam",
+    "blockMesh",
+    "snappyHexMesh",
+    "surfaceFeatureExtract",
+    "foamToVTK",
+    "checkMesh",
+    "gmshToFoam",
+    "topoSet",
+    "setFields",
+    "decomposePar",
+    "reconstructPar",
+}
+
+
+def _extract_clean_version_line(binary: str, resolved: str, combined: str) -> Optional[str]:
+    """Extract a clean, real solver version string without Usage banners or ASCII separator lines."""
+    raw_lines = [ln.strip() for ln in combined.splitlines() if ln.strip()]
+    non_sep_lines = [ln for ln in raw_lines if not re.fullmatch(r"[=\-*_#~.\s]+", ln)]
+    is_openfoam = (
+        binary in _OPENFOAM_BINARIES
+        or binary.endswith("Foam")
+        or "openfoam" in resolved.lower()
+        or "openfoam" in combined.lower()
+    )
+
+    if is_openfoam:
+        # 1. Explicit OpenFOAM version line from stdout/stderr (e.g. "Using: OpenFOAM-v2406 ...")
+        for ln in non_sep_lines:
+            m = re.search(r"OpenFOAM[-\s]*(v?\d[\w.\-]*)", ln, flags=re.I)
+            if m:
+                ver_tok = m.group(1).strip()
+                return f"OpenFOAM {ver_tok}"[:140]
+        # 2. Standalone v2xxx version token (e.g. v2406, v2312)
+        for ln in non_sep_lines:
+            if ln.lower().startswith("usage:"):
+                continue
+            m = re.search(r"\b(v2\d{3})\b", ln)
+            if m:
+                return f"OpenFOAM {m.group(1)}"[:140]
+        # 3. Environment variable WM_PROJECT_VERSION (set by OpenFOAM bashrc / Dockerfile.worker)
+        env_ver = (os.environ.get("WM_PROJECT_VERSION") or "").strip()
+        if env_ver:
+            return f"OpenFOAM {env_ver}"[:140]
+        # 4. OpenFOAM installation path (e.g. /usr/lib/openfoam/openfoam2406/...)
+        path_m = re.search(r"openfoam[-_]?(\d{4})", resolved, flags=re.I)
+        if path_m:
+            return f"OpenFOAM v{path_m.group(1)}"[:140]
+
+    # For ElmerGrid and other CLI tools: skip decorative separator lines (e.g. "==========")
+    if not non_sep_lines:
+        return None
+    for ln in non_sep_lines:
+        if ln.lower().startswith("usage:"):
+            continue
+        if re.search(r"(version|\bv?\d+\.\d+|\belmer\b|\bccx\b|\bcalculix\b|\bgmsh\b)", ln, flags=re.I):
+            return ln[:140]
+    for ln in non_sep_lines:
+        if not ln.lower().startswith("usage:"):
+            return ln[:140]
+    return non_sep_lines[0][:140]
+
+
 def _probe_binary_version(binary: str, args: Sequence[str] = ("--version",)) -> Dict[str, Any]:
     resolved = shutil.which(binary)
     if not resolved:
@@ -1103,19 +1184,19 @@ def _probe_binary_version(binary: str, args: Sequence[str] = ("--version",)) -> 
         combined = f"{proc.stdout or ''}\n{proc.stderr or ''}"
         lower_combined = combined.lower()
         raw = [ln.strip() for ln in combined.splitlines() if ln.strip()]
-        if raw:
-            version_text = raw[0][:140]
+        version_text = _extract_clean_version_line(binary, resolved, combined)
         if (
             proc.returncode == 127
             or "error while loading shared libraries" in lower_combined
             or "cannot open shared object file" in lower_combined
             or "symbol lookup error" in lower_combined
         ):
+            err_line = raw[0][:140] if raw else "Binary failed to load required shared libraries"
             return {
                 "available": False,
                 "path": resolved,
                 "version": None,
-                "error": version_text or "Binary failed to load required shared libraries",
+                "error": err_line,
             }
     except Exception as exc:
         return {"available": False, "path": resolved, "version": None, "error": str(exc)[:140]}
@@ -1129,6 +1210,7 @@ def probe_worker_capabilities() -> Dict[str, Any]:
         "openfoam_blockMesh": _probe_binary_version("blockMesh", ("-help",)),
         "openfoam_snappyHexMesh": _probe_binary_version("snappyHexMesh", ("-help",)),
         "openfoam_surfaceFeatureExtract": _probe_binary_version("surfaceFeatureExtract", ("-help",)),
+        "openfoam_checkMesh": _probe_binary_version("checkMesh", ("-help",)),
         "openfoam_interFoam": _probe_binary_version("interFoam", ("-help",)),
         "openfoam_buoyantSimpleFoam": _probe_binary_version("buoyantSimpleFoam", ("-help",)),
         "openfoam_foamToVTK": _probe_binary_version("foamToVTK", ("-help",)),
@@ -1137,6 +1219,239 @@ def probe_worker_capabilities() -> Dict[str, Any]:
         "elmer": _probe_binary_version("ElmerSolver", ("--version",)),
         "elmer_grid": _probe_binary_version("ElmerGrid", ("--help",)),
     }
+
+
+def _parse_check_mesh_output(log_text: str) -> Dict[str, Any]:
+    """Parse real OpenFOAM ``checkMesh`` output into structured mesh quality telemetry (Zero-Mock)."""
+    def _int_match(pattern: str) -> Optional[int]:
+        m = re.search(pattern, log_text, flags=re.M | re.I)
+        return int(m.group(1)) if m else None
+
+    def _float_match(pattern: str) -> Optional[float]:
+        m = re.search(pattern, log_text, flags=re.I)
+        if not m:
+            return None
+        try:
+            val = float(m.group(1))
+            return val if math.isfinite(val) else None
+        except ValueError:
+            return None
+
+    points = _int_match(r"^\s*points:\s*(\d+)")
+    faces = _int_match(r"^\s*faces:\s*(\d+)")
+    cells = _int_match(r"^\s*cells:\s*(\d+)")
+
+    cell_types: Dict[str, int] = {}
+    for ctype in ("hexahedra", "prisms", "wedges", "pyramids", "tetrahedra", "polyhedra"):
+        cnt = _int_match(rf"^\s*{ctype}:\s*(\d+)")
+        if cnt is not None:
+            cell_types[ctype] = cnt
+
+    max_non_ortho: Optional[float] = None
+    avg_non_ortho: Optional[float] = None
+    m_non_ortho = re.search(
+        r"Mesh\s+non-orthogonality\s+Max:\s*([-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?)\s+average:\s*([-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?)",
+        log_text,
+        flags=re.I,
+    )
+    if m_non_ortho:
+        try:
+            v_max, v_avg = float(m_non_ortho.group(1)), float(m_non_ortho.group(2))
+            if math.isfinite(v_max):
+                max_non_ortho = v_max
+            if math.isfinite(v_avg):
+                avg_non_ortho = v_avg
+        except ValueError:
+            pass
+    else:
+        max_non_ortho = _float_match(
+            r"Max\s+non-orthogonality\s*[:=]\s*([-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?)"
+        )
+
+    max_skewness = _float_match(r"Max\s+skewness\s*=\s*([-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?)")
+    max_aspect_ratio = _float_match(r"Max\s+aspect\s+ratio\s*=\s*([-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?)")
+
+    min_volume: Optional[float] = None
+    max_volume: Optional[float] = None
+    m_vol = re.search(
+        r"Min\s+volume\s*=\s*([-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?)\.?\s*Max\s+volume\s*=\s*([-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?)",
+        log_text,
+        flags=re.I,
+    )
+    if m_vol:
+        try:
+            vmin, vmax = float(m_vol.group(1)), float(m_vol.group(2))
+            if math.isfinite(vmin):
+                min_volume = vmin
+            if math.isfinite(vmax):
+                max_volume = vmax
+        except ValueError:
+            pass
+
+    failed_checks: Optional[int] = None
+    mesh_ok = False
+    m_failed = re.search(r"Failed\s+(\d+)\s+mesh\s+checks\.", log_text, flags=re.I)
+    if m_failed:
+        failed_checks = int(m_failed.group(1))
+        mesh_ok = failed_checks == 0
+    elif re.search(r"\bMesh\s+OK\.", log_text):
+        failed_checks = 0
+        mesh_ok = True
+
+    warnings: List[str] = []
+    if failed_checks is not None and failed_checks > 0:
+        warnings.append(f"OpenFOAM checkMesh reported {failed_checks} failed mesh check(s).")
+    if min_volume is not None and min_volume <= 0.0:
+        warnings.append(
+            f"Non-positive cell volume detected (min_volume = {min_volume:.4g} m³); refine CAD surface or mesh size."
+        )
+    if max_non_ortho is not None and max_non_ortho > 85.0:
+        warnings.append(
+            f"Critical mesh non-orthogonality ({max_non_ortho:.2f}° > 85°); solver divergence is highly likely."
+        )
+    elif max_non_ortho is not None and max_non_ortho > 70.0:
+        warnings.append(
+            f"Elevated mesh non-orthogonality ({max_non_ortho:.2f}° > 70°); enable non-orthogonal correctors or refine mesh."
+        )
+    if max_skewness is not None and max_skewness > 4.0:
+        warnings.append(
+            f"High face skewness ({max_skewness:.2f} > 4.0); consider smoothing or refining sharp CAD regions."
+        )
+
+    is_fail = (
+        (failed_checks is not None and failed_checks > 0)
+        or (min_volume is not None and min_volume <= 0.0)
+        or (max_non_ortho is not None and max_non_ortho > 85.0)
+    )
+    is_warn = (not is_fail) and (
+        (max_non_ortho is not None and max_non_ortho > 70.0)
+        or (max_skewness is not None and max_skewness > 4.0)
+        or not mesh_ok
+    )
+    verdict = "FAIL" if is_fail else ("WARNING" if is_warn else "PASS")
+
+    return {
+        "verdict": verdict,
+        "mesh_ok": mesh_ok,
+        "failed_checks": failed_checks,
+        "cells": cells,
+        "points": points,
+        "faces": faces,
+        "cell_types": cell_types,
+        "max_non_orthogonality": max_non_ortho,
+        "avg_non_orthogonality": avg_non_ortho,
+        "max_skewness": max_skewness,
+        "max_aspect_ratio": max_aspect_ratio,
+        "min_volume": min_volume,
+        "max_volume": max_volume,
+        "failed_sets": [],
+        "bad_cell_points": [],
+        "warnings": warnings,
+    }
+
+
+def _extract_bad_cell_points_from_vtk(vtk_paths: Sequence[Path], max_points: int = 2000) -> List[List[float]]:
+    """Extract up to ``max_points`` [x, y, z] coordinates from checkMesh failure set VTK/VTP/VTU files."""
+    coords: List[List[float]] = []
+    for path in vtk_paths:
+        if not path.is_file():
+            continue
+        parsed_any = False
+        try:
+            import meshio  # type: ignore[import-not-found]
+
+            mesh = meshio.read(str(path))
+            pts = getattr(mesh, "points", None)
+            if pts is not None and len(pts) > 0:
+                for p in pts:
+                    if len(p) >= 3:
+                        x, y, z = float(p[0]), float(p[1]), float(p[2])
+                        if math.isfinite(x) and math.isfinite(y) and math.isfinite(z):
+                            coords.append([round(x, 6), round(y, 6), round(z, 6)])
+                parsed_any = True
+        except Exception:
+            parsed_any = False
+
+        if not parsed_any and path.suffix.lower() == ".vtk":
+            try:
+                lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+                idx = 0
+                while idx < len(lines):
+                    m = re.match(r"^\s*POINTS\s+(\d+)\s+", lines[idx], flags=re.I)
+                    if m:
+                        n_pts = int(m.group(1))
+                        nums: List[float] = []
+                        idx += 1
+                        while idx < len(lines) and len(nums) < n_pts * 3:
+                            for tok in lines[idx].split():
+                                try:
+                                    nums.append(float(tok))
+                                except ValueError:
+                                    break
+                            idx += 1
+                        for k in range(0, min(len(nums) - 2, n_pts * 3), 3):
+                            x, y, z = nums[k], nums[k + 1], nums[k + 2]
+                            if math.isfinite(x) and math.isfinite(y) and math.isfinite(z):
+                                coords.append([round(x, 6), round(y, 6), round(z, 6)])
+                        break
+                    idx += 1
+            except OSError:
+                continue
+
+    if len(coords) <= max_points:
+        return coords
+    step = len(coords) / float(max_points)
+    return [coords[int(i * step)] for i in range(max_points)]
+
+
+def _run_openfoam_check_mesh(case_dir: Path, env: Dict[str, str]) -> Optional[Dict[str, Any]]:
+    """Run OpenFOAM ``checkMesh`` after mesh generation, persist ``checkMesh.log``, and return parsed quality."""
+    check_mesh_bin = shutil.which("checkMesh", path=env.get("PATH")) or shutil.which("checkMesh")
+    if not check_mesh_bin:
+        return None
+
+    cmd = [check_mesh_bin, "-allGeometry", "-allTopology", "-writeSets", "vtk"]
+    proc = subprocess.run(cmd, cwd=case_dir, env=env, text=True, capture_output=True, timeout=120, check=False)
+    combined = f"{proc.stdout or ''}\n{proc.stderr or ''}".strip()
+    lower = combined.lower()
+    if proc.returncode != 0 and any(tok in lower for tok in ("unknown option", "invalid option", "unrecognized")):
+        proc = subprocess.run([check_mesh_bin], cwd=case_dir, env=env, text=True, capture_output=True, timeout=120, check=False)
+        combined = f"{proc.stdout or ''}\n{proc.stderr or ''}".strip()
+
+    (case_dir / "checkMesh.log").write_text(combined + ("\n" if combined else ""), encoding="utf-8")
+    quality = _parse_check_mesh_output(combined)
+
+    # Scan failure set files written by -writeSets vtk or constant/polyMesh/sets
+    failed_sets: List[str] = []
+    vtk_failure_paths: List[Path] = []
+    failure_tokens = ("nonortho", "skew", "concave", "zerovol", "wrongorient", "highaspect", "selfintersect", "bad", "illegal", "warped")
+
+    vtk_dir = case_dir / "VTK"
+    if vtk_dir.is_dir():
+        for vp in sorted(vtk_dir.rglob("*")):
+            if vp.is_file() and vp.suffix.lower() in {".vtk", ".vtp", ".vtu"} and vp.stat().st_size > 0:
+                stem_lower = vp.stem.lower()
+                if any(tok in stem_lower for tok in failure_tokens) or "faces" in stem_lower or "cells" in stem_lower:
+                    failed_sets.append(vp.stem)
+                    vtk_failure_paths.append(vp)
+
+    sets_dir = case_dir / "constant" / "polyMesh" / "sets"
+    if sets_dir.is_dir():
+        for sp in sorted(sets_dir.iterdir()):
+            if not sp.is_file() or sp.stat().st_size == 0:
+                continue
+            try:
+                content = sp.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                continue
+            count_m = re.search(r"\n\s*(\d+)\s*\(", content)
+            if count_m and int(count_m.group(1)) > 0 and sp.name not in failed_sets:
+                failed_sets.append(sp.name)
+
+    quality["failed_sets"] = sorted(set(failed_sets))
+    if vtk_failure_paths:
+        quality["bad_cell_points"] = _extract_bad_cell_points_from_vtk(vtk_failure_paths, max_points=2000)
+    return quality
 
 
 def parse_openfoam_residuals(log_text: str) -> Dict[str, Dict[str, Any]]:
@@ -2680,13 +2995,14 @@ def call_openfoam_solver(data: Mapping[str, Any]) -> PhysicsResult:
             )
         stl_path = _prepare_external_aero_stl(raw_cad, cad_filename, case_dir / "constant" / "triSurface")
         obs_min, obs_max = _compute_stl_bounds(stl_path)
+        aero_base_size = float(data.get("aero_base_cell_size") or size or 0.0)
         aero_spec = _build_external_wind_tunnel_spec(
             obs_min,
             obs_max,
             upstream_mult=float(data.get("tunnel_upstream_mult") or 3.0),
             downstream_mult=float(data.get("tunnel_downstream_mult") or 6.0),
             pad_mult=float(data.get("tunnel_pad_mult") or 2.5),
-            base_cell_size=size if size > 0 else None,
+            base_cell_size=aero_base_size if aero_base_size > 0 else None,
         )
         _write_external_aero_dicts(
             case_dir,
@@ -3224,18 +3540,42 @@ def call_openfoam_solver(data: Mapping[str, Any]) -> PhysicsResult:
             )
         return proc
 
+    mesh_quality: Optional[Dict[str, Any]] = None
+    allow_poor_mesh = bool(data.get("allow_poor_mesh", False))
     try:
         if used_snappy_aero:
             run([block_mesh])
             if sfe_bin:
                 run([sfe_bin])
             run([snappy_bin, "-overwrite"])
-            check_mesh_bin = shutil.which("checkMesh", path=env.get("PATH")) or shutil.which("checkMesh")
-            if check_mesh_bin:
-                subprocess.run([check_mesh_bin], cwd=case_dir, env=env, text=True, capture_output=True, timeout=90, check=False)
         elif not used_gmsh_cad:
             run([block_mesh])
             _write_block_mesh_boundary_summary(case_dir, nx, ny, nz, width, height, depth)
+
+        # Automated OpenFOAM checkMesh quality gate across ALL mesh paths (blockMesh, snappyHexMesh, gmshToFoam)
+        mesh_quality = _run_openfoam_check_mesh(case_dir, env)
+        if mesh_quality is not None:
+            if mesh_quality["verdict"] == "FAIL" and not allow_poor_mesh:
+                detail_parts: List[str] = []
+                if mesh_quality.get("failed_checks"):
+                    detail_parts.append(f"failed_checks={mesh_quality['failed_checks']}")
+                if mesh_quality.get("min_volume") is not None and mesh_quality["min_volume"] <= 0.0:
+                    detail_parts.append(f"min_volume={mesh_quality['min_volume']:.4g}")
+                if mesh_quality.get("max_non_orthogonality") is not None:
+                    detail_parts.append(f"max_non_orthogonality={mesh_quality['max_non_orthogonality']:.2f}°")
+                if mesh_quality.get("failed_sets"):
+                    detail_parts.append(f"failed_sets={','.join(mesh_quality['failed_sets'])}")
+                summary = "; ".join(detail_parts) or "checkMesh reported fatal mesh errors"
+                raise MeshQualityGateError(
+                    f"OpenFOAM checkMesh Quality Gate FAILED before launching {solver_stem}: {summary}. "
+                    "Refine the mesh or pass allow_poor_mesh=True to override.",
+                    mesh_quality=mesh_quality,
+                )
+            if mesh_quality["verdict"] in {"WARNING", "FAIL"} and mesh_quality.get("warnings"):
+                with (case_dir / "solver.log").open("a", encoding="utf-8") as stream:
+                    for warn_line in mesh_quality["warnings"]:
+                        stream.write(f"[checkMesh {mesh_quality['verdict']}] {warn_line}\n")
+
         if (case_dir / "system" / "topoSetDict").exists():
             topo_set_bin = shutil.which("topoSet", path=env.get("PATH")) or shutil.which("topoSet")
             if mrf_info and not topo_set_bin:
@@ -3365,6 +3705,26 @@ def call_openfoam_solver(data: Mapping[str, Any]) -> PhysicsResult:
     pressure_path.write_text(json.dumps(fields.get("pressure", {}), indent=2), encoding="utf-8")
     velocity_path.write_text(json.dumps(fields.get("velocity", {}), indent=2), encoding="utf-8")
 
+    resolved_mesh_nodes = (
+        int(mesh_quality["points"])
+        if (mesh_quality and isinstance(mesh_quality.get("points"), int) and mesh_quality["points"] > 0)
+        else (int(cad_mesh_res["nodes_count"]) if (used_gmsh_cad and cad_mesh_res) else (nx + 1) * (ny + 1) * (nz + 1))
+    )
+    resolved_mesh_elements = (
+        int(mesh_quality["cells"])
+        if (mesh_quality and isinstance(mesh_quality.get("cells"), int) and mesh_quality["cells"] > 0)
+        else (int(cad_mesh_res["elements_count"]) if (used_gmsh_cad and cad_mesh_res) else nx * ny * nz)
+    )
+    artifacts_dict: Dict[str, Any] = {
+        "case_directory": str(case_dir),
+        "log": str(case_dir / "solver.log"),
+        "pressure": str(pressure_path),
+        "velocity": str(velocity_path),
+        "mesh_metadata": str(case_dir / "mesh_metadata.json"),
+    }
+    if (case_dir / "checkMesh.log").exists():
+        artifacts_dict["check_mesh_log"] = str(case_dir / "checkMesh.log")
+
     result: Dict[str, Any] = {
         "status": "SOLVED_REALTIME",
         "solver": "OpenFOAM",
@@ -3378,15 +3738,9 @@ def call_openfoam_solver(data: Mapping[str, Any]) -> PhysicsResult:
         "effective_fluid": fluid,
         "executable": executable,
         "case_directory": str(case_dir),
-        "mesh_nodes": int(cad_mesh_res["nodes_count"]) if (used_gmsh_cad and cad_mesh_res) else (nx + 1) * (ny + 1) * (nz + 1),
-        "mesh_elements": int(cad_mesh_res["elements_count"]) if (used_gmsh_cad and cad_mesh_res) else nx * ny * nz,
-        "artifacts": {
-            "case_directory": str(case_dir),
-            "log": str(case_dir / "solver.log"),
-            "pressure": str(pressure_path),
-            "velocity": str(velocity_path),
-            "mesh_metadata": str(case_dir / "mesh_metadata.json"),
-        },
+        "mesh_nodes": resolved_mesh_nodes,
+        "mesh_elements": resolved_mesh_elements,
+        "artifacts": artifacts_dict,
         "residuals": residuals,
         "convergence": {
             "converged": bool(residuals and all(item["values"] and item["values"][-1] < 1e-4 for item in residuals.values())),
@@ -3400,6 +3754,8 @@ def call_openfoam_solver(data: Mapping[str, Any]) -> PhysicsResult:
         "input": {k: v for k, v in data.items() if k not in {"cad_stl_b64", "cad_file_b64", "openfoam_archive_b64"}},
         "units": {"pressure": "Pa", "velocity": "m/s", "temperature": "K", "residual": "dimensionless"},
     }
+    if mesh_quality is not None:
+        result["mesh_quality"] = mesh_quality
 
     inlet_area = height * depth
     mass_flow_kg_s = round(fluid["rho"] * velocity * inlet_area, 6)
@@ -3417,34 +3773,36 @@ def call_openfoam_solver(data: Mapping[str, Any]) -> PhysicsResult:
     if pp_metrics:
         integrals.update(pp_metrics)
 
-    if not used_gmsh_cad:
-        try:
-            metrics = compute_openfoam_metrics(case_dir)
-            result["metrics"] = metrics
-            result["units"]["pressure"] = metrics["pressure_drop"]["unit"] or result["units"]["pressure"]
-            if metrics.get("pressure_drop", {}).get("value") is not None:
-                dp_val = float(metrics["pressure_drop"]["value"])
-                # Convert kinematic m^2/s^2 to Pa when solver was incompressible kinematic pressure
-                dp_pa = dp_val * fluid["rho"] if metrics["pressure_drop"].get("unit") in {"m2/s2", "m²/s²"} else dp_val
-                integrals["pressure_drop_pa"] = round(dp_pa, 5)
-                result["pressure_drop_pa"] = integrals["pressure_drop_pa"]
-            if metrics.get("max_velocity", {}).get("value") is not None:
-                integrals["max_velocity_mps"] = round(float(metrics["max_velocity"]["value"]), 5)
-                result["max_velocity"] = integrals["max_velocity_mps"]
-        except Exception as exc:
-            result["metrics_error"] = f"{type(exc).__name__}: {exc}"
+    try:
+        metrics = compute_openfoam_metrics(case_dir)
+        if "drag_coefficient_cd" not in metrics and pp_metrics.get("drag_coefficient_cd") is not None:
+            metrics["drag_coefficient_cd"] = {"value": float(pp_metrics["drag_coefficient_cd"]), "unit": ""}
+        result["metrics"] = metrics
+        if metrics.get("pressure_drop", {}).get("unit"):
+            result["units"]["pressure"] = metrics["pressure_drop"]["unit"]
+        if metrics.get("pressure_drop", {}).get("value") is not None:
+            dp_val = float(metrics["pressure_drop"]["value"])
+            # Convert kinematic m^2/s^2 to Pa when solver was incompressible kinematic pressure
+            dp_pa = dp_val * fluid["rho"] if metrics["pressure_drop"].get("unit") in {"m2/s2", "m²/s²"} else dp_val
+            integrals["pressure_drop_pa"] = round(dp_pa, 5)
+            result["pressure_drop_pa"] = integrals["pressure_drop_pa"]
+        if metrics.get("max_velocity", {}).get("value") is not None:
+            integrals["max_velocity_mps"] = round(float(metrics["max_velocity"]["value"]), 5)
+            result["max_velocity"] = integrals["max_velocity_mps"]
+    except Exception as exc:
+        result["metrics_error"] = f"{type(exc).__name__}: {exc}"
 
     if isinstance(vtk_payload, Mapping):
         scalars_map = vtk_payload.get("scalars") or {}
         if used_gmsh_cad:
             p_vals_vtk = scalars_map.get("p") or scalars_map.get("p_rgh") or []
             u_vals_vtk = scalars_map.get("U_mag") or []
-            if p_vals_vtk:
+            if p_vals_vtk and "pressure_drop_pa" not in integrals:
                 raw_dp = max(p_vals_vtk) - min(p_vals_vtk)
                 dp_pa = raw_dp if (compressible or is_vof or solver_stem == "buoyantSimpleFoam") else raw_dp * fluid["rho"]
                 integrals["pressure_drop_pa"] = round(dp_pa, 5)
                 result["pressure_drop_pa"] = integrals["pressure_drop_pa"]
-            if u_vals_vtk:
+            if u_vals_vtk and "max_velocity_mps" not in integrals:
                 integrals["max_velocity_mps"] = round(max(u_vals_vtk), 5)
                 result["max_velocity"] = integrals["max_velocity_mps"]
 
@@ -3489,6 +3847,8 @@ def call_openfoam_solver(data: Mapping[str, Any]) -> PhysicsResult:
             integrals["total_heat_transfer_w"] = round(q_wall * wetted_area, 4)
             result["heat_transfer_coeff_h"] = integrals["heat_transfer_coeff_h"]
             result["nusselt_number"] = integrals["nusselt_number"]
+            if isinstance(result.get("metrics"), dict):
+                result["metrics"]["nusselt_number"] = {"value": integrals["nusselt_number"], "unit": ""}
 
     result["integrals"] = integrals
     return canonicalize_result(result, physics_type=physics_type, input_data=result["input"], solver="OpenFOAM")
@@ -5378,6 +5738,8 @@ def execute_simulation(data: Dict[str, Any]) -> PhysicsResult:
             "vtk_data": merged.get("vtk_data", []),
             "data": dict(merged),
         }
+        if isinstance(merged.get("mesh_quality"), Mapping):
+            response["mesh_quality"] = dict(merged["mesh_quality"])
         response["academic_report"] = generate_academic_report(response)
         return canonicalize_result(
             response,
@@ -5388,8 +5750,13 @@ def execute_simulation(data: Dict[str, Any]) -> PhysicsResult:
     except Exception as exc:
         elapsed_ms = round((perf_counter() - started) * 1000, 3)
         failure: Dict[str, Any] = {}
+        err_data: Dict[str, Any] = {}
         if isinstance(exc, OpenFOAMVerificationError):
             failure["errors"] = [{"code": "OPENFOAM_VERIFICATION_FAILED", "message": str(exc)}]
+        elif isinstance(exc, MeshQualityGateError):
+            failure["errors"] = [{"code": "MESH_QUALITY_GATE_FAILED", "message": str(exc)}]
+            failure["mesh_quality"] = dict(exc.mesh_quality)
+            err_data["mesh_quality"] = dict(exc.mesh_quality)
         return canonicalize_result({
             "physics_type": physics_type,
             "recommended_solver": _recommended_engine(physics_type),
@@ -5397,8 +5764,12 @@ def execute_simulation(data: Dict[str, Any]) -> PhysicsResult:
             "process_time_ms": elapsed_ms,
             "process_time": round(elapsed_ms / 1000, 3),
             "vtk_data": [],
-            "data": {},
-            "error": str(exc) if isinstance(exc, OpenFOAMVerificationError) else f"Universal dispatcher failed ({physics_type}): {exc}",
+            "data": err_data,
+            "error": (
+                str(exc)
+                if isinstance(exc, (OpenFOAMVerificationError, MeshQualityGateError))
+                else f"Universal dispatcher failed ({physics_type}): {exc}"
+            ),
             **failure,
         }, physics_type=physics_type, input_data={k: v for k, v in data.items() if k not in {"cad_stl_b64", "cad_file_b64", "openfoam_archive_b64"}}, solver="unknown")
 
@@ -5532,21 +5903,15 @@ def sample_telemetry_task() -> Dict[str, Any]:
 # ---------------------------------------------------------------------------
 # Async Mesh-Independence Study (GCI) & International V&V Suite Celery Tasks
 # ---------------------------------------------------------------------------
-@celery_app.task(
-    name="universal_dispatcher.run_mesh_study_task",
-    bind=True,
-    soft_time_limit=int(os.getenv("CAE_MESH_STUDY_SOFT_TIME_LIMIT_SECONDS", "1200")),
-    time_limit=int(os.getenv("CAE_MESH_STUDY_TIME_LIMIT_SECONDS", "1260")),
-)
-def run_mesh_study_task(
-    self,
+def _execute_mesh_study_task(
+    task_self: Any,
     payload: Dict[str, Any],
     physics_type: str,
     key_result: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """Execute 3-level Celik GCI mesh-independence study asynchronously inside the Celery worker."""
+    """Core implementation of the 3-level Celik GCI mesh-independence Celery task."""
     _ensure_app_on_sys_path()
-    task_id = getattr(self.request, "id", None)
+    task_id = getattr(getattr(task_self, "request", None), "id", None)
     logs: List[str] = [
         f"[{datetime.now(timezone.utc).isoformat()}] Starting 3-level mesh independence study ({physics_type}, key={key_result or 'default'})."
     ]
@@ -5555,7 +5920,7 @@ def run_mesh_study_task(
     def _emit(progress: int, msg: str) -> None:
         tel = sample_node_telemetry()
         _task_progress(
-            self,
+            task_self,
             progress,
             msg,
             logs=list(logs),
@@ -5624,7 +5989,7 @@ def run_mesh_study_task(
         logs.append(f"[{datetime.now(timezone.utc).isoformat()}] {summary_msg}")
         final_payload = {"success": True, "study": study}
         _task_progress(
-            self,
+            task_self,
             100,
             summary_msg,
             logs=list(logs),
@@ -5661,17 +6026,30 @@ def run_mesh_study_task(
 
 
 @celery_app.task(
-    name="universal_dispatcher.run_vv_suite_task",
+    name="universal_dispatcher.run_mesh_study_task",
     bind=True,
-    soft_time_limit=int(os.getenv("CAE_VV_SOFT_TIME_LIMIT_SECONDS", "1500")),
-    time_limit=int(os.getenv("CAE_VV_TIME_LIMIT_SECONDS", "1560")),
+    soft_time_limit=int(os.getenv("CAE_MESH_STUDY_SOFT_TIME_LIMIT_SECONDS", "1200")),
+    time_limit=int(os.getenv("CAE_MESH_STUDY_TIME_LIMIT_SECONDS", "1260")),
 )
-def run_vv_suite_task(self, selected_ids: Optional[List[str]] = None) -> Dict[str, Any]:
-    """Execute international ASME/NAFEMS/NASA TMR V&V benchmarks asynchronously inside the worker."""
+def run_mesh_study_task(
+    self,
+    payload: Dict[str, Any],
+    physics_type: str,
+    key_result: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Execute 3-level Celik GCI mesh-independence study asynchronously inside the Celery worker."""
+    return _execute_mesh_study_task(self, payload, physics_type, key_result)
+
+
+run_mesh_study_task._raw_bound_fn = _execute_mesh_study_task  # type: ignore[attr-defined]
+
+
+def _execute_vv_suite_task(task_self: Any, selected_ids: Optional[List[str]] = None) -> Dict[str, Any]:
+    """Core implementation of the international ASME/NAFEMS/NASA TMR V&V suite Celery task."""
     _ensure_app_on_sys_path()
     from vv_regression_suite import generate_vv_certificate_markdown, run_vv_suite
 
-    task_id = getattr(self.request, "id", None)
+    task_id = getattr(getattr(task_self, "request", None), "id", None)
     logs: List[str] = [
         f"[{datetime.now(timezone.utc).isoformat()}] Starting V&V verification suite ({'all 6 benchmarks' if not selected_ids else ', '.join(selected_ids)})."
     ]
@@ -5680,7 +6058,7 @@ def run_vv_suite_task(self, selected_ids: Optional[List[str]] = None) -> Dict[st
     def _emit(progress: int, msg: str, completed_count: int = 0, total_count: int = 0) -> None:
         tel = sample_node_telemetry()
         _task_progress(
-            self,
+            task_self,
             progress,
             msg,
             logs=list(logs),
@@ -5758,7 +6136,7 @@ def run_vv_suite_task(self, selected_ids: Optional[List[str]] = None) -> Dict[st
             "certificate_markdown": cert_md,
         }
         _task_progress(
-            self,
+            task_self,
             100,
             final_msg,
             logs=list(logs),
@@ -5781,6 +6159,20 @@ def run_vv_suite_task(self, selected_ids: Optional[List[str]] = None) -> Dict[st
         failure = {"success": False, "code": "VV_SUITE_FAILED", "error": err_msg}
         _record_job_state(task_id, "FAILED", progress=100, logs=list(logs), result=failure, error=err_msg)
         return failure
+
+
+@celery_app.task(
+    name="universal_dispatcher.run_vv_suite_task",
+    bind=True,
+    soft_time_limit=int(os.getenv("CAE_VV_SOFT_TIME_LIMIT_SECONDS", "1500")),
+    time_limit=int(os.getenv("CAE_VV_TIME_LIMIT_SECONDS", "1560")),
+)
+def run_vv_suite_task(self, selected_ids: Optional[List[str]] = None) -> Dict[str, Any]:
+    """Execute international ASME/NAFEMS/NASA TMR V&V benchmarks asynchronously inside the worker."""
+    return _execute_vv_suite_task(self, selected_ids)
+
+
+run_vv_suite_task._raw_bound_fn = _execute_vv_suite_task  # type: ignore[attr-defined]
 
 
 # ---------------------------------------------------------------------------

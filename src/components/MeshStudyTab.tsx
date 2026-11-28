@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { AlertTriangle, CheckCircle2, FileCheck2, Grid3X3, Loader2, Play, XCircle } from 'lucide-react';
-import { MeshStudyKeyResult, MeshStudyResult, ThesisProject, isCurrentMeshStudy } from '../types/thesis';
+import { AlertTriangle, CheckCircle2, FileCheck2, Grid3X3, Loader2, Play, ShieldCheck, XCircle } from 'lucide-react';
+import { MeshQualityReport, MeshStudyKeyResult, ThesisProject, isCurrentMeshStudy } from '../types/thesis';
 import { buildRealReport, hasRealSimulationRun } from '../utils/exporter';
 import {
   ComplianceCheckStatus,
@@ -76,16 +76,36 @@ export const MeshStudyTab: React.FC<MeshStudyTabProps> = ({
   const current = keyResults.find((k) => k.id === selected);
   const svg = useMemo(() => (study ? meshConvergenceSvg(study, 'dark') : ''), [study]);
   const verdict = study ? meshStudyVerdict(study) : null;
+
+  const meshQuality: MeshQualityReport | null = useMemo(() => {
+    const direct = project.normalizedSolverResult?.meshQuality;
+    if (direct && (direct.verdict === 'PASS' || direct.verdict === 'WARNING' || direct.verdict === 'FAIL')) {
+      return direct;
+    }
+    const lastRes = project.simulationRun?.result as Record<string, unknown> | undefined;
+    const rawCandidate =
+      (lastRes?.mesh_quality as MeshQualityReport | undefined) ??
+      ((lastRes?.data as Record<string, unknown> | undefined)?.mesh_quality as MeshQualityReport | undefined);
+    if (
+      rawCandidate &&
+      typeof rawCandidate === 'object' &&
+      (rawCandidate.verdict === 'PASS' || rawCandidate.verdict === 'WARNING' || rawCandidate.verdict === 'FAIL')
+    ) {
+      return rawCandidate;
+    }
+    return null;
+  }, [project.normalizedSolverResult, project.simulationRun]);
+
   const compliance = useMemo(() => {
     if (!study) return null;
     const extracted = report ? extractMeshQualityFromRows(report.mesh) : {};
     return evaluateMeshQualityCompliance(study, {
       minOrthogonalQuality: extracted.minOrthogonalQuality ?? project.meshStudy?.minOrthogonalQuality,
-      maxSkewness: extracted.maxSkewness ?? project.meshStudy?.maxSkewness,
-      maxNonOrthogonality: extracted.maxNonOrthogonality,
-      elementsCount: extracted.elementsCount,
+      maxSkewness: meshQuality?.max_skewness ?? extracted.maxSkewness ?? project.meshStudy?.maxSkewness,
+      maxNonOrthogonality: meshQuality?.max_non_orthogonality ?? extracted.maxNonOrthogonality,
+      elementsCount: meshQuality?.cells ?? extracted.elementsCount,
     });
-  }, [study, report, project.meshStudy]);
+  }, [study, report, project.meshStudy, meshQuality]);
   const Icon = verdict?.tone === 'good' ? CheckCircle2 : verdict?.tone === 'bad' ? XCircle : AlertTriangle;
 
   const statusTextClass: Record<ComplianceCheckStatus, string> = {
@@ -132,7 +152,9 @@ export const MeshStudyTab: React.FC<MeshStudyTabProps> = ({
             className="rounded-lg border border-slate-700 bg-slate-950 px-2.5 py-1.5 text-[12px] text-slate-200 focus:border-sky-500 focus:outline-none disabled:opacity-50"
           >
             {keyResults.map((k) => (
-              <option key={k.id} value={k.id}>{k.label}</option>
+              <option key={k.id} value={k.id}>
+                {k.label}{k.unit ? ` (${k.unit})` : ''}
+              </option>
             ))}
           </select>
         </div>
@@ -143,6 +165,87 @@ export const MeshStudyTab: React.FC<MeshStudyTabProps> = ({
           </p>
         )}
         {keysError && <p className="text-[11.5px] text-red-300">Unable to load the key results for this physics type: {keysError}</p>}
+      </section>
+
+      <section className="overflow-hidden rounded-lg border border-slate-800 bg-slate-900/70">
+        <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-800 px-4 py-2.5">
+          <div className="flex items-center gap-2">
+            <ShieldCheck className="h-4 w-4 shrink-0 text-sky-400" />
+            <h3 className="text-[12.5px] font-semibold text-slate-100">OpenFOAM checkMesh Quality Gate</h3>
+          </div>
+          {meshQuality && (
+            <span
+              className={`font-mono text-[11px] font-bold tracking-wide ${
+                meshQuality.verdict === 'PASS'
+                  ? 'text-emerald-400'
+                  : meshQuality.verdict === 'WARNING'
+                    ? 'text-amber-300'
+                    : 'text-red-400'
+              }`}
+            >
+              VERDICT: {meshQuality.verdict}
+            </span>
+          )}
+        </div>
+
+        {!meshQuality ? (
+          <p className="px-4 py-3 text-[12px] text-slate-400">
+            Run an OpenFOAM simulation to inspect checkMesh quality.
+          </p>
+        ) : (
+          <div className="space-y-3 p-4">
+            <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-3 lg:grid-cols-6">
+              {[
+                ['Verdict', meshQuality.verdict],
+                ['Cells', fmt(meshQuality.cells)],
+                [
+                  'Max Non-Ortho',
+                  meshQuality.max_non_orthogonality === null
+                    ? '—'
+                    : `${formatNumber(meshQuality.max_non_orthogonality)}°`,
+                ],
+                ['Max Skewness', fmt(meshQuality.max_skewness)],
+                ['Max Aspect Ratio', fmt(meshQuality.max_aspect_ratio)],
+                ['Failed Checks', fmt(meshQuality.failed_checks)],
+              ].map(([label, value]) => (
+                <div key={label} className="rounded-md border border-slate-800 bg-slate-950/70 px-3 py-2">
+                  <div className="text-[10px] uppercase tracking-wide text-slate-500">{label}</div>
+                  <div
+                    className={`mt-0.5 font-mono text-[12.5px] font-semibold tabular-nums ${
+                      label === 'Verdict'
+                        ? meshQuality.verdict === 'PASS'
+                          ? 'text-emerald-400'
+                          : meshQuality.verdict === 'WARNING'
+                            ? 'text-amber-300'
+                            : 'text-red-400'
+                        : 'text-slate-100'
+                    }`}
+                  >
+                    {value}
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            {meshQuality.failed_sets.length > 0 && (
+              <div className="text-[11.5px] text-amber-200">
+                <span className="font-semibold text-slate-300">Failed Sets: </span>
+                <span className="font-mono">{meshQuality.failed_sets.join(', ')}</span>
+              </div>
+            )}
+
+            {meshQuality.warnings.length > 0 && (
+              <ul className="space-y-1 rounded-md border border-amber-500/25 bg-amber-950/15 px-3 py-2 text-[11.5px] text-amber-200/95">
+                {meshQuality.warnings.map((w) => (
+                  <li key={w} className="flex items-start gap-1.5">
+                    <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                    <span>{w}</span>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+        )}
       </section>
 
       {meshStudyError && (

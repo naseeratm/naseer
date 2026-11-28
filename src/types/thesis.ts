@@ -223,6 +223,25 @@ export interface VtkFieldPayload {
   time_frames?: VtkTimeFrame[];
 }
 
+export interface MeshQualityReport {
+  verdict: 'PASS' | 'WARNING' | 'FAIL';
+  mesh_ok: boolean;
+  failed_checks: number | null;
+  cells: number | null;
+  points: number | null;
+  faces: number | null;
+  cell_types?: Record<string, number>;
+  max_non_orthogonality: number | null;
+  avg_non_orthogonality: number | null;
+  max_skewness: number | null;
+  max_aspect_ratio: number | null;
+  min_volume: number | null;
+  max_volume: number | null;
+  failed_sets: string[];
+  bad_cell_points?: number[][];
+  warnings: string[];
+}
+
 export interface NormalizedSolverResult {
   status: 'success';
   physics: 'CFD' | 'FEA' | 'Thermal' | string;
@@ -241,6 +260,7 @@ export interface NormalizedSolverResult {
   displacementMatrix?: number[][];
   vtkData?: VtkFieldPayload;
   integrals?: Record<string, number | string>;
+  meshQuality?: MeshQualityReport;
   logs: string[];
 }
 

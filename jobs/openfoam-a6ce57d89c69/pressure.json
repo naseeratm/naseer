@@ -1,0 +1,11 @@
+{
+  "time_directory": "100",
+  "source": "/app/applet/jobs/openfoam-a6ce57d89c69/100/p",
+  "kind": "scalar",
+  "minimum": 0.0,
+  "maximum": 0.0,
+  "mean": 0.0,
+  "values": [
+    0.0
+  ]
+}

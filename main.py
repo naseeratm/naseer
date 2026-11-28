@@ -197,6 +197,10 @@ class SimulationRequest(BaseModel):
     relative_permeability: Optional[float] = None
     relative_permittivity: Optional[float] = None
     current_density: Optional[float] = None
+    allow_poor_mesh: Optional[bool] = Field(
+        default=False,
+        description="Explicitly allow OpenFOAM solver launch when checkMesh returns a FAIL verdict.",
+    )
 
     @field_validator(
         "velocity", "pressure", "displacement", "temperature", "width_x", "height_y", "depth_z",

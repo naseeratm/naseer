@@ -1,4 +1,4 @@
-import { NormalizedSolverResult, ThesisProject, VtkFieldPayload } from '../types/thesis';
+import { MeshQualityReport, NormalizedSolverResult, ThesisProject, VtkFieldPayload } from '../types/thesis';
 
 const finiteNumber = (value: unknown): number | undefined =>
   typeof value === 'number' && Number.isFinite(value) ? value : undefined;
@@ -22,6 +22,49 @@ const toVtkFieldPayload = (candidate: unknown): VtkFieldPayload | undefined => {
     return { ...(obj as Record<string, unknown>), time_frames: cleanFrames } as unknown as VtkFieldPayload;
   }
   return obj as unknown as VtkFieldPayload;
+};
+
+const nullableFinite = (value: unknown): number | null =>
+  typeof value === 'number' && Number.isFinite(value) ? value : null;
+
+const toMeshQualityReport = (candidate: unknown): MeshQualityReport | undefined => {
+  if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) return undefined;
+  const obj = candidate as Record<string, unknown>;
+  const rawVerdict = typeof obj.verdict === 'string' ? obj.verdict.toUpperCase() : '';
+  if (rawVerdict !== 'PASS' && rawVerdict !== 'WARNING' && rawVerdict !== 'FAIL') return undefined;
+
+  let cellTypes: Record<string, number> | undefined;
+  if (obj.cell_types && typeof obj.cell_types === 'object' && !Array.isArray(obj.cell_types)) {
+    const cleanTypes: Record<string, number> = {};
+    Object.entries(obj.cell_types as Record<string, unknown>).forEach(([k, v]) => {
+      if (typeof v === 'number' && Number.isFinite(v)) cleanTypes[k] = v;
+    });
+    if (Object.keys(cleanTypes).length > 0) cellTypes = cleanTypes;
+  }
+
+  return {
+    verdict: rawVerdict,
+    mesh_ok: Boolean(obj.mesh_ok),
+    failed_checks: nullableFinite(obj.failed_checks),
+    cells: nullableFinite(obj.cells),
+    points: nullableFinite(obj.points),
+    faces: nullableFinite(obj.faces),
+    cell_types: cellTypes,
+    max_non_orthogonality: nullableFinite(obj.max_non_orthogonality),
+    avg_non_orthogonality: nullableFinite(obj.avg_non_orthogonality),
+    max_skewness: nullableFinite(obj.max_skewness),
+    max_aspect_ratio: nullableFinite(obj.max_aspect_ratio),
+    min_volume: nullableFinite(obj.min_volume),
+    max_volume: nullableFinite(obj.max_volume),
+    failed_sets: Array.isArray(obj.failed_sets) ? obj.failed_sets.map(String) : [],
+    bad_cell_points: Array.isArray(obj.bad_cell_points)
+      ? (obj.bad_cell_points.filter(
+          (pt): pt is number[] =>
+            Array.isArray(pt) && pt.length >= 3 && pt.every((n) => typeof n === 'number' && Number.isFinite(n)),
+        ) as number[][])
+      : undefined,
+    warnings: Array.isArray(obj.warnings) ? obj.warnings.map(String) : [],
+  };
 };
 
 export function normalizeSolverResponse(payload: any, project: ThesisProject): NormalizedSolverResult {
@@ -110,6 +153,12 @@ export function normalizeSolverResponse(payload: any, project: ThesisProject): N
     if (Object.keys(clean).length > 0) integrals = clean;
   }
 
+  const meshQuality =
+    toMeshQualityReport(payload?.mesh_quality) ??
+    toMeshQualityReport(payload?.data?.mesh_quality) ??
+    toMeshQualityReport(nested?.mesh_quality) ??
+    toMeshQualityReport(fields?.mesh_quality);
+
   return {
     status: 'success',
     physics,
@@ -132,6 +181,7 @@ export function normalizeSolverResponse(payload: any, project: ThesisProject): N
     displacementMatrix: matrix('displacement_matrix'),
     vtkData,
     integrals,
+    meshQuality,
     logs: Array.isArray(payload?.logs) ? payload.logs.map(String) : [],
   };
 }

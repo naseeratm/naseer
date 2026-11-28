@@ -312,13 +312,17 @@ class _BoundTaskSelf:
 
 def _invoke_bound_task(task_fn: Any, bound_self: Any, *args: Any, **kwargs: Any) -> Any:
     """Invoke a Celery bind=True task cleanly whether real Celery or the local stub is active."""
+    raw_bound = getattr(task_fn, "_raw_bound_fn", None)
+    if callable(raw_bound):
+        return raw_bound(bound_self, *args, **kwargs)
     run_method = getattr(task_fn, "run", None)
     unbound = getattr(run_method, "__func__", None)
     if callable(unbound):
         return unbound(bound_self, *args, **kwargs)
     wrapped = getattr(task_fn, "__wrapped__", None)
-    if callable(wrapped):
-        return wrapped(bound_self, *args, **kwargs)
+    wrapped_unbound = getattr(wrapped, "__func__", wrapped)
+    if callable(wrapped_unbound):
+        return wrapped_unbound(bound_self, *args, **kwargs)
     return task_fn(bound_self, *args, **kwargs)
 
 
@@ -602,16 +606,22 @@ class TestDirective01AsyncHeartbeatSSE(unittest.TestCase):
         empty_caps = {
             "openfoam": {"available": False, "version": None},
             "calculix": {"available": False, "version": None},
+            "gmsh": {"available": False, "version": None},
             "elmer": {"available": False, "version": None},
         }
 
         with (
             patch.object(universal_dispatcher, "_job_repository", return_value=self.repo),
             patch.object(universal_dispatcher, "probe_worker_capabilities", return_value=empty_caps),
+            patch.object(
+                universal_dispatcher,
+                "execute_simulation",
+                side_effect=AssertionError("execute_simulation must not run when all required binaries are unavailable"),
+            ),
         ):
             result = _invoke_bound_task(universal_dispatcher.run_vv_suite_task, bound_self, None)
 
-        self.assertTrue(result["success"])
+        self.assertTrue(result["success"], f"V&V worker task failed unexpectedly: {result}")
         self.assertEqual(result["report"]["overall_status"], "SKIPPED_NO_SOLVERS")
         self.assertEqual(result["report"]["summary"]["skipped"], 6)
         self.assertIn("SKIPPED_NO_BINARY", result["certificate_markdown"])

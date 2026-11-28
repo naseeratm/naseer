@@ -78,10 +78,23 @@ KEY_RESULTS: dict[str, list[KeyResultSpec]] = {
         KeyResultSpec(
             "pressure_drop",
             "Pressure drop ΔP (inlet → outlet)",
-            "Mean pressure of the cell layer next to the inlet minus the cell layer next to the outlet "
-            "(cell-centre values, final time step).",
+            "Mean pressure at the inlet minus the outlet (cell layer for structured grids, or boundaryField / postProcessing patch averages for unstructured 3D CAD meshes).",
             caveat="The case is solved transiently with a fixed time step, so temporal error does not decrease with "
                    "mesh refinement. Incompressible OpenFOAM solvers report kinematic pressure p/ρ.",
+        ),
+        KeyResultSpec(
+            "drag_coefficient_cd",
+            "Drag coefficient C_d",
+            "Streamwise aerodynamic drag coefficient parsed from OpenFOAM postProcessing/forceCoeffs.",
+            unit="",
+            caveat="Available when an OpenFOAM forceCoeffs functionObject is active (e.g. external aerodynamics).",
+        ),
+        KeyResultSpec(
+            "nusselt_number",
+            "Nusselt number Nu",
+            "Wall-to-bulk convective heat transfer Nusselt number computed from the solved OpenFOAM temperature field.",
+            unit="",
+            caveat="Available for CHT and thermal CFD runs solving an energy / temperature field T.",
         ),
     ],
     "structural": [
@@ -218,15 +231,41 @@ def _thermal_key(key_id: str, data: Mapping[str, Any]) -> KeyValue:
 
 
 def _openfoam_key(key_id: str, data: Mapping[str, Any]) -> KeyValue:
-    metrics = data.get("metrics")
-    if not isinstance(metrics, Mapping) or key_id not in metrics:
-        reason = data.get("metrics_error") or "the solver result carries no field metrics"
-        raise KeyResultUnavailable(f"CFD key result '{key_id}' is unavailable: {reason}.")
-    entry = metrics[key_id]
-    value = _finite(entry.get("value")) if isinstance(entry, Mapping) else None
-    if value is None:
-        raise KeyResultUnavailable(f"CFD key result '{key_id}' is not a finite number.")
-    return KeyValue(value=value, unit=str(entry.get("unit", "")))
+    metrics = data.get("metrics") if isinstance(data.get("metrics"), Mapping) else None
+    if metrics is not None and key_id in metrics:
+        entry = metrics[key_id]
+        value = _finite(entry.get("value")) if isinstance(entry, Mapping) else _finite(entry)
+        if value is None:
+            raise KeyResultUnavailable(f"CFD key result '{key_id}' is not a finite number.")
+        unit = str(entry.get("unit", "")) if isinstance(entry, Mapping) else ""
+        return KeyValue(value=value, unit=unit)
+
+    integrals = data.get("integrals") if isinstance(data.get("integrals"), Mapping) else {}
+    if key_id == "drag_coefficient_cd":
+        cd_val = _finite(integrals.get("drag_coefficient_cd"))
+        if cd_val is None:
+            cd_val = _finite(data.get("drag_coefficient_cd"))
+        if cd_val is not None:
+            return KeyValue(value=cd_val, unit="")
+        raise KeyResultUnavailable(
+            "CFD key result 'drag_coefficient_cd' is unavailable: no forceCoeffs Cd output was produced by OpenFOAM."
+        )
+    if key_id == "nusselt_number":
+        nu_val = _finite(integrals.get("nusselt_number"))
+        if nu_val is None:
+            nu_val = _finite(data.get("nusselt_number"))
+        if nu_val is not None:
+            return KeyValue(value=nu_val, unit="")
+        raise KeyResultUnavailable(
+            "CFD key result 'nusselt_number' is unavailable: no thermal Nusselt number was produced by OpenFOAM."
+        )
+
+    if key_id == "pressure_drop" and metrics is not None and metrics.get("pressure_drop_unavailable_reason"):
+        raise KeyResultUnavailable(
+            f"CFD key result 'pressure_drop' is unavailable: {metrics['pressure_drop_unavailable_reason']}"
+        )
+    reason = data.get("metrics_error") or "the solver result carries no field metrics"
+    raise KeyResultUnavailable(f"CFD key result '{key_id}' is unavailable: {reason}.")
 
 
 def _rigid_body_check(displacements: Sequence[Mapping[str, Any]]) -> None:
@@ -297,9 +336,34 @@ def mesh_stats(physics_type: str, data: Mapping[str, Any]) -> MeshStats:
     if family == "cfd":
         metrics = data.get("metrics")
         mesh = metrics.get("mesh") if isinstance(metrics, Mapping) else None
-        if not isinstance(mesh, Mapping) or not mesh.get("cells"):
-            raise KeyResultUnavailable("The CFD result does not report its mesh size.")
-        return MeshStats(cells=int(mesh["cells"]), nodes=None, dimension=int(mesh.get("dimension", 2)))
+        if isinstance(mesh, Mapping) and mesh.get("cells"):
+            nodes_raw = _finite(mesh.get("nodes"))
+            if nodes_raw is None:
+                mq = data.get("mesh_quality") if isinstance(data.get("mesh_quality"), Mapping) else {}
+                nodes_raw = _finite(mq.get("points"))
+            return MeshStats(
+                cells=int(mesh["cells"]),
+                nodes=int(nodes_raw) if nodes_raw is not None and nodes_raw > 0 else None,
+                dimension=int(mesh.get("dimension", 3)),
+            )
+        mq = data.get("mesh_quality") if isinstance(data.get("mesh_quality"), Mapping) else {}
+        mq_cells = _finite(mq.get("cells"))
+        if mq_cells is not None and mq_cells > 0:
+            mq_points = _finite(mq.get("points"))
+            return MeshStats(
+                cells=int(mq_cells),
+                nodes=int(mq_points) if mq_points is not None and mq_points > 0 else None,
+                dimension=3,
+            )
+        elem_fallback = _finite(data.get("mesh_elements"))
+        if elem_fallback is not None and elem_fallback > 0:
+            nodes_fallback = _finite(data.get("mesh_nodes"))
+            return MeshStats(
+                cells=int(elem_fallback),
+                nodes=int(nodes_fallback) if nodes_fallback is not None and nodes_fallback > 0 else None,
+                dimension=3,
+            )
+        raise KeyResultUnavailable("The CFD result does not report its mesh size.")
     if family == "electromagnetic":
         cells, nodes = _finite(data.get("mesh_elements")), _finite(data.get("mesh_nodes"))
         if cells is None or cells <= 0:
@@ -328,13 +392,17 @@ _DIMENSION_UNITS = {
 }
 
 
+def _strip_foam_comments(text: str) -> str:
+    cleaned = re.sub(r"/\*.*?\*/", "", text, flags=re.S)
+    return re.sub(r"//[^\n]*", "", cleaned)
+
+
 def parse_internal_field(text: str) -> dict[str, Any]:
     """Parse the ``internalField`` of an ASCII OpenFOAM volScalarField/volVectorField file.
 
     Handles ``uniform``, ``nonuniform List<scalar|vector> N ( ... )`` and the compressed ``N{value}`` form.
     """
-    cleaned = re.sub(r"/\*.*?\*/", "", text, flags=re.S)
-    cleaned = re.sub(r"//[^\n]*", "", cleaned)
+    cleaned = _strip_foam_comments(text)
     found = re.search(r"\binternalField\s+(.*?);", cleaned, flags=re.S)
     if not found:
         raise ValueError("no internalField entry found")
@@ -379,6 +447,206 @@ def _parse_entries(inner: str, kind: str) -> list[Any]:
     return [float(x) for x in re.findall(_NUMBER, inner)]
 
 
+def _parse_scalar_value_expr(body: str) -> list[float] | None:
+    """Parse an OpenFOAM scalar value expression (uniform, nonuniform List<scalar>, or N{val})."""
+    expr = body.strip()
+    if expr.startswith("uniform"):
+        val = _finite(expr[len("uniform"):].strip())
+        return [val] if val is not None else None
+    listing = re.match(r"nonuniform\s+List<scalar>\s*(\d+)\s*(.*)$", expr, flags=re.S)
+    if not listing:
+        return None
+    count = int(listing.group(1))
+    rest = listing.group(2).strip()
+    if count == 0:
+        return []
+    if rest.startswith("{") and "}" in rest:
+        inner = rest[1:rest.rindex("}")]
+        single = _parse_entries(inner, "scalar")
+        return single * count if len(single) == 1 else None
+    if "(" in rest and ")" in rest:
+        inner = rest[rest.index("(") + 1:rest.rindex(")")]
+        vals = _parse_entries(inner, "scalar")
+        return vals if len(vals) == count else None
+    return None
+
+
+def _parse_boundary_field_patches(text: str) -> dict[str, dict[str, Any]]:
+    """Parse scalar patch values from the ``boundaryField { ... }`` block of an OpenFOAM field file."""
+    cleaned = _strip_foam_comments(text)
+    bf_match = re.search(r"\bboundaryField\s*\{", cleaned)
+    if not bf_match:
+        return {}
+    start = bf_match.end()
+    depth = 1
+    pos = start
+    n = len(cleaned)
+    while pos < n and depth > 0:
+        ch = cleaned[pos]
+        if ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+        pos += 1
+    if depth != 0:
+        return {}
+    bf_body = cleaned[start:pos - 1]
+
+    patches: dict[str, dict[str, Any]] = {}
+    i = 0
+    m_len = len(bf_body)
+    while i < m_len:
+        m = re.search(r"([A-Za-z0-9_.\-\"]+)\s*\{", bf_body[i:])
+        if not m:
+            break
+        patch_name = m.group(1).strip('"')
+        block_start = i + m.end()
+        b_depth = 1
+        j = block_start
+        while j < m_len and b_depth > 0:
+            if bf_body[j] == "{":
+                b_depth += 1
+            elif bf_body[j] == "}":
+                b_depth -= 1
+            j += 1
+        if b_depth != 0:
+            break
+        block_text = bf_body[block_start:j - 1]
+        i = j
+
+        type_m = re.search(r"\btype\s+([A-Za-z0-9_]+)\s*;", block_text)
+        patch_type = type_m.group(1) if type_m else None
+        val_m = re.search(r"\bvalue\s+(.*?);", block_text, flags=re.S)
+        mean_val: float | None = None
+        count = 0
+        if val_m:
+            parsed_vals = _parse_scalar_value_expr(val_m.group(1))
+            if parsed_vals:
+                mean_val = sum(parsed_vals) / len(parsed_vals)
+                count = len(parsed_vals)
+        patches[patch_name] = {"type": patch_type, "mean": mean_val, "count": count}
+    return patches
+
+
+def _detect_case_dimension(case: Path, *, structured_nz: int | None = None) -> int:
+    """Return 2 ONLY if constant/polyMesh/boundary has an 'empty' patch (or structured nz==1 without boundary), else 3."""
+    boundary_path = case / "constant" / "polyMesh" / "boundary"
+    if boundary_path.is_file():
+        try:
+            cleaned = _strip_foam_comments(boundary_path.read_text(encoding="utf-8", errors="replace"))
+            if re.search(r"\btype\s+empty\s*;", cleaned):
+                return 2
+            return 3
+        except OSError:
+            pass
+    if structured_nz is not None and structured_nz == 1:
+        return 2
+    return 3
+
+
+def _parse_polymesh_n_cells(case: Path) -> int | None:
+    """Read exact nCells from constant/polyMesh/owner FoamFile note or checkMesh.log."""
+    owner_path = case / "constant" / "polyMesh" / "owner"
+    if owner_path.is_file():
+        try:
+            with owner_path.open("r", encoding="utf-8", errors="replace") as fh:
+                head = fh.read(4096)
+            m = re.search(r"\bnCells\s*:\s*(\d+)", head)
+            if m:
+                return int(m.group(1))
+        except OSError:
+            pass
+    check_log = case / "checkMesh.log"
+    if check_log.is_file():
+        try:
+            txt = check_log.read_text(encoding="utf-8", errors="replace")
+            m = re.search(r"^\s*cells:\s*(\d+)", txt, flags=re.M)
+            if m:
+                return int(m.group(1))
+        except OSError:
+            pass
+    return None
+
+
+def _parse_postprocessing_patch_pressure(case: Path) -> dict[str, float]:
+    """Read inlet/outlet mean pressure from OpenFOAM postProcessing surfaceFieldValue files when present."""
+    pp_dir = case / "postProcessing"
+    if not pp_dir.is_dir():
+        return {}
+    found: dict[str, float] = {}
+    for dat in sorted(pp_dir.rglob("*.dat")):
+        path_lower = str(dat.relative_to(pp_dir)).lower()
+        role = "inlet" if ("inlet" in path_lower or "inflow" in path_lower) else (
+            "outlet" if ("outlet" in path_lower or "outflow" in path_lower) else None
+        )
+        if not role:
+            continue
+        try:
+            lines = dat.read_text(encoding="utf-8", errors="replace").splitlines()
+        except OSError:
+            continue
+        header = " ".join(ln for ln in lines[:12] if ln.strip().startswith("#")).lower()
+        if "p" not in header and "pressure" not in path_lower:
+            continue
+        data_lines = [ln.strip() for ln in lines if ln.strip() and not ln.strip().startswith("#")]
+        if not data_lines:
+            continue
+        toks = data_lines[-1].replace("(", " ").replace(")", " ").split()
+        if len(toks) >= 2:
+            val = _finite(toks[1])
+            if val is not None:
+                found[role] = val
+    return found
+
+
+def _parse_postprocessing_force_coeffs(case: Path) -> float | None:
+    """Read latest streamwise drag coefficient Cd from OpenFOAM postProcessing forceCoeffs output."""
+    pp_dir = case / "postProcessing"
+    if not pp_dir.is_dir():
+        return None
+    for dat in sorted(pp_dir.rglob("*.dat")):
+        rel_lower = str(dat.relative_to(pp_dir)).lower()
+        if "forcecoeff" not in rel_lower and "coefficient" not in dat.name.lower():
+            continue
+        try:
+            lines = dat.read_text(encoding="utf-8", errors="replace").splitlines()
+        except OSError:
+            continue
+        cd_col: int | None = None
+        for ln in lines[:20]:
+            s = ln.strip()
+            if s.startswith("#"):
+                cols = s.lstrip("#").split()
+                for idx, col_name in enumerate(cols):
+                    if col_name.lower() == "cd":
+                        cd_col = idx
+                        break
+        data_lines = [ln.strip() for ln in lines if ln.strip() and not ln.strip().startswith("#")]
+        if not data_lines:
+            continue
+        toks = data_lines[-1].split()
+        target_idx = cd_col if cd_col is not None else 2
+        if len(toks) > target_idx:
+            val = _finite(toks[target_idx])
+            if val is not None:
+                return val
+    return None
+
+
+def _select_patch_by_role(patches: Mapping[str, Mapping[str, Any]], role: str) -> tuple[str, float] | None:
+    """Match an inlet or outlet patch with a finite scalar mean value."""
+    tokens = ("inlet", "inflow") if role == "inlet" else ("outlet", "outflow")
+    # Prefer exact patch name first (case-insensitive), then substring match.
+    for name, info in patches.items():
+        if name.lower() == role and info.get("mean") is not None:
+            return name, float(info["mean"])
+    for name, info in patches.items():
+        lname = name.lower()
+        if any(tok in lname for tok in tokens) and info.get("mean") is not None:
+            return name, float(info["mean"])
+    return None
+
+
 def _latest_time_directory(case: Path, required: Sequence[str]) -> Path:
     candidates: list[tuple[float, Path]] = []
     for entry in case.iterdir():
@@ -396,46 +664,118 @@ def _latest_time_directory(case: Path, required: Sequence[str]) -> Path:
 
 
 def compute_openfoam_metrics(case_dir: str | Path) -> dict[str, Any]:
-    """Key CFD metrics from the final time step of a case produced by ``call_openfoam_solver``.
+    """Key CFD metrics from the final time step of a real OpenFOAM case.
 
-    The case is a single structured hex block whose front/back patches are ``empty``, so accuracy is governed by the
-    in-plane cells (nx × ny). Cell labels run x-fastest (``i + nx*(j + ny*k)``), which identifies the layers next to the
-    inlet (i = 0) and the outlet (i = nx-1).
+    Supports both:
+    - Structured ``blockMesh`` cases carrying ``mesh_metadata.json`` (with ``nx, ny, nz`` indexing), and
+    - Arbitrary unstructured 3D CAD meshes (``snappyHexMesh``, ``gmshToFoam``, or custom OpenFOAM archives)
+      without ``mesh_metadata.json``.
     """
     case = Path(case_dir)
-    meta = json.loads((case / "mesh_metadata.json").read_text(encoding="utf-8"))
-    nx, ny, nz = (int(meta["cells"][axis]) for axis in ("nx", "ny", "nz"))
-    time_dir = _latest_time_directory(case, ("U", "p"))
-    velocity = parse_internal_field((time_dir / "U").read_text(encoding="utf-8", errors="replace"))
-    pressure = parse_internal_field((time_dir / "p").read_text(encoding="utf-8", errors="replace"))
-    total = nx * ny * nz
+    p_field_name = "p"
+    try:
+        time_dir = _latest_time_directory(case, ("U", "p"))
+    except KeyResultUnavailable:
+        time_dir = _latest_time_directory(case, ("U", "p_rgh"))
+        p_field_name = "p_rgh"
+
+    u_text = (time_dir / "U").read_text(encoding="utf-8", errors="replace")
+    p_text = (time_dir / p_field_name).read_text(encoding="utf-8", errors="replace")
+    velocity = parse_internal_field(u_text)
+    pressure = parse_internal_field(p_text)
     if velocity["kind"] != "vector" or pressure["kind"] != "scalar":
         raise KeyResultUnavailable("U/p fields have unexpected types")
-    if len(velocity["values"]) not in (1, total) or len(pressure["values"]) not in (1, total):
-        raise KeyResultUnavailable(
-            f"field sizes ({len(velocity['values'])}, {len(pressure['values'])}) do not match the {total}-cell mesh"
-        )
 
     max_velocity = max(math.sqrt(ux * ux + uy * uy + uz * uz) for ux, uy, uz in velocity["values"])
-    p = pressure["values"] if len(pressure["values"]) == total else pressure["values"] * total
-    inlet = [p[nx * (j + ny * k)] for k in range(nz) for j in range(ny)]
-    outlet = [p[nx - 1 + nx * (j + ny * k)] for k in range(nz) for j in range(ny)]
-    drop = sum(inlet) / len(inlet) - sum(outlet) / len(outlet)
-
     pressure_unit = _DIMENSION_UNITS.get(pressure["dimensions"] or (), "")
     if not pressure_unit and pressure["dimensions"]:
         pressure_unit = "dimensions [" + " ".join(str(d) for d in pressure["dimensions"]) + "]"
     velocity_unit = _DIMENSION_UNITS.get(velocity["dimensions"] or (), "m/s")
-    return {
+
+    meta_path = case / "mesh_metadata.json"
+    structured_dims: tuple[int, int, int] | None = None
+    if meta_path.is_file():
+        try:
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+            cells_meta = meta.get("cells") if isinstance(meta, Mapping) else None
+            if isinstance(cells_meta, Mapping) and all(axis in cells_meta for axis in ("nx", "ny", "nz")):
+                structured_dims = (int(cells_meta["nx"]), int(cells_meta["ny"]), int(cells_meta["nz"]))
+        except (OSError, ValueError, TypeError):
+            structured_dims = None
+
+    cd_val = _parse_postprocessing_force_coeffs(case)
+
+    if structured_dims is not None:
+        nx, ny, nz = structured_dims
+        total = nx * ny * nz
+        if len(velocity["values"]) not in (1, total) or len(pressure["values"]) not in (1, total):
+            raise KeyResultUnavailable(
+                f"field sizes ({len(velocity['values'])}, {len(pressure['values'])}) do not match the {total}-cell mesh"
+            )
+        dimension = _detect_case_dimension(case, structured_nz=nz)
+        effective_cells = nx * ny if dimension == 2 else total
+        p = pressure["values"] if len(pressure["values"]) == total else pressure["values"] * total
+        inlet = [p[nx * (j + ny * k)] for k in range(nz) for j in range(ny)]
+        outlet = [p[nx - 1 + nx * (j + ny * k)] for k in range(nz) for j in range(ny)]
+        drop = sum(inlet) / len(inlet) - sum(outlet) / len(outlet)
+        out: dict[str, Any] = {
+            "time_directory": time_dir.name,
+            "mesh": {"nx": nx, "ny": ny, "nz": nz, "cells": effective_cells, "cells_total": total, "dimension": dimension},
+            "max_velocity": {"value": max_velocity, "unit": velocity_unit},
+            "pressure_drop": {
+                "value": drop,
+                "unit": pressure_unit,
+                "definition": "mean(p) of the cell layer at the inlet minus mean(p) of the cell layer at the outlet",
+            },
+        }
+        if cd_val is not None:
+            out["drag_coefficient_cd"] = {"value": cd_val, "unit": ""}
+        return out
+
+    # Unstructured / 3D CAD mesh path (snappyHexMesh, gmshToFoam, or custom OpenFOAM archive)
+    if not velocity["uniform"] and len(velocity["values"]) > 0:
+        total = len(velocity["values"])
+    elif not pressure["uniform"] and len(pressure["values"]) > 0:
+        total = len(pressure["values"])
+    else:
+        poly_cells = _parse_polymesh_n_cells(case)
+        if poly_cells is None or poly_cells <= 0:
+            raise KeyResultUnavailable(
+                "Could not determine unstructured mesh cell count from U/p internalField, polyMesh/owner, or checkMesh.log."
+            )
+        total = poly_cells
+
+    dimension = _detect_case_dimension(case)
+    patches = _parse_boundary_field_patches(p_text)
+    inlet_patch = _select_patch_by_role(patches, "inlet")
+    outlet_patch = _select_patch_by_role(patches, "outlet")
+    if inlet_patch is None or outlet_patch is None:
+        pp_pressures = _parse_postprocessing_patch_pressure(case)
+        if inlet_patch is None and "inlet" in pp_pressures:
+            inlet_patch = ("postProcessing:inlet", pp_pressures["inlet"])
+        if outlet_patch is None and "outlet" in pp_pressures:
+            outlet_patch = ("postProcessing:outlet", pp_pressures["outlet"])
+
+    out = {
         "time_directory": time_dir.name,
-        "mesh": {"nx": nx, "ny": ny, "nz": nz, "cells": nx * ny, "cells_total": total, "dimension": 2},
+        "mesh": {"cells": total, "cells_total": total, "dimension": dimension, "topology": "unstructured"},
         "max_velocity": {"value": max_velocity, "unit": velocity_unit},
-        "pressure_drop": {
-            "value": drop,
-            "unit": pressure_unit,
-            "definition": "mean(p) of the cell layer at the inlet minus mean(p) of the cell layer at the outlet",
-        },
     }
+    if inlet_patch is not None and outlet_patch is not None:
+        inlet_name, inlet_p = inlet_patch
+        outlet_name, outlet_p = outlet_patch
+        out["pressure_drop"] = {
+            "value": inlet_p - outlet_p,
+            "unit": pressure_unit,
+            "definition": f"mean({p_field_name}) on patch '{inlet_name}' minus patch '{outlet_name}'",
+        }
+    else:
+        out["pressure_drop_unavailable_reason"] = (
+            f"unstructured {p_field_name} field has no numeric inlet/outlet boundaryField values or postProcessing patch averages"
+        )
+    if cd_val is not None:
+        out["drag_coefficient_cd"] = {"value": cd_val, "unit": ""}
+    return out
 
 
 # ---------------------------------------------------------------------------------------------
@@ -624,8 +964,24 @@ def refine_payload(physics_type: str, base: Mapping[str, Any], factor: float) ->
     base_size = _finite(base.get("mesh_size"))
     if base_size is None or base_size <= 0:
         raise MeshStudyError("INVALID_MESH", "mesh_size must be a positive number.")
-    payload["mesh_size"] = base_size * factor
-    payload["mesh_settings"] = {"mesh_size": base_size * factor}
+    new_size = base_size * factor
+    payload["mesh_size"] = new_size
+    existing_mesh_settings = payload.get("mesh_settings") if isinstance(payload.get("mesh_settings"), dict) else {}
+    payload["mesh_settings"] = {**existing_mesh_settings, "mesh_size": new_size}
+
+    if bool(base.get("external_aero")):
+        base_aero_size = _finite(base.get("aero_base_cell_size"))
+        if base_aero_size is not None and base_aero_size > 0:
+            payload["aero_base_cell_size"] = base_aero_size * factor
+        else:
+            payload["aero_base_cell_size"] = new_size
+        base_surface_level = int(_finite(base.get("aero_surface_level")) or 2)
+        if factor > 1.0:
+            payload["aero_surface_level"] = max(1, base_surface_level - 1)
+        elif factor < 1.0:
+            payload["aero_surface_level"] = min(4, base_surface_level + 1)
+        else:
+            payload["aero_surface_level"] = base_surface_level
     return payload
 
 

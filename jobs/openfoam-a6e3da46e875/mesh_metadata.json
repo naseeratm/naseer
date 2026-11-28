@@ -1,0 +1,19 @@
+{
+  "dimensions": {
+    "x": 0.4,
+    "y": 0.2,
+    "z": 0.1
+  },
+  "cells": {
+    "nx": 4,
+    "ny": 4,
+    "nz": 1,
+    "total": 16
+  },
+  "patches": [
+    "inlet",
+    "outlet",
+    "walls",
+    "frontAndBack"
+  ]
+}
