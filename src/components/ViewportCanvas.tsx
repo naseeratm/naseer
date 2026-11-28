@@ -20,6 +20,7 @@ interface ViewportCanvasProps {
   cadLoading?: boolean;
   selectedMarkerId?: string | null;
   highlightedPatchName?: string | null;
+  highlightedBodyIndex?: number | null;
   hasSolvedResults?: boolean;
   solvedTaskId?: string | null;
   meshQuality?: MeshQualityReport | null;
@@ -52,6 +53,7 @@ export const ViewportCanvas: React.FC<ViewportCanvasProps> = ({
   cadLoading = false,
   selectedMarkerId = null,
   highlightedPatchName = null,
+  highlightedBodyIndex = null,
   hasSolvedResults = false,
   solvedTaskId = null,
   meshQuality = null,
@@ -100,6 +102,7 @@ export const ViewportCanvas: React.FC<ViewportCanvasProps> = ({
             cadLoading={cadLoading}
             selectedMarkerId={selectedMarkerId}
             highlightedPatchName={highlightedPatchName}
+            highlightedBodyIndex={highlightedBodyIndex}
             hasSolvedResults={hasSolvedResults}
             solvedTaskId={solvedTaskId}
             meshQuality={meshQuality}

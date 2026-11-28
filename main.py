@@ -25,6 +25,14 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator, model_validator
 
+from backend.cad_occ import (
+    HAS_GMSH,
+    CadBackendUnavailableError,
+    CadPreparationError,
+    extract_fluid_volume,
+    inspect_cad_assembly,
+    prepare_multibody_assembly,
+)
 from backend.file_parser import parse_engineering_file
 from backend.volumetric_post import (
     HAS_PYVISTA,
@@ -200,6 +208,9 @@ class SimulationRequest(BaseModel):
     cad_file_b64: Optional[str] = None
     cad_filename: Optional[str] = None
     uploaded_file_path: Optional[str] = None
+    prepared_cad_path: Optional[str] = None
+    cad_unit_override: Optional[str] = None
+    body_assignments: Optional[List[Dict[str, Any]]] = None
     inp_deck: Optional[str] = None
     openfoam_archive_b64: Optional[str] = None
     em_parameters: Optional[Dict[str, Any]] = None
@@ -338,6 +349,9 @@ class MeshGenerateRequest(BaseModel):
     cad_file_b64: Optional[str] = None
     cad_filename: Optional[str] = None
     uploaded_file_path: Optional[str] = None
+    prepared_cad_path: Optional[str] = None
+    cad_unit_override: Optional[str] = None
+    body_assignments: Optional[List[Dict[str, Any]]] = None
     execution_mode: ExecutionMode = ExecutionMode.CELERY
 
 
@@ -347,6 +361,44 @@ class CadPreviewRequest(BaseModel):
     cad_file_b64: Optional[str] = None
     cad_filename: Optional[str] = None
     uploaded_file_path: Optional[str] = None
+    prepared_cad_path: Optional[str] = None
+    cad_unit_override: Optional[str] = None
+
+
+class CadInspectRequest(BaseModel):
+    cad_file_b64: Optional[str] = None
+    cad_stl_b64: Optional[str] = None
+    cad_filename: Optional[str] = Field(default=None, max_length=255)
+    uploaded_file_path: Optional[str] = Field(default=None, max_length=512)
+    prepared_cad_path: Optional[str] = Field(default=None, max_length=512)
+    unit_override: Optional[str] = Field(default=None, max_length=16)
+
+
+class CadExtractFluidRequest(BaseModel):
+    cad_file_b64: Optional[str] = None
+    cad_stl_b64: Optional[str] = None
+    cad_filename: Optional[str] = Field(default=None, max_length=255)
+    uploaded_file_path: Optional[str] = Field(default=None, max_length=512)
+    prepared_cad_path: Optional[str] = Field(default=None, max_length=512)
+    mode: str = Field(..., pattern="^(external_enclosure|internal_cavity)$")
+    unit_override: Optional[str] = Field(default=None, max_length=16)
+    upstream_mult: float = Field(default=3.0, gt=0.0, le=100.0)
+    downstream_mult: float = Field(default=6.0, gt=0.0, le=200.0)
+    lateral_mult: float = Field(default=2.5, gt=0.0, le=100.0)
+    flow_axis: str = Field(default="x", pattern="^[xyzXYZ]$")
+    keep_solids: bool = False
+    seed_point: Optional[List[float]] = Field(default=None, min_length=3, max_length=3)
+
+
+class CadPrepareAssemblyRequest(BaseModel):
+    cad_file_b64: Optional[str] = None
+    cad_stl_b64: Optional[str] = None
+    cad_filename: Optional[str] = Field(default=None, max_length=255)
+    uploaded_file_path: Optional[str] = Field(default=None, max_length=512)
+    prepared_cad_path: Optional[str] = Field(default=None, max_length=512)
+    unit_override: Optional[str] = Field(default=None, max_length=16)
+    conformal_cht: bool = True
+    body_assignments: List[Dict[str, Any]] = Field(default_factory=list)
 
 
 class ParametricSweepRequest(SimulationRequest):
@@ -631,6 +683,7 @@ async def run_simulation(request: SimulationRequest, http_request: Request):
     )
     client_ip = http_request.client.host if http_request.client else "local"
     payload = request.to_solver_payload()
+    _validate_request_cad_paths(payload)
     physics_type = classify_physics(payload)
 
     if payload["execution_mode"] == "celery":
@@ -1418,11 +1471,234 @@ async def verify_job_provenance(task_id: str, http_request: Request):
     }
 
 
+def _resolve_confined_cad_upload_path(raw_path: str) -> Path:
+    """Validate that a CAD upload/prepared path stays strictly inside allowed job directories."""
+    cad_path = Path(raw_path).resolve()
+    allowed_roots = [
+        Path(p).resolve()
+        for p in (
+            os.getenv("NASEER_JOB_DIR"),
+            "/app/jobs",
+            "/shared_jobs",
+            str(Path.cwd() / "jobs"),
+        )
+        if p
+    ]
+    if not any(cad_path == root or cad_path.is_relative_to(root) for root in allowed_roots):
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "success": False,
+                "code": "INVALID_CAD_PATH",
+                "error": "CAD path lies outside allowed job storage.",
+            },
+        )
+    if not cad_path.is_file():
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "success": False,
+                "code": "CAD_FILE_MISSING",
+                "error": "Referenced CAD file does not exist in job storage.",
+            },
+        )
+    return cad_path
+
+
+def _validate_request_cad_paths(payload: Dict[str, Any]) -> None:
+    """Enforce path confinement on any prepared_cad_path or uploaded_file_path supplied by a client."""
+    for key in ("prepared_cad_path", "uploaded_file_path"):
+        val = payload.get(key)
+        if isinstance(val, str) and val.strip():
+            _resolve_confined_cad_upload_path(val.strip())
+
+
+def _resolve_cad_request_bytes(payload: Dict[str, Any]) -> tuple[bytes, str]:
+    """Resolve raw CAD bytes and safe filename from confined path or base64 payload."""
+    _validate_request_cad_paths(payload)
+    prepared_path = payload.get("prepared_cad_path")
+    if isinstance(prepared_path, str) and prepared_path.strip():
+        resolved = _resolve_confined_cad_upload_path(prepared_path.strip())
+        return resolved.read_bytes(), resolved.name
+
+    b64 = payload.get("cad_file_b64") or payload.get("cad_stl_b64")
+    raw_name = Path(str(payload.get("cad_filename") or "model.step")).name
+    if isinstance(b64, str) and b64.strip():
+        clean = b64.split(",", 1)[-1].strip()
+        try:
+            return base64.b64decode(clean), raw_name
+        except Exception as exc:
+            raise HTTPException(
+                status_code=400,
+                detail={"success": False, "code": "INVALID_CAD_BASE64", "error": f"Invalid base64 CAD payload: {exc}"},
+            ) from exc
+
+    upload_path = payload.get("uploaded_file_path")
+    if isinstance(upload_path, str) and upload_path.strip():
+        resolved = _resolve_confined_cad_upload_path(upload_path.strip())
+        return resolved.read_bytes(), resolved.name
+
+    raise HTTPException(
+        status_code=400,
+        detail={"success": False, "code": "MISSING_CAD_INPUT", "error": "Provide cad_file_b64, prepared_cad_path, or uploaded_file_path."},
+    )
+
+
+def _dispatch_cad_occ_operation(
+    celery_task_name: str,
+    task_payload: Dict[str, Any],
+    local_fn: Callable[[], Dict[str, Any]],
+    *,
+    timeout: float = 90.0,
+) -> Dict[str, Any]:
+    """Execute an OpenCASCADE CAD preparation operation locally (if gmsh installed) or via Celery worker."""
+    if HAS_GMSH:
+        try:
+            return local_fn()
+        except CadBackendUnavailableError as exc:
+            raise HTTPException(
+                status_code=503,
+                detail={"success": False, "code": "CAD_BACKEND_UNAVAILABLE", "error": str(exc)},
+            ) from exc
+        except CadPreparationError as exc:
+            raise HTTPException(
+                status_code=422,
+                detail={"success": False, "code": "CAD_PREPARATION_ERROR", "error": str(exc)},
+            ) from exc
+
+    try:
+        task = celery_app.send_task(celery_task_name, args=[task_payload])
+        worker_resp = task.get(timeout=timeout)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "success": False,
+                "code": "CAD_BACKEND_UNAVAILABLE",
+                "error": f"OpenCASCADE CAD preparation worker unavailable: {exc}",
+            },
+        ) from exc
+
+    if not isinstance(worker_resp, dict):
+        raise HTTPException(
+            status_code=500,
+            detail={"success": False, "code": "CAD_PREPARATION_FAILED", "error": "Unexpected worker response."},
+        )
+    if not worker_resp.get("success", False):
+        err_type = worker_resp.get("error_type")
+        err_msg = str(worker_resp.get("error") or "CAD preparation failed.")
+        if err_type == "BACKEND_UNAVAILABLE":
+            raise HTTPException(
+                status_code=503,
+                detail={"success": False, "code": "CAD_BACKEND_UNAVAILABLE", "error": err_msg},
+            )
+        if err_type == "PREPARATION_ERROR":
+            raise HTTPException(
+                status_code=422,
+                detail={"success": False, "code": "CAD_PREPARATION_ERROR", "error": err_msg},
+            )
+        raise HTTPException(
+            status_code=500,
+            detail={"success": False, "code": "CAD_PREPARATION_FAILED", "error": err_msg},
+        )
+    return worker_resp
+
+
+@app.post("/api/cad/inspect")
+async def cad_inspect_endpoint(request: CadInspectRequest, http_request: Request):
+    """Inspect STEP/IGES/BREP physical units, multi-body solids, and mating interfaces via OpenCASCADE."""
+    actor = security_service.resolve_actor(http_request.headers.get("authorization"), require_role="engineer")
+    client_ip = http_request.client.host if http_request.client else "local"
+    payload = request.model_dump(mode="json")
+    raw_bytes, filename = _resolve_cad_request_bytes(payload)
+
+    security_service.record_audit(
+        actor_email=actor["email"],
+        actor_role=actor["role"],
+        workspace_id=actor.get("workspace_id", "ws-default"),
+        action="cad.inspect",
+        resource=f"cad:{filename}",
+        status="allowed",
+        detail={"unit_override": request.unit_override},
+        ip_address=client_ip,
+    )
+
+    res = _dispatch_cad_occ_operation(
+        "universal_dispatcher.cad_inspect_assembly",
+        payload,
+        lambda: inspect_cad_assembly(raw_bytes, filename, unit_override=request.unit_override),
+    )
+    return {"success": True, **{k: v for k, v in res.items() if k != "success"}}
+
+
+@app.post("/api/cad/extract-fluid")
+async def cad_extract_fluid_endpoint(request: CadExtractFluidRequest, http_request: Request):
+    """Extract an external wind-tunnel fluid enclosure or internal fluid cavity via OpenCASCADE Booleans."""
+    actor = security_service.resolve_actor(http_request.headers.get("authorization"), require_role="engineer")
+    client_ip = http_request.client.host if http_request.client else "local"
+    payload = request.model_dump(mode="json")
+    raw_bytes, filename = _resolve_cad_request_bytes(payload)
+
+    security_service.record_audit(
+        actor_email=actor["email"],
+        actor_role=actor["role"],
+        workspace_id=actor.get("workspace_id", "ws-default"),
+        action="cad.extract_fluid",
+        resource=f"cad:{filename}",
+        status="allowed",
+        detail={"mode": request.mode, "unit_override": request.unit_override},
+        ip_address=client_ip,
+    )
+
+    res = _dispatch_cad_occ_operation(
+        "universal_dispatcher.cad_extract_fluid",
+        payload,
+        lambda: extract_fluid_volume(raw_bytes, filename, request.mode, payload),
+        timeout=120.0,
+    )
+    return {"success": True, **{k: v for k, v in res.items() if k != "success"}}
+
+
+@app.post("/api/cad/prepare-assembly")
+async def cad_prepare_assembly_endpoint(request: CadPrepareAssemblyRequest, http_request: Request):
+    """Prepare a multi-body CAD assembly for Conformal CHT (occ.fragment) or Disjoint Contact."""
+    actor = security_service.resolve_actor(http_request.headers.get("authorization"), require_role="engineer")
+    client_ip = http_request.client.host if http_request.client else "local"
+    payload = request.model_dump(mode="json")
+    raw_bytes, filename = _resolve_cad_request_bytes(payload)
+
+    security_service.record_audit(
+        actor_email=actor["email"],
+        actor_role=actor["role"],
+        workspace_id=actor.get("workspace_id", "ws-default"),
+        action="cad.prepare_assembly",
+        resource=f"cad:{filename}",
+        status="allowed",
+        detail={"conformal_cht": request.conformal_cht, "bodies": len(request.body_assignments)},
+        ip_address=client_ip,
+    )
+
+    res = _dispatch_cad_occ_operation(
+        "universal_dispatcher.cad_prepare_multibody",
+        payload,
+        lambda: prepare_multibody_assembly(
+            raw_bytes,
+            filename,
+            body_assignments=request.body_assignments,
+            conformal_cht=request.conformal_cht,
+            unit_override=request.unit_override,
+        ),
+        timeout=120.0,
+    )
+    return {"success": True, **{k: v for k, v in res.items() if k != "success"}}
+
+
 @app.post("/api/cad-preview")
 async def cad_preview_endpoint(request: CadPreviewRequest, http_request: Request):
     """Tessellate uploaded .STL/.STEP/.IGES/.INP/.MSH CAD via real Gmsh/meshio on Docker worker or local."""
     security_service.resolve_actor(http_request.headers.get("authorization"), require_role="engineer")
     payload = request.model_dump(mode="json")
+    _validate_request_cad_paths(payload)
     local_caps = probe_worker_capabilities()
     has_local_gmsh = bool(local_caps.get("gmsh", {}).get("available"))
     try:
@@ -1444,6 +1720,7 @@ async def generate_mesh_endpoint(request: MeshGenerateRequest, http_request: Req
     """Run real Gmsh 2D/3D meshing on parametric domain or uploaded CAD STL/STEP."""
     security_service.resolve_actor(http_request.headers.get("authorization"), require_role="engineer")
     payload = request.model_dump(mode="json")
+    _validate_request_cad_paths(payload)
     if request.execution_mode == ExecutionMode.CELERY:
         task_id = str(uuid.uuid4())
         try:

@@ -103,6 +103,7 @@ export interface Interactive3DViewportProps {
   cadLoading?: boolean;
   selectedMarkerId?: string | null;
   highlightedPatchName?: string | null;
+  highlightedBodyIndex?: number | null;
   fieldMin?: number;
   fieldMax?: number;
   fieldUnit?: string;
@@ -164,6 +165,7 @@ export const Interactive3DViewport: React.FC<Interactive3DViewportProps> = ({
   cadLoading = false,
   selectedMarkerId = null,
   highlightedPatchName = null,
+  highlightedBodyIndex = null,
   fieldMin,
   fieldMax,
   fieldUnit = '',
@@ -1615,37 +1617,56 @@ export const Interactive3DViewport: React.FC<Interactive3DViewportProps> = ({
       ? boundaryMarkers.find((m) => m.id === editingMarkerId)?.patchName
       : undefined;
     const targetPatchName = highlightedPatchName || activeMarkerPatch || null;
-    if (
-      !targetPatchName ||
-      !base.normalizedPositions ||
-      !effectiveVtkData?.triangle_patches ||
-      !effectiveVtkData.patches
-    ) {
+    if (!base.normalizedPositions || !effectiveVtkData?.triangles) {
       return;
     }
 
-    const patchIdx = effectiveVtkData.patches.findIndex(
-      (p) => p.name.toLowerCase() === targetPatchName.toLowerCase() || p.id.toLowerCase() === targetPatchName.toLowerCase(),
-    );
-    if (patchIdx < 0) return;
+    const highlightTris: number[] = [];
+    let highlightColor = 0x22d3ee;
 
-    const patchTris: number[] = [];
-    const triPatches = effectiveVtkData.triangle_patches;
-    const allTris = effectiveVtkData.triangles;
-    for (let t = 0; t < triPatches.length; t++) {
-      if (triPatches[t] === patchIdx && t * 3 + 2 < allTris.length) {
-        patchTris.push(allTris[t * 3], allTris[t * 3 + 1], allTris[t * 3 + 2]);
+    if (
+      targetPatchName &&
+      effectiveVtkData.triangle_patches &&
+      effectiveVtkData.patches
+    ) {
+      const patchIdx = effectiveVtkData.patches.findIndex(
+        (p) =>
+          p.name.toLowerCase() === targetPatchName.toLowerCase() ||
+          p.id.toLowerCase() === targetPatchName.toLowerCase(),
+      );
+      if (patchIdx >= 0) {
+        const triPatches = effectiveVtkData.triangle_patches;
+        const allTris = effectiveVtkData.triangles;
+        for (let t = 0; t < triPatches.length; t++) {
+          if (triPatches[t] === patchIdx && t * 3 + 2 < allTris.length) {
+            highlightTris.push(allTris[t * 3], allTris[t * 3 + 1], allTris[t * 3 + 2]);
+          }
+        }
+      }
+    } else if (
+      highlightedBodyIndex !== null &&
+      highlightedBodyIndex !== undefined &&
+      effectiveVtkData.triangle_bodies
+    ) {
+      highlightColor = 0xf59e0b;
+      const triBodies = effectiveVtkData.triangle_bodies;
+      const allTris = effectiveVtkData.triangles;
+      for (let t = 0; t < triBodies.length; t++) {
+        if (triBodies[t] === highlightedBodyIndex && t * 3 + 2 < allTris.length) {
+          highlightTris.push(allTris[t * 3], allTris[t * 3 + 1], allTris[t * 3 + 2]);
+        }
       }
     }
-    if (patchTris.length === 0) return;
+
+    if (highlightTris.length === 0) return;
 
     const hGeo = new THREE.BufferGeometry();
     hGeo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(base.normalizedPositions), 3));
-    hGeo.setIndex(patchTris);
+    hGeo.setIndex(highlightTris);
     hGeo.computeVertexNormals();
 
     const hMat = new THREE.MeshBasicMaterial({
-      color: 0x22d3ee,
+      color: highlightColor,
       transparent: true,
       opacity: 0.42,
       side: THREE.DoubleSide,
@@ -1657,7 +1678,7 @@ export const Interactive3DViewport: React.FC<Interactive3DViewportProps> = ({
     const hMesh = new THREE.Mesh(hGeo, hMat);
     highlightMeshRef.current = hMesh;
     scene.add(hMesh);
-  }, [highlightedPatchName, editingMarkerId, boundaryMarkers, effectiveVtkData]);
+  }, [highlightedPatchName, highlightedBodyIndex, editingMarkerId, boundaryMarkers, effectiveVtkData]);
 
   // Apply X / Y / Z Interactive Section Slice Clipping Plane (aligned to physical bounds when volumetric data exists)
   useEffect(() => {

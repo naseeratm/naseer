@@ -972,8 +972,40 @@ def _flatten_text(value: Any) -> str:
     return str(value)
 
 
+def _allowed_cad_job_roots() -> List[Path]:
+    candidates = [
+        os.getenv("NASEER_JOB_DIR"),
+        "/app/jobs",
+        "/shared_jobs",
+        str(Path.cwd() / "jobs"),
+    ]
+    roots: List[Path] = []
+    for raw in candidates:
+        if raw:
+            try:
+                roots.append(Path(raw).resolve())
+            except Exception:
+                pass
+    return roots
+
+
+def _resolve_confined_cad_path(raw_path: str) -> Path:
+    resolved = Path(raw_path).resolve()
+    allowed_roots = _allowed_cad_job_roots()
+    if not any(resolved == root or resolved.is_relative_to(root) for root in allowed_roots):
+        raise ValueError("CAD file path lies outside allowed job storage.")
+    if not resolved.is_file():
+        raise FileNotFoundError(f"CAD file not found: {resolved.name}")
+    return resolved
+
+
 def _extract_upload_path_content(data: Mapping[str, Any]) -> Tuple[Optional[bytes], Optional[str]]:
-    """Resolve binary/text attachment from base64 payload or uploaded path in shared workspace."""
+    """Resolve binary/text CAD attachment from confined prepared_cad_path, base64 payload, or uploaded path."""
+    prepared_path = data.get("prepared_cad_path")
+    if isinstance(prepared_path, str) and prepared_path.strip():
+        resolved = _resolve_confined_cad_path(prepared_path.strip())
+        return resolved.read_bytes(), resolved.name
+
     b64 = data.get("cad_stl_b64") or data.get("cad_file_b64")
     filename = str(data.get("cad_filename") or "")
     if isinstance(b64, str) and b64.strip():
@@ -1963,6 +1995,35 @@ def preview_cad_geometry(data: Mapping[str, Any]) -> PhysicsResult:
                 }
         raise RuntimeError("Gmsh Python library is required to tessellate B-Rep STEP/IGES CAD files.") from exc
 
+    if ext in {".step", ".stp", ".iges", ".igs", ".brep"}:
+        _ensure_app_root_on_sys_path()
+        from backend.cad_occ import inspect_cad_assembly
+
+        inspected = inspect_cad_assembly(
+            raw_bytes,
+            cad_filename,
+            unit_override=data.get("cad_unit_override") or data.get("unit_override"),
+        )
+        dims_obj = inspected.get("dimensions") or {}
+        dims_list = [
+            round(max(1e-6, float(dims_obj.get("length", 0.0))), 6),
+            round(max(1e-6, float(dims_obj.get("width", 0.0))), 6),
+            round(max(1e-6, float(dims_obj.get("height", 0.0))), 6),
+        ]
+        return {
+            "status": "PREVIEW_READY",
+            "backend": "gmsh_occ",
+            "filename": cad_filename,
+            "dimensions": dims_list,
+            "unit_info": inspected.get("unit_info"),
+            "body_count": inspected.get("body_count", 0),
+            "bodies": inspected.get("bodies", []),
+            "interface_count": inspected.get("interface_count", 0),
+            "interfaces": inspected.get("interfaces", []),
+            "patches": inspected.get("patches", []),
+            "vtk_data": inspected.get("vtk_data"),
+        }
+
     gmsh.initialize()
     try:
         gmsh.option.setNumber("General.Terminal", 0)
@@ -2144,8 +2205,30 @@ def call_gmsh_mesher(data: Mapping[str, Any]) -> PhysicsResult:
             cad_path = work_dir / f"input{ext}"
             cad_path.write_bytes(raw_bytes)
             if ext in {".step", ".stp", ".iges", ".igs", ".brep"}:
+                _ensure_app_root_on_sys_path()
+                from backend.cad_occ import detect_cad_units
+
+                unit_override = data.get("cad_unit_override") or data.get("unit_override")
+                # Prepared .brep files saved by NASEER cad_occ are already in SI meters
+                if data.get("prepared_cad_path") and not unit_override:
+                    unit_override = "m"
+                unit_info = detect_cad_units(raw_bytes, cad_filename, unit_override=unit_override)
+                _occ_unit_map = {"m": "M", "mm": "MM", "cm": "CM", "in": "IN"}
+                native_occ_unit = _occ_unit_map.get(str(unit_info.get("detected_unit") or "").lower(), "")
+                if ext in {".step", ".stp", ".iges", ".igs"} and native_occ_unit:
+                    try:
+                        gmsh.option.setString("Geometry.OCCTargetUnit", native_occ_unit)
+                    except Exception:
+                        pass
                 gmsh.model.occ.importShapes(str(cad_path))
                 gmsh.model.occ.synchronize()
+                scale_m = float(unit_info.get("scale_to_meters") or 1.0)
+                if abs(scale_m - 1.0) > 1e-12:
+                    occ_ents = gmsh.model.occ.getEntities()
+                    top_dim = max((d for d, _ in occ_ents), default=3)
+                    top_ents = [e for e in occ_ents if e[0] == top_dim] or list(occ_ents)
+                    gmsh.model.occ.dilate(top_ents, 0.0, 0.0, 0.0, scale_m, scale_m, scale_m)
+                    gmsh.model.occ.synchronize()
             else:
                 gmsh.merge(str(cad_path))
                 gmsh.model.mesh.classifySurfaces(40.0 * math.pi / 180.0, True, False, 180.0 * math.pi / 180.0)
@@ -3044,6 +3127,9 @@ def call_openfoam_solver(data: Mapping[str, Any]) -> PhysicsResult:
         cad_mesh_res = call_gmsh_mesher({
             "cad_stl_b64": base64.b64encode(raw_cad).decode("ascii"),
             "cad_filename": cad_filename,
+            "prepared_cad_path": data.get("prepared_cad_path"),
+            "cad_unit_override": data.get("cad_unit_override"),
+            "body_assignments": data.get("body_assignments"),
             "mesh_size": size,
             "dimension": 3,
             "msh_version": 2.2,
@@ -4440,6 +4526,9 @@ def call_calculix_solver(data: Mapping[str, Any]) -> PhysicsResult:
         cad_mesh_res = call_gmsh_mesher({
             "cad_stl_b64": base64.b64encode(raw_cad).decode("ascii"),
             "cad_filename": cad_filename,
+            "prepared_cad_path": data.get("prepared_cad_path"),
+            "cad_unit_override": data.get("cad_unit_override"),
+            "body_assignments": data.get("body_assignments"),
             "mesh_size": mesh_size,
             "dimension": 3,
             "element_order": element_order,
@@ -6477,6 +6566,78 @@ def stop_worker_heartbeat() -> None:
                     client.close()
                 except Exception:
                     pass
+
+
+# ---------------------------------------------------------------------------
+# Directive 06: OpenCASCADE CAD Preparation Worker Tasks (Zero-Mock)
+# ---------------------------------------------------------------------------
+def _run_cad_occ_worker_op(fn: Callable[..., Dict[str, Any]], *args: Any, **kwargs: Any) -> Dict[str, Any]:
+    _ensure_app_root_on_sys_path()
+    from backend.cad_occ import CadBackendUnavailableError, CadPreparationError
+
+    try:
+        res = fn(*args, **kwargs)
+        return {"success": True, **res}
+    except CadBackendUnavailableError as exc:
+        return {"success": False, "error_type": "BACKEND_UNAVAILABLE", "error": str(exc)}
+    except CadPreparationError as exc:
+        return {"success": False, "error_type": "PREPARATION_ERROR", "error": str(exc)}
+    except Exception as exc:
+        return {"success": False, "error_type": "INTERNAL_ERROR", "error": str(exc)}
+
+
+@celery_app.task(name="universal_dispatcher.cad_inspect_assembly", soft_time_limit=90, time_limit=120)
+def cad_inspect_assembly_task(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """Inspect STEP/IGES/BREP units, solids, and mating interfaces via real OpenCASCADE."""
+    _ensure_app_root_on_sys_path()
+    from backend.cad_occ import inspect_cad_assembly
+
+    raw_bytes, cad_filename = _extract_upload_path_content(payload)
+    if not raw_bytes or not cad_filename:
+        return {"success": False, "error_type": "PREPARATION_ERROR", "error": "Missing CAD file content."}
+    return _run_cad_occ_worker_op(
+        inspect_cad_assembly,
+        raw_bytes,
+        cad_filename,
+        unit_override=payload.get("unit_override") or payload.get("cad_unit_override"),
+    )
+
+
+@celery_app.task(name="universal_dispatcher.cad_extract_fluid", soft_time_limit=120, time_limit=150)
+def cad_extract_fluid_task(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """Run real OpenCASCADE Boolean fluid volume extraction (external enclosure or internal cavity)."""
+    _ensure_app_root_on_sys_path()
+    from backend.cad_occ import extract_fluid_volume
+
+    raw_bytes, cad_filename = _extract_upload_path_content(payload)
+    if not raw_bytes or not cad_filename:
+        return {"success": False, "error_type": "PREPARATION_ERROR", "error": "Missing CAD file content."}
+    return _run_cad_occ_worker_op(
+        extract_fluid_volume,
+        raw_bytes,
+        cad_filename,
+        str(payload.get("mode") or "external_enclosure"),
+        payload,
+    )
+
+
+@celery_app.task(name="universal_dispatcher.cad_prepare_multibody", soft_time_limit=120, time_limit=150)
+def cad_prepare_multibody_task(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """Prepare a multi-body CAD assembly (conformal CHT fragment or disjoint CalculiX contact)."""
+    _ensure_app_root_on_sys_path()
+    from backend.cad_occ import prepare_multibody_assembly
+
+    raw_bytes, cad_filename = _extract_upload_path_content(payload)
+    if not raw_bytes or not cad_filename:
+        return {"success": False, "error_type": "PREPARATION_ERROR", "error": "Missing CAD file content."}
+    return _run_cad_occ_worker_op(
+        prepare_multibody_assembly,
+        raw_bytes,
+        cad_filename,
+        body_assignments=payload.get("body_assignments") or [],
+        conformal_cht=bool(payload.get("conformal_cht", True)),
+        unit_override=payload.get("unit_override") or payload.get("cad_unit_override"),
+    )
 
 
 if task_prerun is not None:

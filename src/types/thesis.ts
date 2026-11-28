@@ -219,8 +219,66 @@ export interface VtkFieldPayload {
   node_count?: number;
   triangle_count?: number;
   triangle_patches?: number[];
+  triangle_bodies?: number[];
   patches?: VtkPatchMeta[];
   time_frames?: VtkTimeFrame[];
+  is_preview?: boolean;
+}
+
+export type CadBodyRole = 'solid' | 'fluid' | 'contact_master' | 'contact_slave';
+
+export interface CadUnitInfo {
+  detected_unit: 'mm' | 'cm' | 'm' | 'in' | 'unknown' | string;
+  effective_unit?: string;
+  scale_to_meters: number;
+  source: 'step_header' | 'iges_header' | 'heuristic_warning' | 'unknown' | string;
+  warning?: string | null;
+  override_applied?: boolean;
+  stored_unit?: string;
+}
+
+export interface CadBodySpec {
+  body_id: string;
+  occ_tag: number;
+  name: string;
+  volume_m3: number;
+  center_of_mass: [number, number, number];
+  bbox: [number, number, number, number, number, number];
+  surface_tags: number[];
+  role: CadBodyRole;
+}
+
+export interface CadInterfaceSpec {
+  id: string;
+  body_a: string;
+  body_b: string;
+  gap_m: number;
+  interface_type: 'conformal_shared' | 'near_contact' | string;
+  face_tags_a: number[];
+  face_tags_b: number[];
+}
+
+export interface CadAssemblyInspection {
+  filename: string;
+  unit_info: CadUnitInfo;
+  dimensions: {
+    length: number;
+    width: number;
+    height: number;
+    diagonal: number;
+    bbox: number[];
+    total_volume_m3: number;
+  };
+  body_count: number;
+  bodies: CadBodySpec[];
+  interface_count: number;
+  interfaces: CadInterfaceSpec[];
+  patches: Array<{ id: string; name: string; type?: string; face_count?: number }>;
+  prepared_file_path?: string;
+  prepared_filename?: string;
+  mode?: string;
+  conformal_cht?: boolean;
+  fluid_volume_m3?: number;
 }
 
 export interface MeshQualityReport {

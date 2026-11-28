@@ -19,7 +19,12 @@ import {
   Play,
   Download,
 } from 'lucide-react';
-import { BoundaryCondition, ThesisProject } from '../types/thesis';
+import {
+  BoundaryCondition,
+  CadAssemblyInspection,
+  CadBodyRole,
+  ThesisProject,
+} from '../types/thesis';
 import {
   CFD_BOUNDARY_SUBTYPES,
   ExecutionModeOption,
@@ -94,6 +99,20 @@ interface PropertiesPanelProps {
   meshGenerating?: boolean;
   onGenerateMeshPreview?: () => void;
   cadPatches?: Array<{ id: string; name: string }>;
+  cadAssembly?: CadAssemblyInspection | null;
+  preparedCadPath?: string | null;
+  cadUnitOverride?: string;
+  cadPrepBusy?: boolean;
+  cadPrepError?: string | null;
+  highlightedBodyIndex?: number | null;
+  onChangeCadUnit?: (unit: string) => void;
+  onUpdateCadBodyRole?: (bodyId: string, role: CadBodyRole) => void;
+  onHighlightCadBody?: (index: number | null) => void;
+  onExtractFluidVolume?: (
+    mode: 'external_enclosure' | 'internal_cavity',
+    params?: { upstream_mult?: number; downstream_mult?: number; lateral_mult?: number },
+  ) => void;
+  onPrepareAssembly?: (conformalCht: boolean) => void;
   lastTaskId?: string | null;
   onDownloadCaseArchive?: (taskId: string) => void;
 }
@@ -252,9 +271,24 @@ export const PropertiesPanel: React.FC<PropertiesPanelProps> = ({
   meshGenerating = false,
   onGenerateMeshPreview,
   cadPatches = [],
+  cadAssembly = null,
+  preparedCadPath = null,
+  cadUnitOverride = 'auto',
+  cadPrepBusy = false,
+  cadPrepError = null,
+  highlightedBodyIndex = null,
+  onChangeCadUnit,
+  onUpdateCadBodyRole,
+  onHighlightCadBody,
+  onExtractFluidVolume,
+  onPrepareAssembly,
   lastTaskId = null,
   onDownloadCaseArchive,
 }) => {
+  const [enclosureUpstream, setEnclosureUpstream] = useState<string>('3.0');
+  const [enclosureDownstream, setEnclosureDownstream] = useState<string>('6.0');
+  const [enclosureLateral, setEnclosureLateral] = useState<string>('2.5');
+  const [conformalChtMode, setConformalChtMode] = useState<boolean>(true);
   const fineMesh = project?.meshStudy?.meshLevels?.[2];
   const geometryComponent = project?.workbenchComponents?.find((component) => component.type === 'Geometry');
   const temperatureUnitLabel = inputs.temperatureUnit === 'C' ? '°C' : inputs.temperatureUnit === 'F' ? '°F' : 'K';
@@ -592,6 +626,277 @@ export const PropertiesPanel: React.FC<PropertiesPanelProps> = ({
                 </div>
               ))}
             </div>
+          </Section>
+        )}
+        {(cadAssembly || cadPrepBusy || cadPrepError) && (
+          <Section title="OpenCASCADE CAD Preparation">
+            {cadPrepBusy && (
+              <div className="flex items-center gap-2 rounded border border-cyan-500/30 bg-cyan-950/30 px-2.5 py-2 text-[11px] text-cyan-200">
+                <Loader2 className="h-3.5 w-3.5 animate-spin shrink-0" />
+                <span>Executing OpenCASCADE kernel operation...</span>
+              </div>
+            )}
+
+            {cadPrepError && (
+              <div className="rounded border border-rose-500/40 bg-rose-950/40 p-2 text-[10.5px] leading-snug text-rose-200">
+                <div className="flex items-center gap-1 font-semibold text-rose-300">
+                  <AlertCircle className="h-3.5 w-3.5 shrink-0" />
+                  <span>CAD Preparation Error</span>
+                </div>
+                <p className="mt-1 break-words text-rose-200/90">{cadPrepError}</p>
+              </div>
+            )}
+
+            {cadAssembly && (
+              <div className="space-y-2.5">
+                {/* Detected Units & SI Override */}
+                <div className="rounded border border-slate-800 bg-slate-950 p-2">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-[10.5px] font-medium text-slate-400">Detected CAD Units</span>
+                    <span className="rounded bg-slate-800 px-1.5 py-0.5 font-mono text-[10px] text-cyan-300">
+                      {cadAssembly.unit_info.detected_unit} ({cadAssembly.unit_info.source})
+                    </span>
+                  </div>
+                  <div className="mt-1.5 flex items-center justify-between gap-2">
+                    <label htmlFor="cad-unit-override" className="text-[10.5px] text-slate-400">
+                      Unit Override → SI (m)
+                    </label>
+                    <select
+                      id="cad-unit-override"
+                      value={cadUnitOverride}
+                      disabled={cadPrepBusy || inputsLocked}
+                      onChange={(e) => onChangeCadUnit?.(e.target.value)}
+                      className="rounded border border-slate-700 bg-slate-900 px-2 py-0.5 text-[10.5px] font-mono text-slate-200 focus:border-cyan-500 focus:outline-none"
+                    >
+                      <option value="auto">Auto ({cadAssembly.unit_info.detected_unit})</option>
+                      <option value="m">Meters (m)</option>
+                      <option value="mm">Millimeters (mm)</option>
+                      <option value="cm">Centimeters (cm)</option>
+                      <option value="in">Inches (in)</option>
+                    </select>
+                  </div>
+                  <div className="mt-1 text-[10px] font-mono text-slate-500">
+                    SI Extent: {cadAssembly.dimensions.length.toFixed(4)} × {cadAssembly.dimensions.width.toFixed(4)} × {cadAssembly.dimensions.height.toFixed(4)} m
+                  </div>
+                  {cadAssembly.unit_info.warning && (
+                    <div className="mt-1.5 rounded border border-amber-500/30 bg-amber-500/10 px-2 py-1 text-[10px] text-amber-200">
+                      {cadAssembly.unit_info.warning}
+                    </div>
+                  )}
+                  {preparedCadPath && (
+                    <div className="mt-1.5 rounded border border-emerald-500/30 bg-emerald-500/10 px-2 py-1 text-[10px] font-mono text-emerald-300">
+                      Active Prepared B-Rep: {cadAssembly.prepared_filename || 'prepared.brep'}
+                      {typeof cadAssembly.fluid_volume_m3 === 'number' && (
+                        <span> · V={cadAssembly.fluid_volume_m3.toExponential(3)} m³</span>
+                      )}
+                    </div>
+                  )}
+                </div>
+
+                {/* Multi-Body Assembly Tree */}
+                <div className="space-y-1">
+                  <div className="flex items-center justify-between text-[10.5px] font-medium text-slate-400">
+                    <span>Solid Bodies ({cadAssembly.bodies.length})</span>
+                    {highlightedBodyIndex !== null && (
+                      <button
+                        type="button"
+                        onClick={() => onHighlightCadBody?.(null)}
+                        className="text-[10px] text-cyan-400 hover:text-cyan-300"
+                      >
+                        Clear Highlight
+                      </button>
+                    )}
+                  </div>
+                  <div className="max-h-40 space-y-1 overflow-y-auto">
+                    {cadAssembly.bodies.map((body, idx) => {
+                      const isHighlighted = highlightedBodyIndex === idx;
+                      return (
+                        <div
+                          key={body.body_id}
+                          className={`rounded border p-1.5 text-[10.5px] transition-colors ${
+                            isHighlighted
+                              ? 'border-amber-400/60 bg-amber-500/10'
+                              : 'border-slate-800 bg-slate-950 hover:border-slate-700'
+                          }`}
+                        >
+                          <div className="flex items-center justify-between gap-1.5">
+                            <button
+                              type="button"
+                              onClick={() => onHighlightCadBody?.(isHighlighted ? null : idx)}
+                              className="min-w-0 flex-1 truncate text-left font-mono text-slate-200 hover:text-amber-300"
+                              title="Click to highlight body in 3D viewport"
+                            >
+                              {body.name}
+                            </button>
+                            <span className="shrink-0 font-mono text-[9.5px] text-slate-400">
+                              {body.volume_m3 >= 1e-3
+                                ? `${body.volume_m3.toFixed(4)} m³`
+                                : `${(body.volume_m3 * 1e6).toFixed(2)} cm³`}
+                            </span>
+                          </div>
+                          <div className="mt-1 flex items-center justify-between gap-2">
+                            <span className="text-[9.5px] font-mono text-slate-500">
+                              {body.body_id} · {body.surface_tags.length} faces
+                            </span>
+                            <select
+                              aria-label={`Role for ${body.name}`}
+                              value={body.role}
+                              disabled={cadPrepBusy || inputsLocked}
+                              onChange={(e) => onUpdateCadBodyRole?.(body.body_id, e.target.value as CadBodyRole)}
+                              className="rounded border border-slate-700 bg-slate-900 px-1.5 py-0.5 text-[10px] text-slate-200 focus:border-cyan-500 focus:outline-none"
+                            >
+                              <option value="solid">Solid</option>
+                              <option value="fluid">Fluid</option>
+                              <option value="contact_master">Contact Master</option>
+                              <option value="contact_slave">Contact Slave</option>
+                            </select>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                {/* Detected Mating Interfaces */}
+                {cadAssembly.interfaces.length > 0 && (
+                  <div className="space-y-1">
+                    <div className="text-[10.5px] font-medium text-slate-400">
+                      Mating Interfaces ({cadAssembly.interfaces.length})
+                    </div>
+                    <div className="max-h-28 space-y-1 overflow-y-auto">
+                      {cadAssembly.interfaces.map((iface) => (
+                        <div
+                          key={iface.id}
+                          className="flex items-center justify-between rounded border border-slate-800 bg-slate-950 px-2 py-1 text-[10px] font-mono text-slate-300"
+                        >
+                          <span className="truncate">
+                            {iface.body_a} ↔ {iface.body_b}
+                          </span>
+                          <span className="shrink-0 text-[9.5px] text-cyan-300">
+                            {iface.interface_type === 'conformal_shared' ? 'Conformal' : 'Contact'} · {(iface.gap_m * 1000).toFixed(3)} mm
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* Fluid Volume Extraction (OpenCASCADE Booleans) */}
+                <div className="space-y-1.5 rounded border border-slate-800 bg-slate-950 p-2">
+                  <div className="text-[10.5px] font-semibold text-slate-300">
+                    Fluid Volume Extraction (OCC Boolean)
+                  </div>
+                  <div className="grid grid-cols-3 gap-1.5">
+                    <label className="flex flex-col gap-0.5 text-[9.5px] text-slate-400">
+                      <span>Up (×L)</span>
+                      <input
+                        type="number"
+                        step="0.5"
+                        min="0.5"
+                        value={enclosureUpstream}
+                        disabled={cadPrepBusy || inputsLocked}
+                        onChange={(e) => setEnclosureUpstream(e.target.value)}
+                        className="rounded border border-slate-700 bg-slate-900 px-1.5 py-0.5 font-mono text-[10.5px] text-slate-200"
+                      />
+                    </label>
+                    <label className="flex flex-col gap-0.5 text-[9.5px] text-slate-400">
+                      <span>Down (×L)</span>
+                      <input
+                        type="number"
+                        step="0.5"
+                        min="0.5"
+                        value={enclosureDownstream}
+                        disabled={cadPrepBusy || inputsLocked}
+                        onChange={(e) => setEnclosureDownstream(e.target.value)}
+                        className="rounded border border-slate-700 bg-slate-900 px-1.5 py-0.5 font-mono text-[10.5px] text-slate-200"
+                      />
+                    </label>
+                    <label className="flex flex-col gap-0.5 text-[9.5px] text-slate-400">
+                      <span>Lat (×W)</span>
+                      <input
+                        type="number"
+                        step="0.5"
+                        min="0.5"
+                        value={enclosureLateral}
+                        disabled={cadPrepBusy || inputsLocked}
+                        onChange={(e) => setEnclosureLateral(e.target.value)}
+                        className="rounded border border-slate-700 bg-slate-900 px-1.5 py-0.5 font-mono text-[10.5px] text-slate-200"
+                      />
+                    </label>
+                  </div>
+                  <div className="flex flex-col gap-1.5 pt-1">
+                    <button
+                      type="button"
+                      disabled={cadPrepBusy || inputsLocked}
+                      onClick={() =>
+                        onExtractFluidVolume?.('external_enclosure', {
+                          upstream_mult: Number(enclosureUpstream) || 3.0,
+                          downstream_mult: Number(enclosureDownstream) || 6.0,
+                          lateral_mult: Number(enclosureLateral) || 2.5,
+                        })
+                      }
+                      className="flex items-center justify-center gap-1.5 rounded border border-cyan-500/40 bg-cyan-500/15 px-2.5 py-1.5 text-[11px] font-medium text-cyan-200 hover:bg-cyan-500/25 disabled:opacity-50"
+                    >
+                      <Layers className="h-3.5 w-3.5" />
+                      <span>Extract External Wind Tunnel</span>
+                    </button>
+                    <button
+                      type="button"
+                      disabled={cadPrepBusy || inputsLocked}
+                      onClick={() => onExtractFluidVolume?.('internal_cavity')}
+                      className="flex items-center justify-center gap-1.5 rounded border border-indigo-500/40 bg-indigo-500/15 px-2.5 py-1.5 text-[11px] font-medium text-indigo-200 hover:bg-indigo-500/25 disabled:opacity-50"
+                    >
+                      <Layers className="h-3.5 w-3.5" />
+                      <span>Extract Internal Fluid Cavity</span>
+                    </button>
+                  </div>
+                </div>
+
+                {/* Multi-Body Preparation (when >= 2 bodies) */}
+                {cadAssembly.bodies.length >= 2 && (
+                  <div className="space-y-1.5 rounded border border-slate-800 bg-slate-950 p-2">
+                    <div className="text-[10.5px] font-semibold text-slate-300">
+                      Multi-Body Interface Mode
+                    </div>
+                    <div className="grid grid-cols-2 gap-1">
+                      <button
+                        type="button"
+                        disabled={cadPrepBusy || inputsLocked}
+                        onClick={() => setConformalChtMode(true)}
+                        className={`rounded border px-2 py-1 text-[10px] font-medium ${
+                          conformalChtMode
+                            ? 'border-emerald-500/50 bg-emerald-500/20 text-emerald-200'
+                            : 'border-slate-700 bg-slate-900 text-slate-400 hover:text-slate-200'
+                        }`}
+                      >
+                        Conformal CHT
+                      </button>
+                      <button
+                        type="button"
+                        disabled={cadPrepBusy || inputsLocked}
+                        onClick={() => setConformalChtMode(false)}
+                        className={`rounded border px-2 py-1 text-[10px] font-medium ${
+                          !conformalChtMode
+                            ? 'border-amber-500/50 bg-amber-500/20 text-amber-200'
+                            : 'border-slate-700 bg-slate-900 text-slate-400 hover:text-slate-200'
+                        }`}
+                      >
+                        Disjoint Contact
+                      </button>
+                    </div>
+                    <button
+                      type="button"
+                      disabled={cadPrepBusy || inputsLocked}
+                      onClick={() => onPrepareAssembly?.(conformalChtMode)}
+                      className="flex w-full items-center justify-center gap-1.5 rounded border border-emerald-500/40 bg-emerald-500/15 px-2.5 py-1.5 text-[11px] font-medium text-emerald-200 hover:bg-emerald-500/25 disabled:opacity-50"
+                    >
+                      <ShieldCheck className="h-3.5 w-3.5" />
+                      <span>Prepare Multi-Body Assembly</span>
+                    </button>
+                  </div>
+                )}
+              </div>
+            )}
           </Section>
         )}
         <Section title="CAD Actions">

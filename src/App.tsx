@@ -34,6 +34,8 @@ import {
   ProfileSpec,
   ReferenceDataSet,
   VtkFieldPayload,
+  CadAssemblyInspection,
+  CadBodyRole,
   isCurrentMeshStudy,
 } from './types/thesis';
 import { StudioHeader, HeaderMenuGroup } from './components/StudioHeader';
@@ -146,6 +148,12 @@ export default function App() {
   const [meshPreviewStats, setMeshPreviewStats] = useState<MeshPreviewSummary | null>(null);
   const [cadPatches, setCadPatches] = useState<Array<{ id: string; name: string }>>([]);
   const [cadPreviewLoading, setCadPreviewLoading] = useState<boolean>(false);
+  const [cadAssembly, setCadAssembly] = useState<CadAssemblyInspection | null>(null);
+  const [preparedCadPath, setPreparedCadPath] = useState<string | null>(null);
+  const [cadUnitOverride, setCadUnitOverride] = useState<string>('auto');
+  const [cadPrepBusy, setCadPrepBusy] = useState<boolean>(false);
+  const [cadPrepError, setCadPrepError] = useState<string | null>(null);
+  const [highlightedBodyIndex, setHighlightedBodyIndex] = useState<number | null>(null);
   const [meshGenerating, setMeshGenerating] = useState<boolean>(false);
   const [selectedBoundaryIndex, setSelectedBoundaryIndex] = useState<number | null>(null);
   const [activeStep, setActiveStep] = useState<WorkflowStep>('geometry');
@@ -214,6 +222,9 @@ export default function App() {
     ...(boundaryPatchesPayload.length > 0 ? { boundary_patches: boundaryPatchesPayload } : {}),
     ...(viewportRegionBox ? { region_box: viewportRegionBox } : {}),
     ...(uploadedCadStl ? { cad_file_b64: uploadedCadStl.base64, cad_stl_b64: uploadedCadStl.base64, cad_filename: uploadedCadStl.name } : {}),
+    ...(preparedCadPath ? { prepared_cad_path: preparedCadPath } : {}),
+    ...(cadUnitOverride && cadUnitOverride !== 'auto' ? { cad_unit_override: cadUnitOverride } : {}),
+    ...(cadAssembly && cadAssembly.bodies.length > 0 ? { body_assignments: cadAssembly.bodies.map((b) => ({ body_id: b.body_id, occ_tag: b.occ_tag, name: b.name, role: b.role })) } : {}),
   };
   const simulationType = String(requestBody.simulation_type);
 
@@ -787,6 +798,12 @@ export default function App() {
     setMeshPreviewVtk(null);
     setMeshPreviewStats(null);
     setCadPatches([]);
+    setCadAssembly(null);
+    setPreparedCadPath(null);
+    setCadUnitOverride('auto');
+    setCadPrepBusy(false);
+    setCadPrepError(null);
+    setHighlightedBodyIndex(null);
     setSelectedBoundaryIndex(null);
     setUploadedCadStl(null);
     setSimulationInputs(previous => ({ ...previous, simulationType: defaultSimulationTypeForField(currentProject?.field) }));
@@ -1103,6 +1120,89 @@ export default function App() {
     setTimeout(() => setSaveToast(null), 3500);
   };
 
+  const applyCadOccPayload = (data: any, displayName: string) => {
+    if (data?.vtk_data) {
+      setMeshPreviewVtk(data.vtk_data as VtkFieldPayload);
+    }
+    if (Array.isArray(data?.patches)) {
+      setCadPatches(
+        data.patches.map((p: any, idx: number) => ({
+          id: String(p?.id ?? idx),
+          name: String(p?.name ?? `Face_${idx}`),
+        })),
+      );
+    }
+    const dimsObj = data?.dimensions;
+    if (dimsObj && !Array.isArray(dimsObj) && typeof dimsObj === 'object') {
+      const lx = Number(dimsObj.length);
+      const ly = Number(dimsObj.width);
+      const lz = Number(dimsObj.height);
+      if (Number.isFinite(lx) && lx > 0 && Number.isFinite(ly) && ly > 0 && Number.isFinite(lz) && lz > 0) {
+        setSimulationInputs((prev) => ({
+          ...prev,
+          widthX: lx.toFixed(4),
+          heightY: ly.toFixed(4),
+          depthZ: lz.toFixed(4),
+        }));
+      }
+    } else if (Array.isArray(dimsObj) && dimsObj.length >= 3) {
+      setSimulationInputs((prev) => ({
+        ...prev,
+        widthX: Number(dimsObj[0]).toFixed(4),
+        heightY: Number(dimsObj[1]).toFixed(4),
+        depthZ: Number(dimsObj[2]).toFixed(4),
+      }));
+    }
+
+    if (data?.unit_info && Array.isArray(data?.bodies)) {
+      setCadAssembly({
+        filename: String(data.filename || data.prepared_filename || displayName),
+        unit_info: data.unit_info,
+        dimensions:
+          dimsObj && !Array.isArray(dimsObj)
+            ? dimsObj
+            : {
+                length: Number(dimsObj?.[0] ?? 0),
+                width: Number(dimsObj?.[1] ?? 0),
+                height: Number(dimsObj?.[2] ?? 0),
+                diagonal: 0,
+                bbox: [0, 0, 0, 0, 0, 0],
+                total_volume_m3: 0,
+              },
+        body_count: Number(data.body_count ?? data.bodies.length),
+        bodies: data.bodies,
+        interface_count: Number(data.interface_count ?? (data.interfaces?.length || 0)),
+        interfaces: Array.isArray(data.interfaces) ? data.interfaces : [],
+        patches: Array.isArray(data.patches) ? data.patches : [],
+        prepared_file_path: typeof data.prepared_file_path === 'string' ? data.prepared_file_path : undefined,
+        prepared_filename: typeof data.prepared_filename === 'string' ? data.prepared_filename : undefined,
+        mode: typeof data.mode === 'string' ? data.mode : undefined,
+        conformal_cht: typeof data.conformal_cht === 'boolean' ? data.conformal_cht : undefined,
+        fluid_volume_m3: typeof data.fluid_volume_m3 === 'number' ? data.fluid_volume_m3 : undefined,
+      });
+    }
+    if (typeof data?.prepared_file_path === 'string' && data.prepared_file_path.trim()) {
+      setPreparedCadPath(data.prepared_file_path);
+    }
+    if (currentProject) {
+      const triCount = data?.vtk_data?.triangle_count || 0;
+      const bodyLabel = Array.isArray(data?.bodies) ? ` · ${data.bodies.length} body(s)` : '';
+      setCurrentProject((prev) =>
+        prev
+          ? {
+              ...prev,
+              title: `CAD: ${displayName}`,
+              workbenchComponents: prev.workbenchComponents?.map((wb) =>
+                wb.type === 'Geometry'
+                  ? { ...wb, details: `${displayName} (${triCount} triangles${bodyLabel})` }
+                  : wb,
+              ),
+            }
+          : prev,
+      );
+    }
+  };
+
   const handleCadFileUploaded = async ({
     name,
     base64,
@@ -1114,56 +1214,192 @@ export default function App() {
     stats?: CadModelStats;
   }) => {
     setUploadedCadStl({ name, base64 });
-    if (ext === '.stl') return;
+    setPreparedCadPath(null);
+    setCadPrepError(null);
+    setHighlightedBodyIndex(null);
+    setCadUnitOverride('auto');
+    if (ext === '.stl') {
+      setCadAssembly(null);
+      return;
+    }
 
+    const isOccBrep = ['.step', '.stp', '.iges', '.igs', '.brep'].includes(ext.toLowerCase());
     setCadPreviewLoading(true);
-    setSolverLogs((prev) => [...prev, `[${new Date().toISOString()}] Tessellating CAD (${name}) via Docker /api/cad-preview...`]);
+    setCadPrepBusy(isOccBrep);
+    setSolverLogs((prev) => [
+      ...prev,
+      `[${new Date().toISOString()}] ${isOccBrep ? 'Inspecting B-Rep assembly via OpenCASCADE (/api/cad/inspect)' : 'Tessellating CAD via Docker /api/cad-preview'} (${name})...`,
+    ]);
     try {
-      const response = await fetch('/api/cad-preview', {
+      const endpoint = isOccBrep ? '/api/cad/inspect' : '/api/cad-preview';
+      const response = await fetch(endpoint, {
         method: 'POST',
         headers: withEnterpriseAuthHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify({ cad_file_b64: base64, cad_filename: name }),
       });
       const data = await readJson(response);
       if (!response.ok || data?.success === false || !data?.vtk_data) {
-        throw new Error(extractApiError(data, `CAD preview failed (${response.status})`));
+        throw new Error(extractApiError(data, `CAD inspection failed (${response.status})`));
       }
-      setMeshPreviewVtk(data.vtk_data as VtkFieldPayload);
-      if (Array.isArray(data.patches)) {
-        setCadPatches(data.patches);
-      }
-      if (Array.isArray(data.dimensions) && data.dimensions.length >= 3) {
-        setSimulationInputs((prev) => ({
-          ...prev,
-          widthX: Number(data.dimensions[0]).toFixed(3),
-          heightY: Number(data.dimensions[1]).toFixed(3),
-          depthZ: Number(data.dimensions[2]).toFixed(3),
-        }));
-      }
-      if (currentProject) {
-        setCurrentProject((prev) =>
-          prev
-            ? {
-                ...prev,
-                title: `CAD: ${name}`,
-                workbenchComponents: prev.workbenchComponents?.map((wb) =>
-                  wb.type === 'Geometry'
-                    ? { ...wb, details: `${name} (${data.vtk_data?.triangle_count || 0} triangles via ${data.backend || 'gmsh'})` }
-                    : wb
-                ),
-              }
-            : prev
-        );
-      }
-      setSaveToast(`Loaded ${name} via Docker CAD engine (${data.vtk_data?.triangle_count || 0} surface faces).`);
-      setTimeout(() => setSaveToast(null), 3500);
+      applyCadOccPayload(data, name);
+      const unitTag = data?.unit_info?.effective_unit || data?.unit_info?.detected_unit;
+      setSaveToast(
+        isOccBrep
+          ? `OpenCASCADE inspected ${name}: ${data.body_count ?? 1} solid(s), unit=${unitTag || 'm'} (scaled to SI meters).`
+          : `Loaded ${name} via Docker CAD engine (${data.vtk_data?.triangle_count || 0} surface faces).`,
+      );
+      setTimeout(() => setSaveToast(null), 4000);
     } catch (error) {
-      const msg = error instanceof Error ? error.message : 'CAD preview failed';
+      const msg = error instanceof Error ? error.message : 'CAD inspection failed';
+      setCadPrepError(msg);
       recordIssue(msg);
       setConsoleTab('errors');
       setSolverLogs((prev) => [...prev, `[${new Date().toISOString()}] ERROR: ${msg}`]);
     } finally {
       setCadPreviewLoading(false);
+      setCadPrepBusy(false);
+    }
+  };
+
+  const handleChangeCadUnit = async (nextUnit: string) => {
+    setCadUnitOverride(nextUnit);
+    if (!uploadedCadStl) return;
+    setCadPrepBusy(true);
+    setCadPrepError(null);
+    setPreparedCadPath(null);
+    try {
+      const response = await fetch('/api/cad/inspect', {
+        method: 'POST',
+        headers: withEnterpriseAuthHeaders({ 'Content-Type': 'application/json' }),
+        body: JSON.stringify({
+          cad_file_b64: uploadedCadStl.base64,
+          cad_filename: uploadedCadStl.name,
+          unit_override: nextUnit === 'auto' ? undefined : nextUnit,
+        }),
+      });
+      const data = await readJson(response);
+      if (!response.ok || data?.success === false) {
+        throw new Error(extractApiError(data, `Unit re-scaling failed (${response.status})`));
+      }
+      applyCadOccPayload(data, uploadedCadStl.name);
+      setSolverLogs((prev) => [
+        ...prev,
+        `[${new Date().toISOString()}] Re-scaled CAD (${uploadedCadStl.name}) using unit='${nextUnit}' -> SI meters (scale=${data?.unit_info?.scale_to_meters}).`,
+      ]);
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : 'Failed to re-scale CAD units';
+      setCadPrepError(msg);
+      recordIssue(msg);
+    } finally {
+      setCadPrepBusy(false);
+    }
+  };
+
+  const handleUpdateCadBodyRole = (bodyId: string, role: CadBodyRole) => {
+    setCadAssembly((prev) =>
+      prev
+        ? {
+            ...prev,
+            bodies: prev.bodies.map((b) => (b.body_id === bodyId ? { ...b, role } : b)),
+          }
+        : prev,
+    );
+  };
+
+  const handleExtractFluidVolume = async (
+    mode: 'external_enclosure' | 'internal_cavity',
+    params?: { upstream_mult?: number; downstream_mult?: number; lateral_mult?: number },
+  ) => {
+    if (!uploadedCadStl || cadPrepBusy) return;
+    setCadPrepBusy(true);
+    setCadPrepError(null);
+    setHighlightedBodyIndex(null);
+    setSolverLogs((prev) => [
+      ...prev,
+      `[${new Date().toISOString()}] Running OpenCASCADE Boolean fluid extraction (${mode}) on ${uploadedCadStl.name}...`,
+    ]);
+    try {
+      const response = await fetch('/api/cad/extract-fluid', {
+        method: 'POST',
+        headers: withEnterpriseAuthHeaders({ 'Content-Type': 'application/json' }),
+        body: JSON.stringify({
+          cad_file_b64: uploadedCadStl.base64,
+          cad_filename: uploadedCadStl.name,
+          mode,
+          unit_override: cadUnitOverride === 'auto' ? undefined : cadUnitOverride,
+          ...(params?.upstream_mult ? { upstream_mult: params.upstream_mult } : {}),
+          ...(params?.downstream_mult ? { downstream_mult: params.downstream_mult } : {}),
+          ...(params?.lateral_mult ? { lateral_mult: params.lateral_mult } : {}),
+        }),
+      });
+      const data = await readJson(response);
+      if (!response.ok || data?.success === false) {
+        throw new Error(extractApiError(data, `Fluid volume extraction failed (${response.status})`));
+      }
+      applyCadOccPayload(data, data.prepared_filename || uploadedCadStl.name);
+      const volStr = typeof data.fluid_volume_m3 === 'number' ? `${data.fluid_volume_m3.toExponential(3)} m³` : 'computed';
+      setSolverLogs((prev) => [
+        ...prev,
+        `[${new Date().toISOString()}] Extracted ${mode} fluid domain (${volStr}) -> ${data.prepared_filename}.`,
+      ]);
+      setSaveToast(`Extracted ${mode === 'external_enclosure' ? 'External Wind Tunnel' : 'Internal Fluid Cavity'} (${volStr}).`);
+      setTimeout(() => setSaveToast(null), 4500);
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : 'Fluid volume extraction failed';
+      setCadPrepError(msg);
+      recordIssue(msg);
+      setConsoleTab('errors');
+      setSolverLogs((prev) => [...prev, `[${new Date().toISOString()}] ERROR: ${msg}`]);
+    } finally {
+      setCadPrepBusy(false);
+    }
+  };
+
+  const handlePrepareAssembly = async (conformalCht: boolean) => {
+    if (!uploadedCadStl || !cadAssembly || cadPrepBusy) return;
+    setCadPrepBusy(true);
+    setCadPrepError(null);
+    setHighlightedBodyIndex(null);
+    setSolverLogs((prev) => [
+      ...prev,
+      `[${new Date().toISOString()}] Preparing multi-body assembly (${conformalCht ? 'Conformal CHT occ.fragment' : 'Disjoint CalculiX Contact'}) on ${uploadedCadStl.name}...`,
+    ]);
+    try {
+      const response = await fetch('/api/cad/prepare-assembly', {
+        method: 'POST',
+        headers: withEnterpriseAuthHeaders({ 'Content-Type': 'application/json' }),
+        body: JSON.stringify({
+          cad_file_b64: uploadedCadStl.base64,
+          cad_filename: uploadedCadStl.name,
+          unit_override: cadUnitOverride === 'auto' ? undefined : cadUnitOverride,
+          conformal_cht: conformalCht,
+          body_assignments: cadAssembly.bodies.map((b) => ({
+            body_id: b.body_id,
+            occ_tag: b.occ_tag,
+            name: b.name,
+            role: b.role,
+          })),
+        }),
+      });
+      const data = await readJson(response);
+      if (!response.ok || data?.success === false) {
+        throw new Error(extractApiError(data, `Multi-body assembly preparation failed (${response.status})`));
+      }
+      applyCadOccPayload(data, data.prepared_filename || uploadedCadStl.name);
+      setSolverLogs((prev) => [
+        ...prev,
+        `[${new Date().toISOString()}] Prepared ${data.body_count} bodies (${data.interface_count} interface(s), ${conformalCht ? 'Conformal CHT' : 'Disjoint Contact'}) -> ${data.prepared_filename}.`,
+      ]);
+      setSaveToast(`Prepared multi-body assembly (${conformalCht ? 'Conformal CHT' : 'Disjoint Contact'}).`);
+      setTimeout(() => setSaveToast(null), 4500);
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : 'Multi-body assembly preparation failed';
+      setCadPrepError(msg);
+      recordIssue(msg);
+      setConsoleTab('errors');
+      setSolverLogs((prev) => [...prev, `[${new Date().toISOString()}] ERROR: ${msg}`]);
+    } finally {
+      setCadPrepBusy(false);
     }
   };
 
@@ -1192,6 +1428,20 @@ export default function App() {
         bodyPayload.cad_file_b64 = uploadedCadStl.base64;
         bodyPayload.cad_stl_b64 = uploadedCadStl.base64;
         bodyPayload.cad_filename = uploadedCadStl.name;
+      }
+      if (preparedCadPath) {
+        bodyPayload.prepared_cad_path = preparedCadPath;
+      }
+      if (cadUnitOverride && cadUnitOverride !== 'auto') {
+        bodyPayload.cad_unit_override = cadUnitOverride;
+      }
+      if (cadAssembly && cadAssembly.bodies.length > 0) {
+        bodyPayload.body_assignments = cadAssembly.bodies.map((b) => ({
+          body_id: b.body_id,
+          occ_tag: b.occ_tag,
+          name: b.name,
+          role: b.role,
+        }));
       }
 
       const res = await fetch('/api/mesh-generate', {
@@ -1614,6 +1864,7 @@ export default function App() {
                   ? currentProject.boundaryConditions?.[selectedBoundaryIndex]?.patchName ?? null
                   : null
               }
+              highlightedBodyIndex={highlightedBodyIndex}
               hasSolvedResults={hasCompletedRun}
               solvedTaskId={activeSolverTaskId}
               meshQuality={currentProject.normalizedSolverResult?.meshQuality ?? null}
@@ -1767,6 +2018,17 @@ export default function App() {
           meshGenerating={meshGenerating}
           onGenerateMeshPreview={handleGenerateMeshPreview}
           cadPatches={cadPatches}
+          cadAssembly={cadAssembly}
+          preparedCadPath={preparedCadPath}
+          cadUnitOverride={cadUnitOverride}
+          cadPrepBusy={cadPrepBusy}
+          cadPrepError={cadPrepError}
+          highlightedBodyIndex={highlightedBodyIndex}
+          onChangeCadUnit={handleChangeCadUnit}
+          onUpdateCadBodyRole={handleUpdateCadBodyRole}
+          onHighlightCadBody={setHighlightedBodyIndex}
+          onExtractFluidVolume={handleExtractFluidVolume}
+          onPrepareAssembly={handlePrepareAssembly}
           lastTaskId={activeSolverTaskId}
           onDownloadCaseArchive={handleDownloadSolverCase}
           actions={{

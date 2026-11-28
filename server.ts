@@ -177,7 +177,7 @@ async function proxyToFastApi(req: Request, res: Response) {
   }
 }
 app.use(
-  ['/api/run-simulation', '/api/jobs', '/api/verify-job', '/api/provenance', '/api/mesh-study', '/api/mesh-generate', '/api/cad-preview', '/api/parametric-sweep', '/api/vv', '/api/telemetry', '/api/enterprise'],
+  ['/api/run-simulation', '/api/jobs', '/api/verify-job', '/api/provenance', '/api/mesh-study', '/api/mesh-generate', '/api/cad-preview', '/api/cad', '/api/parametric-sweep', '/api/vv', '/api/telemetry', '/api/enterprise'],
   proxyToFastApi,
 );
 // Stream raw multipart/form-data CAD/mesh uploads directly to FastAPI without JSON buffering
