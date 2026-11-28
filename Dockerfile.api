@@ -31,7 +31,7 @@ COPY docker-requirements.txt ./requirements.txt
 RUN pip install --upgrade pip setuptools wheel && \
     pip install -r requirements.txt
 
-COPY main.py physics_solver.py universal_dispatcher.py cae_repository.py vv_regression_suite.py enterprise_security.py object_storage.py ./
+COPY main.py file_parser.py physics_solver.py universal_dispatcher.py cae_repository.py vv_regression_suite.py enterprise_security.py object_storage.py ./
 COPY backend/ ./backend/
 COPY deploy/ ./deploy/
 COPY docker-compose.enterprise.yml ./

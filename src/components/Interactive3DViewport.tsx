@@ -30,8 +30,10 @@ import {
   Camera,
   Ruler,
   X,
+  AlertTriangle,
+  Layers,
 } from 'lucide-react';
-import { VtkFieldPayload } from '../types/thesis';
+import { MeshQualityReport, VtkFieldPayload } from '../types/thesis';
 import { ColormapType, getColorFromColormap } from '../utils/physicsEngine';
 import {
   computeVtkSurfaceGradientMagnitude,
@@ -43,6 +45,12 @@ import {
   formatLengthSI,
   PhysicalPoint3D,
 } from '../utils/geometryMeasure';
+import {
+  DecodedNSR1Payload,
+  VolumetricPostMetadata,
+  fetchBinaryPostPayload,
+  fetchVolumetricPostMetadata,
+} from '../utils/binaryMeshDecoder';
 
 export type ShadingMode = 'shaded' | 'contour' | 'wireframe';
 export type ViewPreset = 'iso' | 'front' | 'top' | 'right';
@@ -87,6 +95,8 @@ export interface Interactive3DViewportProps {
   showMeshOverlay?: boolean;
   activePreset?: ViewPreset;
   hasSolvedResults?: boolean;
+  solvedTaskId?: string | null;
+  meshQuality?: MeshQualityReport | null;
   vtkData?: VtkFieldPayload | null;
   meshPreviewVtk?: VtkFieldPayload | null;
   integrals?: Record<string, number | string> | null;
@@ -146,6 +156,8 @@ export const Interactive3DViewport: React.FC<Interactive3DViewportProps> = ({
   showMeshOverlay: propShowMesh = false,
   activePreset: propPreset = 'iso',
   hasSolvedResults = false,
+  solvedTaskId = null,
+  meshQuality = null,
   vtkData = null,
   meshPreviewVtk = null,
   integrals = null,
@@ -181,6 +193,10 @@ export const Interactive3DViewport: React.FC<Interactive3DViewportProps> = ({
   const regionBoxGroupRef = useRef<THREE.Group | null>(null);
   const sliceGuideGroupRef = useRef<THREE.Group | null>(null);
   const measureGroupRef = useRef<THREE.Group | null>(null);
+  const volumetricSliceMeshRef = useRef<THREE.Mesh | null>(null);
+  const volumetricStreamlinesGroupRef = useRef<THREE.Group | null>(null);
+  const volumetricIsoMeshRef = useRef<THREE.Mesh | null>(null);
+  const badCellsGroupRef = useRef<THREE.Group | null>(null);
 
   // Base geometry arrays for non-destructive Deformation Scaling & Iso-Thresholding
   const baseVtkRef = useRef<{
@@ -236,6 +252,27 @@ export const Interactive3DViewport: React.FC<Interactive3DViewportProps> = ({
   const [isPlaying, setIsPlaying] = useState<boolean>(false);
   const [showSurfaceGradient, setShowSurfaceGradient] = useState<boolean>(false);
   const [isExportingPng, setIsExportingPng] = useState<boolean>(false);
+
+  // Directive 05: Real Headless PyVista/VTK Volumetric Binary Post-Processing State
+  const [postMetadata, setPostMetadata] = useState<VolumetricPostMetadata | null>(null);
+  const [volumetricStatus, setVolumetricStatus] = useState<string | null>(null);
+  const [useBinarySurface, setUseBinarySurface] = useState<boolean>(true);
+  const [binarySurfacePayload, setBinarySurfacePayload] = useState<DecodedNSR1Payload | null>(null);
+  const [isLoadingBinarySurface, setIsLoadingBinarySurface] = useState<boolean>(false);
+  const [isLoadingVolSlice, setIsLoadingVolSlice] = useState<boolean>(false);
+  const [volSliceError, setVolSliceError] = useState<string | null>(null);
+  const [streamlineSeeds, setStreamlineSeeds] = useState<24 | 48 | 96>(48);
+  const [isLoadingStreamlines, setIsLoadingStreamlines] = useState<boolean>(false);
+  const [streamlinesError, setStreamlinesError] = useState<string | null>(null);
+  const [streamlineCount, setStreamlineCount] = useState<number>(0);
+  const [showVolumetricIso, setShowVolumetricIso] = useState<boolean>(false);
+  const [volumetricIsoField, setVolumetricIsoField] = useState<string>('');
+  const [volumetricIsoValue, setVolumetricIsoValue] = useState<number>(0);
+  const [isLoadingVolIso, setIsLoadingVolIso] = useState<boolean>(false);
+  const [volIsoError, setVolIsoError] = useState<string | null>(null);
+  const [volIsoTriangles, setVolIsoTriangles] = useState<number>(0);
+  const [showBadCells, setShowBadCells] = useState<boolean>(false);
+  const [transformRevision, setTransformRevision] = useState<number>(0);
 
   // Interactive 3D Ruler / Distance Measurement Tool (Zero-Mock physical coordinates)
   const [measureP1, setMeasureP1] = useState<PhysicalPoint3D | null>(null);
@@ -301,11 +338,176 @@ export const Interactive3DViewport: React.FC<Interactive3DViewportProps> = ({
   const isCFD = !isFEA && !isThermal;
 
   const availableScalars = useMemo(() => {
-    if (!effectiveVtkData?.scalars) return [];
-    return Object.entries(effectiveVtkData.scalars)
-      .filter(([, arr]) => Array.isArray(arr) && arr.length > 0)
-      .map(([key]) => key);
-  }, [effectiveVtkData]);
+    const keys: string[] = [];
+    if (effectiveVtkData?.scalars) {
+      for (const [key, arr] of Object.entries(effectiveVtkData.scalars)) {
+        if (Array.isArray(arr) && arr.length > 0 && !keys.includes(key)) {
+          keys.push(key);
+        }
+      }
+    }
+    if (postMetadata?.available && Array.isArray(postMetadata.scalars)) {
+      for (const s of postMetadata.scalars) {
+        if (s?.name && !keys.includes(s.name)) {
+          keys.push(s.name);
+        }
+      }
+    }
+    return keys;
+  }, [effectiveVtkData, postMetadata]);
+
+  const hasVolumetricVectors = Boolean(postMetadata?.available && postMetadata.vectors.length > 0);
+  const hasVolumetricScalars = Boolean(postMetadata?.available && postMetadata.scalars.length > 0);
+  const activeVolumetricScalarName = useMemo(() => {
+    if (!postMetadata?.available || postMetadata.scalars.length === 0) return undefined;
+    const exact = postMetadata.scalars.find((s) => s.name === selectedScalarKey);
+    if (exact) return exact.name;
+    const lowerSel = (selectedScalarKey || '').toLowerCase();
+    const fuzzy = postMetadata.scalars.find(
+      (s) => s.name.toLowerCase() === lowerSel || (lowerSel === 'velocity' && s.name === 'U_mag'),
+    );
+    return fuzzy ? fuzzy.name : postMetadata.scalars[0].name;
+  }, [postMetadata, selectedScalarKey]);
+
+  const activeIsoScalarMeta = useMemo(() => {
+    if (!postMetadata?.available || postMetadata.scalars.length === 0) return null;
+    return (
+      postMetadata.scalars.find((s) => s.name === volumetricIsoField) ||
+      postMetadata.scalars.find((s) => s.name === activeVolumetricScalarName) ||
+      postMetadata.scalars[0]
+    );
+  }, [postMetadata, volumetricIsoField, activeVolumetricScalarName]);
+
+  const badCellPoints = useMemo<number[][]>(() => {
+    if (Array.isArray(meshQuality?.bad_cell_points) && meshQuality.bad_cell_points.length > 0) {
+      return meshQuality.bad_cell_points;
+    }
+    if (Array.isArray(postMetadata?.bad_cell_points) && postMetadata.bad_cell_points.length > 0) {
+      return postMetadata.bad_cell_points;
+    }
+    return [];
+  }, [meshQuality, postMetadata]);
+
+  // Query real volumetric post-processing capabilities ONCE per solved taskId
+  useEffect(() => {
+    setBinarySurfacePayload(null);
+    setVolSliceError(null);
+    setStreamlinesError(null);
+    setVolIsoError(null);
+    setStreamlineCount(0);
+    setVolIsoTriangles(0);
+    setShowVolumetricIso(false);
+
+    if (!solvedTaskId || !hasSolvedResults) {
+      setPostMetadata(null);
+      setVolumetricStatus(null);
+      return;
+    }
+
+    const controller = new AbortController();
+    let cancelled = false;
+    setVolumetricStatus('Checking volumetric dataset…');
+
+    fetchVolumetricPostMetadata(solvedTaskId, controller.signal)
+      .then((meta) => {
+        if (cancelled) return;
+        setPostMetadata(meta);
+        if (meta.available) {
+          setVolumetricStatus(null);
+          if (meta.scalars.length > 0) {
+            const defScalar = meta.scalars[0];
+            setVolumetricIsoField(defScalar.name);
+            setVolumetricIsoValue(0.5 * (defScalar.min + defScalar.max));
+          }
+        } else {
+          setVolumetricStatus(
+            meta.error || 'Volumetric post-processing unavailable for this job — using surface VTK fallback.',
+          );
+        }
+      })
+      .catch((err) => {
+        if (cancelled || (err instanceof DOMException && err.name === 'AbortError')) return;
+        setPostMetadata({ available: false, scalars: [], vectors: [] });
+        setVolumetricStatus(
+          err instanceof Error
+            ? `Volumetric engine unavailable (${err.message}) — using surface VTK fallback.`
+            : 'Volumetric engine unavailable — using surface VTK fallback.',
+        );
+      });
+
+    return () => {
+      cancelled = true;
+      controller.abort();
+    };
+  }, [solvedTaskId, hasSolvedResults]);
+
+  // Keep iso-value clamped inside selected volumetric field's real [min, max]
+  useEffect(() => {
+    if (!activeIsoScalarMeta) return;
+    setVolumetricIsoValue((prev) => {
+      if (!Number.isFinite(prev) || prev < activeIsoScalarMeta.min || prev > activeIsoScalarMeta.max) {
+        return 0.5 * (activeIsoScalarMeta.min + activeIsoScalarMeta.max);
+      }
+      return prev;
+    });
+  }, [activeIsoScalarMeta?.name, activeIsoScalarMeta?.min, activeIsoScalarMeta?.max]);
+
+  // Fetch full-resolution NSR1 binary outer surface mesh when volumetric metadata is available
+  useEffect(() => {
+    if (
+      !solvedTaskId ||
+      !hasSolvedResults ||
+      !postMetadata?.available ||
+      !useBinarySurface ||
+      timeFrames.length > 1 ||
+      showSurfaceGradient
+    ) {
+      setBinarySurfacePayload(null);
+      setIsLoadingBinarySurface(false);
+      return;
+    }
+
+    const controller = new AbortController();
+    let cancelled = false;
+    setIsLoadingBinarySurface(true);
+
+    const fieldQuery = activeVolumetricScalarName
+      ? `?field=${encodeURIComponent(activeVolumetricScalarName)}`
+      : '';
+    fetchBinaryPostPayload(
+      `/api/jobs/${encodeURIComponent(solvedTaskId)}/post/surface.bin${fieldQuery}`,
+      { method: 'GET', signal: controller.signal },
+    )
+      .then((payload) => {
+        if (cancelled) return;
+        if (payload.points && payload.points.length >= 9 && payload.indices && payload.indices.length >= 3) {
+          setBinarySurfacePayload(payload);
+        } else {
+          setBinarySurfacePayload(null);
+        }
+      })
+      .catch((err) => {
+        if (cancelled || (err instanceof DOMException && err.name === 'AbortError')) return;
+        // Honest fallback to existing JSON vtkData surface
+        setBinarySurfacePayload(null);
+      })
+      .finally(() => {
+        if (!cancelled) setIsLoadingBinarySurface(false);
+      });
+
+    return () => {
+      cancelled = true;
+      controller.abort();
+    };
+  }, [
+    solvedTaskId,
+    hasSolvedResults,
+    postMetadata?.available,
+    useBinarySurface,
+    activeVolumetricScalarName,
+    timeFrames.length,
+    showSurfaceGradient,
+  ]);
 
   useEffect(() => {
     if (availableScalars.length === 0) {
@@ -324,6 +526,20 @@ export const Interactive3DViewport: React.FC<Interactive3DViewportProps> = ({
     const rawArr = activeKey && effectiveVtkData?.scalars ? effectiveVtkData.scalars[activeKey] : undefined;
     const rawUnit = (effectiveVtkData?.units && effectiveVtkData.units[activeKey]) || fieldUnit || '';
     if (!rawArr || rawArr.length === 0) {
+      const volMetaScalar = postMetadata?.available
+        ? postMetadata.scalars.find((s) => s.name === activeKey) || postMetadata.scalars[0]
+        : undefined;
+      if (volMetaScalar) {
+        return {
+          key: volMetaScalar.name,
+          displayKey: volMetaScalar.name,
+          values: undefined as number[] | undefined,
+          min: volMetaScalar.min,
+          max: volMetaScalar.max,
+          unit: rawUnit,
+          isGradient: false,
+        };
+      }
       return {
         key: activeKey,
         displayKey: activeKey,
@@ -378,7 +594,7 @@ export const Interactive3DViewport: React.FC<Interactive3DViewportProps> = ({
       unit: rawUnit,
       isGradient: false,
     };
-  }, [effectiveVtkData, selectedScalarKey, availableScalars, fieldMin, fieldMax, fieldUnit, showSurfaceGradient]);
+  }, [effectiveVtkData, postMetadata, selectedScalarKey, availableScalars, fieldMin, fieldMax, fieldUnit, showSurfaceGradient]);
 
   // Real 3D Plot Over Line sampler directly on solved VTK nodal coordinates & scalars (zero fabrication)
   const lineProfileData = useMemo(() => {
@@ -665,6 +881,14 @@ export const Interactive3DViewport: React.FC<Interactive3DViewportProps> = ({
     const measureGroup = new THREE.Group();
     measureGroupRef.current = measureGroup;
     scene.add(measureGroup);
+
+    const volumetricStreamlinesGroup = new THREE.Group();
+    volumetricStreamlinesGroupRef.current = volumetricStreamlinesGroup;
+    scene.add(volumetricStreamlinesGroup);
+
+    const badCellsGroup = new THREE.Group();
+    badCellsGroupRef.current = badCellsGroup;
+    scene.add(badCellsGroup);
 
     const controls = new OrbitControls(camera, renderer.domElement);
     controlsRef.current = controls;
@@ -960,6 +1184,27 @@ export const Interactive3DViewport: React.FC<Interactive3DViewportProps> = ({
       container.removeEventListener('mousemove', onPointerMove);
       resizeObserver.disconnect();
       if (animFrameRef.current) cancelAnimationFrame(animFrameRef.current);
+      if (volumetricSliceMeshRef.current) {
+        scene.remove(volumetricSliceMeshRef.current);
+        volumetricSliceMeshRef.current.geometry.dispose();
+        (volumetricSliceMeshRef.current.material as THREE.Material).dispose();
+        volumetricSliceMeshRef.current = null;
+      }
+      if (volumetricIsoMeshRef.current) {
+        scene.remove(volumetricIsoMeshRef.current);
+        volumetricIsoMeshRef.current.geometry.dispose();
+        (volumetricIsoMeshRef.current.material as THREE.Material).dispose();
+        volumetricIsoMeshRef.current = null;
+      }
+      for (const grp of [volumetricStreamlinesGroup, badCellsGroup]) {
+        while (grp.children.length > 0) {
+          const ch = grp.children[0] as THREE.Mesh | THREE.Line | THREE.Points;
+          grp.remove(ch);
+          if (ch.geometry) ch.geometry.dispose();
+          if (Array.isArray(ch.material)) ch.material.forEach((m) => m.dispose());
+          else if (ch.material) ch.material.dispose();
+        }
+      }
       envTarget.dispose();
       renderer.dispose();
       controls.dispose();
@@ -980,6 +1225,116 @@ export const Interactive3DViewport: React.FC<Interactive3DViewportProps> = ({
     }
     while (vecGroup.children.length > 0) {
       vecGroup.remove(vecGroup.children[0]);
+    }
+
+    const canUseBinarySurface =
+      Boolean(
+        useBinarySurface &&
+        binarySurfacePayload?.points &&
+        binarySurfacePayload.points.length >= 9 &&
+        binarySurfacePayload.indices &&
+        binarySurfacePayload.indices.length >= 3 &&
+        timeFrames.length <= 1 &&
+        !showSurfaceGradient &&
+        !(effectiveVtkData?.vectors?.displacement && effectiveVtkData.vectors.displacement.length > 0),
+      );
+
+    if (canUseBinarySurface && binarySurfacePayload?.points && binarySurfacePayload?.indices) {
+      if (customMeshRef.current) {
+        customMeshRef.current.visible = false;
+      }
+
+      const rawPts = binarySurfacePayload.points;
+      const posCopy = new Float32Array(rawPts.length);
+      posCopy.set(rawPts);
+
+      const geom = new THREE.BufferGeometry();
+      geom.setAttribute('position', new THREE.BufferAttribute(posCopy, 3));
+      geom.setIndex(new THREE.BufferAttribute(new Uint32Array(binarySurfacePayload.indices), 1));
+
+      geom.computeBoundingBox();
+      const bbox = geom.boundingBox!;
+      const center = new THREE.Vector3();
+      bbox.getCenter(center);
+      const size = new THREE.Vector3();
+      bbox.getSize(size);
+      const maxDim = Math.max(size.x, size.y, size.z) || 1;
+      const scale = 5.0 / maxDim;
+
+      geom.translate(-center.x, -center.y, -center.z);
+      geom.scale(scale, scale, scale);
+
+      if (binarySurfacePayload.normals && binarySurfacePayload.normals.length === rawPts.length) {
+        const normCopy = new Float32Array(binarySurfacePayload.normals.length);
+        normCopy.set(binarySurfacePayload.normals);
+        geom.setAttribute('normal', new THREE.BufferAttribute(normCopy, 3));
+      } else {
+        geom.computeVertexNormals();
+      }
+
+      const baseNormPos = new Float32Array((geom.attributes.position as THREE.BufferAttribute).array);
+      const binScalars = binarySurfacePayload.scalars;
+      const metaField = typeof binarySurfacePayload.metadata.field === 'string'
+        ? binarySurfacePayload.metadata.field
+        : activeVolumetricScalarName || scalarRange.displayKey || '';
+      const metaMin = typeof binarySurfacePayload.metadata.min === 'number' ? binarySurfacePayload.metadata.min : scalarRange.min ?? 0;
+      const metaMax = typeof binarySurfacePayload.metadata.max === 'number' ? binarySurfacePayload.metadata.max : scalarRange.max ?? 1;
+      const span = metaMax - metaMin;
+      const vertexCount = rawPts.length / 3;
+
+      let useVertexColors = false;
+      let scalarNumberArr: number[] | undefined;
+      if (binScalars && binScalars.length >= vertexCount) {
+        const colors = new Float32Array(vertexCount * 3);
+        scalarNumberArr = new Array<number>(vertexCount);
+        for (let i = 0; i < vertexCount; i++) {
+          const val = binScalars[i];
+          scalarNumberArr[i] = val;
+          const t = span > 1e-12 && Number.isFinite(val) ? (val - metaMin) / span : 0.5;
+          const [r, g, b] = getColorFromColormap(t, colormap);
+          colors[i * 3] = r / 255;
+          colors[i * 3 + 1] = g / 255;
+          colors[i * 3 + 2] = b / 255;
+        }
+        geom.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+        useVertexColors = true;
+      }
+
+      baseVtkRef.current = {
+        normalizedPositions: baseNormPos,
+        triangles: Array.from(binarySurfacePayload.indices),
+        scalars: scalarNumberArr,
+        displacement: undefined,
+        scale,
+      };
+      vtkTransformRef.current = {
+        center,
+        scale,
+        scalarKey: metaField,
+        scalars: scalarNumberArr,
+        unit: scalarRange.unit || '',
+      };
+
+      const shellTransparent = (showStreamlines && hasVolumetricVectors) || showVolumetricIso;
+      const mat = new THREE.MeshStandardMaterial({
+        vertexColors: useVertexColors,
+        color: useVertexColors ? 0xffffff : 0x60a5fa,
+        roughness: 0.42,
+        metalness: 0.25,
+        wireframe: showWireframe,
+        side: THREE.DoubleSide,
+        transparent: shellTransparent,
+        opacity: shellTransparent ? 0.22 : 1.0,
+        depthWrite: !shellTransparent,
+      });
+
+      const vtkMesh = new THREE.Mesh(geom, mat);
+      vtkMesh.castShadow = !shellTransparent;
+      vtkMesh.receiveShadow = true;
+      vtkMeshRef.current = vtkMesh;
+      scene.add(vtkMesh);
+      setTransformRevision((r) => r + 1);
+      return;
     }
 
     if (
@@ -1057,6 +1412,7 @@ export const Interactive3DViewport: React.FC<Interactive3DViewportProps> = ({
       useVertexColors = true;
     }
 
+    const shellTransparent = (showStreamlines && hasVolumetricVectors) || showVolumetricIso;
     const mat = new THREE.MeshStandardMaterial({
       vertexColors: useVertexColors,
       color: useVertexColors ? 0xffffff : meshPreviewVtk ? 0x94a3b8 : 0x60a5fa,
@@ -1064,15 +1420,20 @@ export const Interactive3DViewport: React.FC<Interactive3DViewportProps> = ({
       metalness: 0.25,
       wireframe: showWireframe,
       side: THREE.DoubleSide,
+      transparent: shellTransparent,
+      opacity: shellTransparent ? 0.22 : 1.0,
+      depthWrite: !shellTransparent,
     });
 
     const vtkMesh = new THREE.Mesh(geom, mat);
-    vtkMesh.castShadow = true;
+    vtkMesh.castShadow = !shellTransparent;
     vtkMesh.receiveShadow = true;
     vtkMeshRef.current = vtkMesh;
     scene.add(vtkMesh);
+    setTransformRevision((r) => r + 1);
 
-    if (showStreamlines && effectiveVtkData.vectors) {
+    // Keep surface ArrowHelper vectors ONLY as fallback when no volumetric vector dataset is available
+    if (showStreamlines && !hasVolumetricVectors && effectiveVtkData.vectors) {
       const vecKey = Object.keys(effectiveVtkData.vectors).find(
         (k) => Array.isArray(effectiveVtkData.vectors?.[k]) && effectiveVtkData.vectors[k].length >= vertexCount * 3,
       );
@@ -1095,7 +1456,23 @@ export const Interactive3DViewport: React.FC<Interactive3DViewportProps> = ({
         }
       }
     }
-  }, [effectiveVtkData, meshPreviewVtk, selectedScalarKey, availableScalars, scalarRange, colormap, showWireframe, showStreamlines]);
+  }, [
+    effectiveVtkData,
+    meshPreviewVtk,
+    selectedScalarKey,
+    availableScalars,
+    scalarRange,
+    colormap,
+    showWireframe,
+    showStreamlines,
+    useBinarySurface,
+    binarySurfacePayload,
+    hasVolumetricVectors,
+    showVolumetricIso,
+    timeFrames.length,
+    showSurfaceGradient,
+    activeVolumetricScalarName,
+  ]);
 
   // Apply non-destructive Structural Deformation Scale & Iso-Threshold Filtering
   useEffect(() => {
@@ -1282,12 +1659,16 @@ export const Interactive3DViewport: React.FC<Interactive3DViewportProps> = ({
     scene.add(hMesh);
   }, [highlightedPatchName, editingMarkerId, boundaryMarkers, effectiveVtkData]);
 
-  // Apply X / Y / Z Interactive Section Slice Clipping Plane
+  // Apply X / Y / Z Interactive Section Slice Clipping Plane (aligned to physical bounds when volumetric data exists)
   useEffect(() => {
     const guideGroup = sliceGuideGroupRef.current;
     if (guideGroup) {
       while (guideGroup.children.length > 0) {
-        guideGroup.remove(guideGroup.children[0]);
+        const ch = guideGroup.children[0] as THREE.Mesh | THREE.LineSegments;
+        guideGroup.remove(ch);
+        if (ch.geometry) ch.geometry.dispose();
+        if (Array.isArray(ch.material)) ch.material.forEach((m) => m.dispose());
+        else if (ch.material) ch.material.dispose();
       }
     }
 
@@ -1299,7 +1680,24 @@ export const Interactive3DViewport: React.FC<Interactive3DViewportProps> = ({
           : sliceAxis === 'y'
           ? new THREE.Vector3(0, -1, 0)
           : new THREE.Vector3(0, 0, -1);
-      const coord = sliceOffset * 2.5;
+
+      const clampedRatio = Math.max(-0.98, Math.min(0.98, sliceOffset));
+      let coord = sliceOffset * 2.5;
+      if (postMetadata?.bounds && postMetadata.bounds.length === 6) {
+        const tf = vtkTransformRef.current;
+        const [xmin, xmax, ymin, ymax, zmin, zmax] = postMetadata.bounds;
+        if (sliceAxis === 'x') {
+          const physX = 0.5 * (xmin + xmax) + 0.5 * (xmax - xmin) * clampedRatio;
+          coord = (physX - tf.center.x) * tf.scale;
+        } else if (sliceAxis === 'y') {
+          const physY = 0.5 * (ymin + ymax) + 0.5 * (ymax - ymin) * clampedRatio;
+          coord = (physY - tf.center.y) * tf.scale;
+        } else {
+          const physZ = 0.5 * (zmin + zmax) + 0.5 * (zmax - zmin) * clampedRatio;
+          coord = (physZ - tf.center.z) * tf.scale;
+        }
+      }
+
       const plane = new THREE.Plane(normal, coord);
       planes.push(plane);
 
@@ -1308,7 +1706,7 @@ export const Interactive3DViewport: React.FC<Interactive3DViewportProps> = ({
         const pMat = new THREE.MeshBasicMaterial({
           color: 0x38bdf8,
           transparent: true,
-          opacity: 0.1,
+          opacity: 0.08,
           side: THREE.DoubleSide,
           depthWrite: false,
         });
@@ -1346,7 +1744,452 @@ export const Interactive3DViewport: React.FC<Interactive3DViewportProps> = ({
       m.clippingPlanes = planes;
       m.needsUpdate = true;
     }
-  }, [sliceAxis, sliceOffset, effectiveVtkData]);
+  }, [sliceAxis, sliceOffset, effectiveVtkData, postMetadata, transformRevision]);
+
+  // Directive 05: True Filled Volumetric Section Slice (POST /api/jobs/{taskId}/post/slice.bin)
+  useEffect(() => {
+    const scene = sceneRef.current;
+    const clearSliceMesh = () => {
+      if (volumetricSliceMeshRef.current && scene) {
+        scene.remove(volumetricSliceMeshRef.current);
+        volumetricSliceMeshRef.current.geometry.dispose();
+        (volumetricSliceMeshRef.current.material as THREE.Material).dispose();
+        volumetricSliceMeshRef.current = null;
+      }
+    };
+
+    if (sliceAxis === 'off' || !solvedTaskId || !hasSolvedResults || !postMetadata?.available || !scene) {
+      clearSliceMesh();
+      setIsLoadingVolSlice(false);
+      setVolSliceError(null);
+      return;
+    }
+
+    const controller = new AbortController();
+    let cancelled = false;
+    setIsLoadingVolSlice(true);
+    setVolSliceError(null);
+
+    const timer = window.setTimeout(() => {
+      const clampedRatio = Math.max(-0.98, Math.min(0.98, sliceOffset));
+      fetchBinaryPostPayload(`/api/jobs/${encodeURIComponent(solvedTaskId)}/post/slice.bin`, {
+        method: 'POST',
+        body: JSON.stringify({
+          axis: sliceAxis,
+          offset_ratio: clampedRatio,
+          field: activeVolumetricScalarName,
+        }),
+        signal: controller.signal,
+      })
+        .then((decoded) => {
+          if (cancelled || !sceneRef.current) return;
+          if (!decoded.points || decoded.points.length < 9 || !decoded.indices || decoded.indices.length < 3) {
+            clearSliceMesh();
+            setVolSliceError('Slice intersected zero volumetric cells at this offset.');
+            return;
+          }
+
+          clearSliceMesh();
+
+          const tf = vtkTransformRef.current;
+          const rawPts = decoded.points;
+          const vertexCount = rawPts.length / 3;
+          const normPts = new Float32Array(rawPts.length);
+          for (let i = 0; i < vertexCount; i++) {
+            normPts[i * 3] = (rawPts[i * 3] - tf.center.x) * tf.scale;
+            normPts[i * 3 + 1] = (rawPts[i * 3 + 1] - tf.center.y) * tf.scale;
+            normPts[i * 3 + 2] = (rawPts[i * 3 + 2] - tf.center.z) * tf.scale;
+          }
+
+          const geom = new THREE.BufferGeometry();
+          geom.setAttribute('position', new THREE.BufferAttribute(normPts, 3));
+          geom.setIndex(new THREE.BufferAttribute(new Uint32Array(decoded.indices), 1));
+          geom.computeVertexNormals();
+
+          const sliceScalars = decoded.scalars;
+          const sMin =
+            scalarRange.min !== undefined
+              ? scalarRange.min
+              : typeof decoded.metadata.min === 'number'
+                ? decoded.metadata.min
+                : 0;
+          const sMax =
+            scalarRange.max !== undefined
+              ? scalarRange.max
+              : typeof decoded.metadata.max === 'number'
+                ? decoded.metadata.max
+                : 1;
+          const span = sMax - sMin;
+
+          let useColors = false;
+          if (sliceScalars && sliceScalars.length >= vertexCount) {
+            const colors = new Float32Array(vertexCount * 3);
+            for (let i = 0; i < vertexCount; i++) {
+              const v = sliceScalars[i];
+              const t = span > 1e-12 && Number.isFinite(v) ? (v - sMin) / span : 0.5;
+              const [r, g, b] = getColorFromColormap(t, colormap);
+              colors[i * 3] = r / 255;
+              colors[i * 3 + 1] = g / 255;
+              colors[i * 3 + 2] = b / 255;
+            }
+            geom.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+            useColors = true;
+          }
+
+          const mat = new THREE.MeshStandardMaterial({
+            vertexColors: useColors,
+            color: useColors ? 0xffffff : 0x38bdf8,
+            roughness: 0.45,
+            metalness: 0.1,
+            side: THREE.DoubleSide,
+            polygonOffset: true,
+            polygonOffsetFactor: -1,
+            polygonOffsetUnits: -1,
+          });
+          const sliceMesh = new THREE.Mesh(geom, mat);
+          sliceMesh.renderOrder = 5;
+          volumetricSliceMeshRef.current = sliceMesh;
+          sceneRef.current.add(sliceMesh);
+        })
+        .catch((err) => {
+          if (cancelled || (err instanceof DOMException && err.name === 'AbortError')) return;
+          clearSliceMesh();
+          setVolSliceError(err instanceof Error ? err.message : 'Failed to compute volumetric slice.');
+        })
+        .finally(() => {
+          if (!cancelled) setIsLoadingVolSlice(false);
+        });
+    }, 180);
+
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+      controller.abort();
+    };
+  }, [
+    sliceAxis,
+    sliceOffset,
+    solvedTaskId,
+    hasSolvedResults,
+    postMetadata?.available,
+    activeVolumetricScalarName,
+    colormap,
+    scalarRange.min,
+    scalarRange.max,
+    transformRevision,
+  ]);
+
+  // Directive 05: True 3D Volumetric RK4 Streamlines (POST /api/jobs/{taskId}/post/streamlines.bin)
+  useEffect(() => {
+    const group = volumetricStreamlinesGroupRef.current;
+    const clearStreamlines = () => {
+      if (!group) return;
+      while (group.children.length > 0) {
+        const ch = group.children[0] as THREE.Line;
+        group.remove(ch);
+        if (ch.geometry) ch.geometry.dispose();
+        if (Array.isArray(ch.material)) ch.material.forEach((m) => m.dispose());
+        else if (ch.material) ch.material.dispose();
+      }
+    };
+
+    if (!showStreamlines || !solvedTaskId || !hasSolvedResults || !hasVolumetricVectors || !group) {
+      clearStreamlines();
+      setIsLoadingStreamlines(false);
+      setStreamlinesError(null);
+      setStreamlineCount(0);
+      return;
+    }
+
+    const controller = new AbortController();
+    let cancelled = false;
+    setIsLoadingStreamlines(true);
+    setStreamlinesError(null);
+
+    const vectorFieldName = postMetadata?.vectors[0]?.name;
+    fetchBinaryPostPayload(`/api/jobs/${encodeURIComponent(solvedTaskId)}/post/streamlines.bin`, {
+      method: 'POST',
+      body: JSON.stringify({
+        vector_field: vectorFieldName,
+        n_seeds: streamlineSeeds,
+      }),
+      signal: controller.signal,
+    })
+      .then((decoded) => {
+        if (cancelled || !volumetricStreamlinesGroupRef.current) return;
+        clearStreamlines();
+
+        const pts = decoded.points;
+        const counts = decoded.line_counts;
+        const speeds = decoded.speed_scalars;
+        if (!pts || !counts || counts.length === 0) {
+          setStreamlinesError('No physical streamlines generated from velocity field.');
+          setStreamlineCount(0);
+          return;
+        }
+
+        const tf = vtkTransformRef.current;
+        const sMin = typeof decoded.metadata.min === 'number' ? decoded.metadata.min : 0;
+        const sMax = typeof decoded.metadata.max === 'number' ? decoded.metadata.max : 1;
+        const span = sMax - sMin;
+
+        let cursor = 0;
+        let renderedLines = 0;
+        for (let l = 0; l < counts.length; l++) {
+          const nPts = counts[l];
+          if (nPts < 2 || (cursor + nPts) * 3 > pts.length) {
+            cursor += nPts;
+            continue;
+          }
+          const linePos = new Float32Array(nPts * 3);
+          const lineCol = new Float32Array(nPts * 3);
+          for (let k = 0; k < nPts; k++) {
+            const pIdx = cursor + k;
+            linePos[k * 3] = (pts[pIdx * 3] - tf.center.x) * tf.scale;
+            linePos[k * 3 + 1] = (pts[pIdx * 3 + 1] - tf.center.y) * tf.scale;
+            linePos[k * 3 + 2] = (pts[pIdx * 3 + 2] - tf.center.z) * tf.scale;
+            const spd = speeds && pIdx < speeds.length ? speeds[pIdx] : 0.5 * (sMin + sMax);
+            const t = span > 1e-12 && Number.isFinite(spd) ? (spd - sMin) / span : 0.5;
+            const [r, g, b] = getColorFromColormap(t, colormap);
+            lineCol[k * 3] = r / 255;
+            lineCol[k * 3 + 1] = g / 255;
+            lineCol[k * 3 + 2] = b / 255;
+          }
+          cursor += nPts;
+
+          const lineGeo = new THREE.BufferGeometry();
+          lineGeo.setAttribute('position', new THREE.BufferAttribute(linePos, 3));
+          lineGeo.setAttribute('color', new THREE.BufferAttribute(lineCol, 3));
+          const lineMat = new THREE.LineBasicMaterial({
+            vertexColors: true,
+            transparent: true,
+            opacity: 0.94,
+          });
+          const lineObj = new THREE.Line(lineGeo, lineMat);
+          lineObj.renderOrder = 10;
+          volumetricStreamlinesGroupRef.current.add(lineObj);
+          renderedLines += 1;
+        }
+        setStreamlineCount(renderedLines);
+      })
+      .catch((err) => {
+        if (cancelled || (err instanceof DOMException && err.name === 'AbortError')) return;
+        clearStreamlines();
+        setStreamlineCount(0);
+        setStreamlinesError(err instanceof Error ? err.message : 'Failed to compute 3D RK4 streamlines.');
+      })
+      .finally(() => {
+        if (!cancelled) setIsLoadingStreamlines(false);
+      });
+
+    return () => {
+      cancelled = true;
+      controller.abort();
+    };
+  }, [
+    showStreamlines,
+    streamlineSeeds,
+    solvedTaskId,
+    hasSolvedResults,
+    hasVolumetricVectors,
+    postMetadata,
+    colormap,
+    transformRevision,
+  ]);
+
+  // Directive 05: True 3D Volumetric Iso-Surface (POST /api/jobs/{taskId}/post/isosurface.bin)
+  useEffect(() => {
+    const scene = sceneRef.current;
+    const clearIsoMesh = () => {
+      if (volumetricIsoMeshRef.current && scene) {
+        scene.remove(volumetricIsoMeshRef.current);
+        volumetricIsoMeshRef.current.geometry.dispose();
+        (volumetricIsoMeshRef.current.material as THREE.Material).dispose();
+        volumetricIsoMeshRef.current = null;
+      }
+    };
+
+    if (
+      !showVolumetricIso ||
+      !solvedTaskId ||
+      !hasSolvedResults ||
+      !activeIsoScalarMeta ||
+      !scene
+    ) {
+      clearIsoMesh();
+      setIsLoadingVolIso(false);
+      setVolIsoError(null);
+      setVolIsoTriangles(0);
+      return;
+    }
+
+    const controller = new AbortController();
+    let cancelled = false;
+    setIsLoadingVolIso(true);
+    setVolIsoError(null);
+
+    const timer = window.setTimeout(() => {
+      fetchBinaryPostPayload(`/api/jobs/${encodeURIComponent(solvedTaskId)}/post/isosurface.bin`, {
+        method: 'POST',
+        body: JSON.stringify({
+          field: activeIsoScalarMeta.name,
+          iso_value: volumetricIsoValue,
+        }),
+        signal: controller.signal,
+      })
+        .then((decoded) => {
+          if (cancelled || !sceneRef.current) return;
+          if (!decoded.points || decoded.points.length < 9 || !decoded.indices || decoded.indices.length < 3) {
+            clearIsoMesh();
+            setVolIsoTriangles(0);
+            setVolIsoError('Iso-surface produced zero triangles at this threshold.');
+            return;
+          }
+
+          clearIsoMesh();
+
+          const tf = vtkTransformRef.current;
+          const rawPts = decoded.points;
+          const vertexCount = rawPts.length / 3;
+          const normPts = new Float32Array(rawPts.length);
+          for (let i = 0; i < vertexCount; i++) {
+            normPts[i * 3] = (rawPts[i * 3] - tf.center.x) * tf.scale;
+            normPts[i * 3 + 1] = (rawPts[i * 3 + 1] - tf.center.y) * tf.scale;
+            normPts[i * 3 + 2] = (rawPts[i * 3 + 2] - tf.center.z) * tf.scale;
+          }
+
+          const geom = new THREE.BufferGeometry();
+          geom.setAttribute('position', new THREE.BufferAttribute(normPts, 3));
+          geom.setIndex(new THREE.BufferAttribute(new Uint32Array(decoded.indices), 1));
+          if (decoded.normals && decoded.normals.length === rawPts.length) {
+            const normCopy = new Float32Array(decoded.normals.length);
+            normCopy.set(decoded.normals);
+            geom.setAttribute('normal', new THREE.BufferAttribute(normCopy, 3));
+          } else {
+            geom.computeVertexNormals();
+          }
+
+          const span = activeIsoScalarMeta.max - activeIsoScalarMeta.min;
+          const t = span > 1e-12 ? (volumetricIsoValue - activeIsoScalarMeta.min) / span : 0.5;
+          const [r, g, b] = getColorFromColormap(t, colormap);
+          const isoColor = new THREE.Color(r / 255, g / 255, b / 255);
+
+          const mat = new THREE.MeshStandardMaterial({
+            color: isoColor,
+            roughness: 0.28,
+            metalness: 0.18,
+            side: THREE.DoubleSide,
+          });
+          const isoMesh = new THREE.Mesh(geom, mat);
+          isoMesh.renderOrder = 8;
+          volumetricIsoMeshRef.current = isoMesh;
+          sceneRef.current.add(isoMesh);
+          setVolIsoTriangles(Math.floor(decoded.indices.length / 3));
+        })
+        .catch((err) => {
+          if (cancelled || (err instanceof DOMException && err.name === 'AbortError')) return;
+          clearIsoMesh();
+          setVolIsoTriangles(0);
+          setVolIsoError(err instanceof Error ? err.message : 'Failed to extract 3D iso-surface.');
+        })
+        .finally(() => {
+          if (!cancelled) setIsLoadingVolIso(false);
+        });
+    }, 200);
+
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+      controller.abort();
+    };
+  }, [
+    showVolumetricIso,
+    volumetricIsoValue,
+    activeIsoScalarMeta,
+    solvedTaskId,
+    hasSolvedResults,
+    colormap,
+    transformRevision,
+  ]);
+
+  // Auto semi-transparent outer domain shell when volumetric streamlines or 3D iso-surface is active
+  useEffect(() => {
+    const mesh = vtkMeshRef.current;
+    if (!mesh) return;
+    const mat = mesh.material as THREE.MeshStandardMaterial;
+    const makeTransparent = (showStreamlines && hasVolumetricVectors) || showVolumetricIso;
+    mat.transparent = makeTransparent;
+    mat.opacity = makeTransparent ? 0.22 : 1.0;
+    mat.depthWrite = !makeTransparent;
+    mesh.castShadow = !makeTransparent;
+    mat.needsUpdate = true;
+  }, [showStreamlines, hasVolumetricVectors, showVolumetricIso, transformRevision]);
+
+  // Directive 05: Red 3D checkMesh Bad-Cell Highlighter (strictly real solver bad_cell_points)
+  useEffect(() => {
+    const group = badCellsGroupRef.current;
+    if (!group) return;
+    while (group.children.length > 0) {
+      const ch = group.children[0] as THREE.Points | THREE.InstancedMesh | THREE.Mesh;
+      group.remove(ch);
+      if (ch.geometry) ch.geometry.dispose();
+      if (Array.isArray(ch.material)) ch.material.forEach((m) => m.dispose());
+      else if (ch.material) ch.material.dispose();
+    }
+
+    if (!showBadCells || badCellPoints.length === 0) return;
+
+    const tf = vtkTransformRef.current;
+    const count = badCellPoints.length;
+    const pos = new Float32Array(count * 3);
+    for (let i = 0; i < count; i++) {
+      const p = badCellPoints[i];
+      pos[i * 3] = ((p[0] ?? 0) - tf.center.x) * tf.scale;
+      pos[i * 3 + 1] = ((p[1] ?? 0) - tf.center.y) * tf.scale;
+      pos[i * 3 + 2] = ((p[2] ?? 0) - tf.center.z) * tf.scale;
+    }
+
+    // Crisp glowing crimson point cloud
+    const ptGeo = new THREE.BufferGeometry();
+    ptGeo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+    const ptMat = new THREE.PointsMaterial({
+      color: 0xff2a55,
+      size: 0.16,
+      sizeAttenuation: true,
+      transparent: true,
+      opacity: 0.95,
+      depthTest: false,
+    });
+    const ptCloud = new THREE.Points(ptGeo, ptMat);
+    ptCloud.renderOrder = 30;
+    group.add(ptCloud);
+
+    // Instanced red spheres (up to 400 markers) so individual bad cells stand out cleanly in 3D space
+    const sphereLimit = Math.min(count, 400);
+    const sphereStep = Math.max(1, Math.floor(count / sphereLimit));
+    const sampledIndices: number[] = [];
+    for (let i = 0; i < count && sampledIndices.length < sphereLimit; i += sphereStep) {
+      sampledIndices.push(i);
+    }
+    const sphereGeo = new THREE.SphereGeometry(0.055, 10, 10);
+    const sphereMat = new THREE.MeshBasicMaterial({
+      color: 0xf43f5e,
+      transparent: true,
+      opacity: 0.82,
+      depthTest: false,
+    });
+    const inst = new THREE.InstancedMesh(sphereGeo, sphereMat, sampledIndices.length);
+    const dummy = new THREE.Object3D();
+    for (let idx = 0; idx < sampledIndices.length; idx++) {
+      const k = sampledIndices[idx];
+      dummy.position.set(pos[k * 3], pos[k * 3 + 1], pos[k * 3 + 2]);
+      dummy.updateMatrix();
+      inst.setMatrixAt(idx, dummy.matrix);
+    }
+    inst.instanceMatrix.needsUpdate = true;
+    inst.renderOrder = 29;
+    group.add(inst);
+  }, [showBadCells, badCellPoints, transformRevision]);
 
   // Sync wireframe toggle without rebuilding CAD STL
   useEffect(() => {
@@ -1797,15 +2640,36 @@ export const Interactive3DViewport: React.FC<Interactive3DViewportProps> = ({
           <Grid3X3 className="h-3.5 w-3.5" />
         </button>
 
-        {(isCFD || hasVectors) && (
+        {(isCFD || hasVectors || hasVolumetricVectors) && (
           <button
-            title="Toggle 3D Velocity Vector Arrows"
+            title={
+              hasVolumetricVectors
+                ? 'Toggle 3D Volumetric RK4 Streamlines (Real PyVista/VTK integration)'
+                : 'Toggle 3D Velocity Vector Arrows'
+            }
             onClick={() => setShowStreamlines(!showStreamlines)}
-            className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-lg transition-colors ${
+            className={`flex h-7 shrink-0 items-center justify-center gap-1 px-2 rounded-lg text-xs font-semibold transition-colors ${
               showStreamlines ? 'bg-emerald-500/25 text-emerald-300 ring-1 ring-emerald-500/50' : 'text-slate-400 hover:bg-slate-800 hover:text-white'
             }`}
           >
-            <Wind className="h-3.5 w-3.5" />
+            {isLoadingStreamlines ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Wind className="h-3.5 w-3.5" />}
+            {hasVolumetricVectors && <span className="text-[10.5px]">Streamlines</span>}
+          </button>
+        )}
+
+        {badCellPoints.length > 0 && (
+          <button
+            type="button"
+            title="Highlight Real OpenFOAM checkMesh Non-Orthogonal / Skewed Bad Cells in 3D"
+            onClick={() => setShowBadCells((v) => !v)}
+            className={`flex h-7 shrink-0 items-center gap-1 px-2 rounded-lg text-xs font-semibold transition-colors ${
+              showBadCells
+                ? 'bg-rose-600 text-white ring-1 ring-rose-400 shadow-sm'
+                : 'bg-rose-950/70 border border-rose-500/50 text-rose-300 hover:bg-rose-900/70'
+            }`}
+          >
+            <AlertTriangle className="h-3.5 w-3.5" />
+            <span>Bad Cells ({badCellPoints.length})</span>
           </button>
         )}
 
@@ -1859,9 +2723,59 @@ export const Interactive3DViewport: React.FC<Interactive3DViewportProps> = ({
         </button>
       </div>
 
-      {/* Post-Processing Dock: Section Slice Planes, Iso-Threshold, Deformation Scale */}
+      {/* Volumetric Operation Live Status Badges (Zero-Mock) */}
+      {(isLoadingVolSlice || isLoadingStreamlines || isLoadingVolIso || isLoadingBinarySurface) && (
+        <div className="pointer-events-none absolute left-1/2 top-14 z-20 flex -translate-x-1/2 items-center gap-2 rounded-lg border border-sky-500/40 bg-slate-950/95 px-3 py-1.5 font-mono text-[11px] text-sky-200 shadow-xl">
+          <Loader2 className="h-3.5 w-3.5 animate-spin text-sky-400" />
+          <span>
+            {isLoadingVolSlice
+              ? 'Computing volumetric slice…'
+              : isLoadingStreamlines
+                ? `Integrating 3D RK4 streamlines (${streamlineSeeds} seeds)…`
+                : isLoadingVolIso
+                  ? 'Extracting 3D iso-surface…'
+                  : 'Streaming full-resolution binary surface…'}
+          </span>
+        </div>
+      )}
+
+      {/* checkMesh Bad-Cell Quality HUD Badge */}
+      {showBadCells && badCellPoints.length > 0 && (
+        <div className="absolute left-1/2 top-14 z-20 flex -translate-x-1/2 items-center gap-3 rounded-lg border border-rose-500/60 bg-rose-950/95 px-3 py-1.5 font-mono text-[10.5px] text-rose-100 shadow-2xl">
+          <span className="flex items-center gap-1.5 font-bold text-rose-300">
+            <AlertTriangle className="h-3.5 w-3.5 text-rose-400" />
+            checkMesh Bad Cells: {badCellPoints.length.toLocaleString()}
+          </span>
+          <span className="text-rose-500/70">|</span>
+          <span>
+            Max Non-Ortho:{' '}
+            <strong className="text-white">
+              {typeof meshQuality?.max_non_orthogonality === 'number'
+                ? `${meshQuality.max_non_orthogonality.toFixed(2)}°`
+                : 'N/A'}
+            </strong>
+          </span>
+          <span className="text-rose-500/70">|</span>
+          <span>
+            Max Skewness:{' '}
+            <strong className="text-white">
+              {typeof meshQuality?.max_skewness === 'number'
+                ? meshQuality.max_skewness.toFixed(3)
+                : 'N/A'}
+            </strong>
+          </span>
+          {meshQuality?.verdict && (
+            <>
+              <span className="text-rose-500/70">|</span>
+              <span className="uppercase font-bold text-rose-200">{meshQuality.verdict}</span>
+            </>
+          )}
+        </div>
+      )}
+
+      {/* Post-Processing Dock: Section Slice Planes, 3D Volumetric Iso-Surface, RK4 Streamlines, Iso-Threshold, Deformation Scale */}
       {showPostControls && (
-        <div className="absolute right-4 top-24 z-20 w-68 rounded-xl border border-indigo-500/40 bg-slate-950/95 p-3 shadow-2xl text-xs space-y-2.5">
+        <div className="absolute right-4 top-24 z-20 w-72 max-h-[70vh] overflow-y-auto rounded-xl border border-indigo-500/40 bg-slate-950/95 p-3 shadow-2xl text-xs space-y-2.5">
           <div className="flex items-center justify-between font-semibold text-indigo-300">
             <span className="flex items-center gap-1.5">
               <SlidersHorizontal className="h-3.5 w-3.5" />
@@ -1874,6 +2788,8 @@ export const Interactive3DViewport: React.FC<Interactive3DViewportProps> = ({
                 setIsoMinPct(0);
                 setIsoMaxPct(100);
                 setDeformationScale(10);
+                setShowVolumetricIso(false);
+                setShowStreamlines(false);
               }}
               className="text-[10px] font-mono text-slate-400 hover:text-white"
             >
@@ -1881,9 +2797,31 @@ export const Interactive3DViewport: React.FC<Interactive3DViewportProps> = ({
             </button>
           </div>
 
+          {postMetadata?.available ? (
+            <div className="flex items-center justify-between rounded-lg border border-emerald-500/30 bg-emerald-950/25 px-2 py-1 font-mono text-[9.5px] text-emerald-300">
+              <span>Volumetric NSR1 Ready ({(postMetadata.cell_count ?? 0).toLocaleString()} cells)</span>
+              <button
+                type="button"
+                onClick={() => setUseBinarySurface((v) => !v)}
+                className={`rounded px-1.5 py-0.5 text-[9px] font-bold ${
+                  useBinarySurface
+                    ? 'bg-emerald-500/30 text-emerald-200 border border-emerald-400/50'
+                    : 'bg-slate-800 text-slate-400 border border-slate-700'
+                }`}
+                title="Toggle Full-Resolution Binary NSR1 Surface vs JSON Surface"
+              >
+                {useBinarySurface ? 'HD BIN' : 'JSON'}
+              </button>
+            </div>
+          ) : volumetricStatus ? (
+            <div className="rounded-lg border border-slate-700/80 bg-slate-900/90 px-2 py-1.5 text-[10px] leading-snug text-slate-400">
+              {volumetricStatus}
+            </div>
+          ) : null}
+
           <div className="space-y-1">
             <div className="flex items-center justify-between text-[10.5px] text-slate-400">
-              <span>Section Slice Plane</span>
+              <span>{postMetadata?.available ? 'Filled Volumetric Slice Plane' : 'Section Slice Plane'}</span>
               <span className="font-mono text-indigo-300">{sliceAxis.toUpperCase()}</span>
             </div>
             <div className="grid grid-cols-4 gap-1">
@@ -1902,17 +2840,145 @@ export const Interactive3DViewport: React.FC<Interactive3DViewportProps> = ({
               ))}
             </div>
             {sliceAxis !== 'off' && (
-              <input
-                type="range"
-                min={-1}
-                max={1}
-                step={0.04}
-                value={sliceOffset}
-                onChange={(e) => setSliceOffset(parseFloat(e.target.value))}
-                className="w-full accent-indigo-400 cursor-pointer"
-              />
+              <>
+                <input
+                  type="range"
+                  min={-0.98}
+                  max={0.98}
+                  step={0.04}
+                  value={sliceOffset}
+                  onChange={(e) => setSliceOffset(parseFloat(e.target.value))}
+                  className="w-full accent-indigo-400 cursor-pointer"
+                />
+                {volSliceError && (
+                  <div className="font-mono text-[9.5px] text-amber-300">{volSliceError}</div>
+                )}
+              </>
             )}
           </div>
+
+          {hasVolumetricVectors && (
+            <div className="space-y-1.5 pt-1.5 border-t border-slate-800">
+              <div className="flex items-center justify-between text-[10.5px] text-slate-400">
+                <span className="flex items-center gap-1">
+                  <Wind className="h-3 w-3 text-emerald-400" />
+                  3D RK4 Streamlines
+                </span>
+                <button
+                  type="button"
+                  onClick={() => setShowStreamlines((v) => !v)}
+                  className={`rounded px-2 py-0.5 font-mono text-[10px] font-semibold border ${
+                    showStreamlines
+                      ? 'border-emerald-400 bg-emerald-500/25 text-emerald-200'
+                      : 'border-slate-700 bg-slate-900 text-slate-400 hover:text-white'
+                  }`}
+                >
+                  {showStreamlines ? 'ON' : 'OFF'}
+                </button>
+              </div>
+              <div className="flex items-center justify-between gap-1 text-[10px] text-slate-400">
+                <span>Seed Count</span>
+                <div className="flex items-center gap-1">
+                  {([24, 48, 96] as const).map((n) => (
+                    <button
+                      key={n}
+                      type="button"
+                      onClick={() => setStreamlineSeeds(n)}
+                      className={`rounded px-2 py-0.5 font-mono text-[10px] border ${
+                        streamlineSeeds === n
+                          ? 'border-emerald-400 bg-emerald-500/20 text-emerald-200 font-bold'
+                          : 'border-slate-800 bg-slate-900 text-slate-400 hover:text-white'
+                      }`}
+                    >
+                      {n}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              {showStreamlines && streamlineCount > 0 && (
+                <div className="font-mono text-[9.5px] text-emerald-300">
+                  Active trajectories: {streamlineCount} ({postMetadata?.vectors[0]?.name})
+                </div>
+              )}
+              {streamlinesError && (
+                <div className="font-mono text-[9.5px] text-amber-300">{streamlinesError}</div>
+              )}
+            </div>
+          )}
+
+          {hasVolumetricScalars && activeIsoScalarMeta && (
+            <div className="space-y-1.5 pt-1.5 border-t border-slate-800">
+              <div className="flex items-center justify-between text-[10.5px] text-slate-400">
+                <span className="flex items-center gap-1">
+                  <Layers className="h-3 w-3 text-cyan-400" />
+                  3D Iso-Surface
+                </span>
+                <button
+                  type="button"
+                  onClick={() => setShowVolumetricIso((v) => !v)}
+                  className={`rounded px-2 py-0.5 font-mono text-[10px] font-semibold border ${
+                    showVolumetricIso
+                      ? 'border-cyan-400 bg-cyan-500/25 text-cyan-200'
+                      : 'border-slate-700 bg-slate-900 text-slate-400 hover:text-white'
+                  }`}
+                >
+                  {showVolumetricIso ? 'ON' : 'OFF'}
+                </button>
+              </div>
+              {showVolumetricIso && (
+                <div className="space-y-1.5">
+                  <select
+                    aria-label="Iso-Surface Scalar Field"
+                    value={activeIsoScalarMeta.name}
+                    onChange={(e) => {
+                      const next = postMetadata?.scalars.find((s) => s.name === e.target.value);
+                      if (next) {
+                        setVolumetricIsoField(next.name);
+                        setVolumetricIsoValue(0.5 * (next.min + next.max));
+                      }
+                    }}
+                    className="w-full rounded border border-slate-700 bg-slate-900 px-2 py-1 font-mono text-[10px] text-cyan-200 outline-none"
+                  >
+                    {postMetadata?.scalars.map((s) => (
+                      <option key={s.name} value={s.name}>
+                        {s.name} [{s.min.toPrecision(4)} .. {s.max.toPrecision(4)}]
+                      </option>
+                    ))}
+                  </select>
+                  <div className="flex items-center justify-between font-mono text-[10px] text-cyan-300 tabular-nums">
+                    <span>Iso Value</span>
+                    <strong>{volumetricIsoValue.toPrecision(5)}</strong>
+                  </div>
+                  <input
+                    aria-label="3D Iso-Surface Physical Threshold"
+                    type="range"
+                    min={activeIsoScalarMeta.min}
+                    max={
+                      activeIsoScalarMeta.max > activeIsoScalarMeta.min
+                        ? activeIsoScalarMeta.max
+                        : activeIsoScalarMeta.min + 1e-6
+                    }
+                    step={
+                      activeIsoScalarMeta.max > activeIsoScalarMeta.min
+                        ? (activeIsoScalarMeta.max - activeIsoScalarMeta.min) / 100
+                        : 1e-6
+                    }
+                    value={volumetricIsoValue}
+                    onChange={(e) => setVolumetricIsoValue(parseFloat(e.target.value))}
+                    className="w-full accent-cyan-400 cursor-pointer"
+                  />
+                  {volIsoTriangles > 0 && (
+                    <div className="font-mono text-[9.5px] text-cyan-300/90">
+                      Contour triangles: {volIsoTriangles.toLocaleString()}
+                    </div>
+                  )}
+                  {volIsoError && (
+                    <div className="font-mono text-[9.5px] text-amber-300">{volIsoError}</div>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
 
           {availableScalars.length > 0 && (
             <div className="space-y-1 pt-1 border-t border-slate-800">

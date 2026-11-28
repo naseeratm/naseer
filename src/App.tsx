@@ -1615,6 +1615,8 @@ export default function App() {
                   : null
               }
               hasSolvedResults={hasCompletedRun}
+              solvedTaskId={activeSolverTaskId}
+              meshQuality={currentProject.normalizedSolverResult?.meshQuality ?? null}
               jobStatus={solverJobStatus}
               activeTaskId={activeTaskId}
               solverProgress={solverProgress}

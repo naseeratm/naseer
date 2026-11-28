@@ -910,6 +910,14 @@ def get_case_volume_metadata(case_dir: Union[str, Path]) -> Dict[str, Any]:
     }
 
 
+def _extract_surface(dataset: Any) -> Any:
+    """Extract outer surface using PyVista 0.49+ `algorithm='dataset_surface'` with legacy fallback."""
+    try:
+        return dataset.extract_surface(algorithm="dataset_surface")
+    except TypeError:
+        return dataset.extract_surface()
+
+
 def export_case_surface_binary(
     case_dir: Union[str, Path],
     field_name: Optional[str] = None,
@@ -917,7 +925,7 @@ def export_case_surface_binary(
 ) -> bytes:
     """Extract triangulated outer surface mesh (up to 1M triangles) and pack into `NSR1` binary."""
     dataset, source_file = load_case_volume(case_dir)
-    surface = dataset.extract_surface().triangulate()
+    surface = _extract_surface(dataset).triangulate()
     if getattr(surface, "n_points", 0) == 0 or getattr(surface, "n_cells", 0) == 0:
         raise VolumetricDataUnavailableError("Extracted surface mesh contains zero triangles.")
 
@@ -1087,18 +1095,35 @@ def compute_volumetric_streamlines(
         if max_time is not None and math.isfinite(float(max_time)) and float(max_time) > 0.0
         else max(1e-3, (2.5 * diag) / mean_speed)
     )
+    resolved_max_length = (
+        max(1e-3, float(max_time) * mean_speed)
+        if max_time is not None and math.isfinite(float(max_time)) and float(max_time) > 0.0
+        else max(1e-3, 2.5 * diag)
+    )
 
     def _trace(src_center: List[float]) -> Any:
-        return dataset.streamlines(
-            vectors=vec_name,
-            source_center=src_center,
-            source_radius=radius,
-            n_points=n_seeds_clamped,
-            integration_direction="both",
-            max_time=resolved_max_time,
-            integrator_type=4,
-            max_steps=500,
-        )
+        try:
+            return dataset.streamlines(
+                vectors=vec_name,
+                source_center=src_center,
+                source_radius=radius,
+                n_points=n_seeds_clamped,
+                integration_direction="both",
+                max_length=resolved_max_length,
+                integrator_type=4,
+                max_steps=500,
+            )
+        except TypeError:
+            return dataset.streamlines(
+                vectors=vec_name,
+                source_center=src_center,
+                source_radius=radius,
+                n_points=n_seeds_clamped,
+                integration_direction="both",
+                max_time=resolved_max_time,
+                integrator_type=4,
+                max_steps=500,
+            )
 
     stream = _trace(center)
     if stream is None or getattr(stream, "n_points", 0) == 0 or getattr(stream, "n_cells", 0) == 0:

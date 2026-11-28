@@ -5,7 +5,7 @@ import {
   CadModelStats,
   BoundaryMarker,
 } from './Interactive3DViewport';
-import { VtkFieldPayload } from '../types/thesis';
+import { MeshQualityReport, VtkFieldPayload } from '../types/thesis';
 import { JobStatus } from '../types/studio';
 import { ViewportHealthDashboard, LiveJobTelemetry } from './ViewportHealthDashboard';
 
@@ -21,6 +21,8 @@ interface ViewportCanvasProps {
   selectedMarkerId?: string | null;
   highlightedPatchName?: string | null;
   hasSolvedResults?: boolean;
+  solvedTaskId?: string | null;
+  meshQuality?: MeshQualityReport | null;
   onCadLoaded?: (stats: CadModelStats) => void;
   onCadStlUploaded?: (file: { name: string; base64: string; stats: CadModelStats }) => void;
   onCadFileUploaded?: (file: { name: string; base64: string; ext: string; stats?: CadModelStats }) => void;
@@ -51,6 +53,8 @@ export const ViewportCanvas: React.FC<ViewportCanvasProps> = ({
   selectedMarkerId = null,
   highlightedPatchName = null,
   hasSolvedResults = false,
+  solvedTaskId = null,
+  meshQuality = null,
   onCadLoaded,
   onCadStlUploaded,
   onCadFileUploaded,
@@ -97,6 +101,8 @@ export const ViewportCanvas: React.FC<ViewportCanvasProps> = ({
             selectedMarkerId={selectedMarkerId}
             highlightedPatchName={highlightedPatchName}
             hasSolvedResults={hasSolvedResults}
+            solvedTaskId={solvedTaskId}
+            meshQuality={meshQuality}
             onPresetChange={setPreset}
             onCadLoaded={onCadLoaded}
             onCadStlUploaded={onCadStlUploaded}

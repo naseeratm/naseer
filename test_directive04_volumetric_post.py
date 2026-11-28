@@ -47,6 +47,8 @@ def _as_flat_list(val: Any) -> List[Any]:
 
 class TestDirective04CleanupAndHygiene(unittest.TestCase):
     def test_gitignore_and_scratch_job_hygiene(self) -> None:
+        if not Path(".gitignore").is_file():
+            self.skipTest(".gitignore not present in container")
         gitignore = Path(".gitignore").read_text(encoding="utf-8")
         lines = [ln.strip() for ln in gitignore.splitlines()]
         self.assertIn("jobs/", lines)
@@ -60,17 +62,75 @@ class TestDirective04CleanupAndHygiene(unittest.TestCase):
             self.assertFalse(Path(stale).exists(), f"Scratch job folder should be removed: {stale}")
 
     def test_worker_only_pyvista_requirements_and_dockerfiles(self) -> None:
+        if not Path("worker-requirements.txt").is_file() or not Path("Dockerfile.worker").is_file():
+            self.skipTest("Dockerfile.worker / worker-requirements.txt not present in container")
         wreq = Path("worker-requirements.txt").read_text(encoding="utf-8")
         self.assertIn("pyvista", wreq.lower())
 
         worker_df = Path("Dockerfile.worker").read_text(encoding="utf-8")
         self.assertIn("worker-requirements.txt", worker_df)
         self.assertIn("pip install -r worker-requirements.txt", worker_df)
+        self.assertIn("file_parser.py", worker_df)
 
         if Path("Dockerfile.api").is_file():
             api_df = Path("Dockerfile.api").read_text(encoding="utf-8")
             self.assertNotIn("worker-requirements.txt", api_df)
             self.assertNotIn("pyvista", api_df.lower())
+            self.assertIn("file_parser.py", api_df)
+
+    def test_pyvista_049_streamlines_max_length_and_dataset_surface_kwargs(self) -> None:
+        # Verify PyVista 0.49 compatibility even on hosts without PyVista installed using lightweight stubs
+        seen_extract_kwargs: Dict[str, Any] = {}
+        seen_stream_kwargs: Dict[str, Any] = {}
+
+        class _FakePoly:
+            n_points = 3
+            n_cells = 1
+            bounds = (0.0, 1.0, 0.0, 1.0, 0.0, 1.0)
+            points = [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]]
+            faces = [3, 0, 1, 2]
+            lines = [3, 0, 1, 2]
+            point_data = {"T": [300.0, 310.0, 320.0], "U": [[2.0, 0.0, 0.0], [2.0, 0.0, 0.0], [2.0, 0.0, 0.0]]}
+
+            def triangulate(self):
+                return self
+
+            def compute_normals(self, **_kwargs):
+                return self
+
+        class _FakeDataset:
+            n_points = 3
+            n_cells = 1
+            bounds = (0.0, 2.0, 0.0, 1.0, 0.0, 1.0)
+            point_data = {"T": [300.0, 310.0, 320.0], "U": [[2.0, 0.0, 0.0], [2.0, 0.0, 0.0], [2.0, 0.0, 0.0]]}
+
+            def extract_surface(self, **kwargs):
+                seen_extract_kwargs.update(kwargs)
+                return _FakePoly()
+
+            def streamlines(self, **kwargs):
+                if "max_time" in kwargs:
+                    raise TypeError("PyVista 0.49 removed max_time; use max_length")
+                seen_stream_kwargs.update(kwargs)
+                return _FakePoly()
+
+        fake_ds = _FakeDataset()
+        if not volumetric_post.HAS_NUMPY:
+            # Test _extract_surface helper directly when numpy is absent
+            volumetric_post._extract_surface(fake_ds)
+            self.assertEqual(seen_extract_kwargs.get("algorithm"), "dataset_surface")
+            return
+
+        with patch.object(volumetric_post, "load_case_volume", return_value=(fake_ds, Path("internal.vtu"))):
+            surf_blob = volumetric_post.export_case_surface_binary(".", field_name="T")
+            self.assertEqual(seen_extract_kwargs.get("algorithm"), "dataset_surface")
+            self.assertEqual(surf_blob[:4], b"NSR1")
+
+            stream_blob = volumetric_post.compute_volumetric_streamlines(".", vector_field="U", n_seeds=12, max_time=3.0)
+            self.assertIn("max_length", seen_stream_kwargs)
+            self.assertNotIn("max_time", seen_stream_kwargs)
+            self.assertGreater(seen_stream_kwargs["max_length"], 0.0)
+            self.assertEqual(stream_blob[:4], b"NSR1")
 
     def test_extract_bad_cell_points_survives_meshio_system_exit(self) -> None:
         with tempfile.TemporaryDirectory() as td:
